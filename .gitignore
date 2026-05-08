@@ -27,6 +27,11 @@ env/
 *.db
 *.sqlite3
 
+# Cache & columnar data
+data/cache/
+!data/cache/.gitkeep
+*.parquet
+
 # Local / generated artifacts
 .codex
 .claude/

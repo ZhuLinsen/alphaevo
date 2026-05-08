@@ -33,6 +33,7 @@ dependencies = [
     "pandas>=2.0",
     "pyyaml>=6.0",
     "tenacity>=8.2",
+    "filelock>=3.12",
 ]
 
 [project.optional-dependencies]

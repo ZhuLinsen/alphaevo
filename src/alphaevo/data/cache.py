@@ -11,7 +11,6 @@ to the same cache entry concurrently.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
 import time
 from collections.abc import Iterator
@@ -20,6 +19,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd  # type: ignore[import-untyped]
+from filelock import FileLock
 
 logger = logging.getLogger(__name__)
 
@@ -162,19 +162,15 @@ class DataCache:
     @staticmethod
     @contextmanager
     def _file_lock(target: Path) -> Iterator[None]:
-        """Acquire an exclusive file lock adjacent to *target*."""
+        """Acquire an exclusive file lock adjacent to *target* (cross-platform)."""
         lock_path = target.with_suffix(target.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = lock_path.open("w")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        lock = FileLock(str(lock_path))
+        with lock:
             yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
-            # Best-effort cleanup; race with other processes is harmless
-            with contextlib.suppress(OSError):
-                lock_path.unlink()
+        # Best-effort cleanup; race with other processes is harmless
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
 
     def invalidate(self, symbol: str | None = None) -> int:
         """Clear cached data.
