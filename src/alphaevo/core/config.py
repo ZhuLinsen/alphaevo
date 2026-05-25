@@ -34,6 +34,8 @@ class DataConfig(BaseModel):
     adapter: str = "yfinance"  # core: yfinance / akshare; optional bridge: dsa
     cache_dir: Path = Field(default_factory=lambda: Path.home() / ".alphaevo" / "cache")
     dsa_path: str | None = None  # optional daily_stock_analysis bridge path
+    adanos_api_key: str | None = None  # optional Adanos event/news sentiment bridge
+    adanos_base_url: str = "https://api.adanos.org"
 
 
 class BacktestConfig(BaseModel):
@@ -88,6 +90,10 @@ _ENV_MAP: dict[str, str] = {
     "ALPHAEVO_DATA_ADAPTER": "data.adapter",
     "ALPHAEVO_CACHE_DIR": "data.cache_dir",
     "ALPHAEVO_DSA_PATH": "data.dsa_path",
+    "ADANOS_API_KEY": "data.adanos_api_key",
+    "ALPHAEVO_ADANOS_API_KEY": "data.adanos_api_key",
+    "ADANOS_API_BASE_URL": "data.adanos_base_url",
+    "ALPHAEVO_ADANOS_BASE_URL": "data.adanos_base_url",
     "ALPHAEVO_DB_PATH": "db_path",
     "ALPHAEVO_BACKTEST_WALK_FORWARD_FOLDS": "backtest.walk_forward_folds",
     "ALPHAEVO_BACKTEST_WALK_FORWARD_TRAIN_PCT": "backtest.walk_forward_train_pct",
@@ -235,6 +241,8 @@ class ConfigManager:
         # Never persist API keys to disk
         if "llm" in data:
             data["llm"].pop("api_key", None)
+        if "data" in data:
+            data["data"].pop("adanos_api_key", None)
         with open(self.USER_CONFIG_FILE, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 

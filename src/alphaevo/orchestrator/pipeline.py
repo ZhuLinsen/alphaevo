@@ -133,8 +133,12 @@ class RunPipeline:
                 self.config.data.adapter,
                 dsa_path=self.config.data.dsa_path,
             )
+            adapters = [adapter]
+            adanos = self._create_adanos_context_adapter()
+            if adanos is not None:
+                adapters.insert(0, adanos)
             self._data_manager = DataManager(
-                [adapter],
+                adapters,
                 cache=DataCache(self.config.data.cache_dir),
             )
         return self._data_manager
@@ -173,6 +177,19 @@ class RunPipeline:
         raise ValueError(
             f"Unknown adapter: {adapter_name}. Core adapters: yfinance, akshare; "
             "optional bridge: dsa"
+        )
+
+    def _create_adanos_context_adapter(self) -> DataAdapter | None:
+        """Create the optional Adanos context adapter for yfinance US workflows."""
+        api_key = self.config.data.adanos_api_key
+        if not api_key or self.config.data.adapter != "yfinance":
+            return None
+
+        from alphaevo.data.adapters.adanos import AdanosSentimentAdapter
+
+        return AdanosSentimentAdapter(
+            api_key,
+            base_url=self.config.data.adanos_base_url,
         )
 
     # -- main entry point -----------------------------------------------

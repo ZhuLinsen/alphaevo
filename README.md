@@ -108,6 +108,11 @@ Round 7 │ rsi_reversion_v7 │ Signals: 37 │ Score: 68.7% 🏆
 
 Real-data commands need a data adapter extra: install `pip install -e ".[data-yfinance]"` for the default US workflow, `pip install -e ".[data-akshare]"` for A-share, or `pip install -e ".[data-full]"` for both.
 
+For US strategies, you can optionally set `ADANOS_API_KEY` to let the default
+`yfinance` workflow enrich L3 event indicators with Adanos Market Sentiment
+context from Reddit, X / FinTwit, News, and Polymarket. When the key is missing,
+AlphaEvo keeps using its existing price/volume event proxies.
+
 `alphaevo showcase` is the stable real-data first run: it uses the bundled yfinance snapshot and writes a shareable report. `alphaevo showcase --live` tries live yfinance first and falls back to the snapshot if the provider is unavailable. If you want a stronger first backtest with more symbols on the default `yfinance` adapter, start with `alphaevo run ma_crossover_v1`.
 
 `--objective robust_profit_quality` ranks return quality with an additional

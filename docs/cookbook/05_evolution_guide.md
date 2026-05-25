@@ -271,6 +271,12 @@ AlphaEvo can already use part of the broader market context:
 But it does not yet have a fully wired news / macro / external-event pipeline.
 Many L3 event indicators currently rely on price/volume event proxies when real event data is unavailable.
 
+For US-equity runs on the default `yfinance` adapter, setting `ADANOS_API_KEY`
+enables optional Adanos Market Sentiment context for
+`news_sentiment_score` and `negative_news_score`. If Adanos is not configured or
+does not return usable context for a symbol, AlphaEvo keeps the existing proxy
+fallback.
+
 Practical implication:
 
 - trend / reversal strategies are the strongest current fit

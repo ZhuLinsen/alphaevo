@@ -152,10 +152,10 @@ def _make_eval_report(
     )
 
 
-def _make_config() -> AppConfig:
+def _make_config(data: DataConfig | None = None) -> AppConfig:
     """Minimal AppConfig for pipeline tests."""
     return AppConfig(
-        data=DataConfig(adapter="yfinance"),
+        data=data or DataConfig(adapter="yfinance"),
         backtest=BacktestConfig(slippage=0.001, commission=0.0003, min_data_days=30),
     )
 
@@ -661,6 +661,35 @@ class TestCreateAdapter:
     def test_yfinance_adapter(self):
         adapter = RunPipeline._create_adapter("yfinance")
         assert adapter.name == "yfinance"
+
+    def test_adanos_context_adapter_requires_key_and_yfinance(self):
+        no_key = RunPipeline(_make_config(data=DataConfig(adapter="yfinance")))
+        assert no_key._create_adanos_context_adapter() is None
+
+        non_yfinance = RunPipeline(
+            _make_config(
+                data=DataConfig(
+                    adapter="akshare",
+                    adanos_api_key="test-key",
+                )
+            )
+        )
+        assert non_yfinance._create_adanos_context_adapter() is None
+
+    def test_adanos_context_adapter_is_secondary_for_yfinance(self):
+        pipeline = RunPipeline(
+            _make_config(
+                data=DataConfig(
+                    adapter="yfinance",
+                    adanos_api_key="test-key",
+                    adanos_base_url="https://api.example.test",
+                )
+            )
+        )
+
+        manager = pipeline.data_manager
+
+        assert [adapter.name for adapter in manager._adapters] == ["adanos", "yfinance"]
 
 
 class TestLazyProperties:
