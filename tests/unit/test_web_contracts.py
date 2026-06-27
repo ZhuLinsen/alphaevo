@@ -220,6 +220,15 @@ def test_build_strategy_card_and_run_summary() -> None:
     assert summary.evaluation.benchmark_excess_return == 0.07
     assert summary.evaluation.event_context_provider_coverage == 0.5
     assert summary.evaluation.event_context_proxy_only_coverage == 0.5
+    assert summary.evaluation.event_context_mixed_symbols == 1
+    assert summary.evaluation.event_context_is_proxy_dominant is False
+    assert summary.evaluation.event_context_has_proxy_caveat is True
+    assert summary.evaluation.event_context_relevant_indicators == ["negative_news_score"]
+    assert summary.evaluation.event_context_source_breakdown == {
+        "provider:mock_feed": 1,
+        "provider:mock_feed+proxy": 1,
+        "proxy": 2,
+    }
     assert summary.evaluation.walk_forward_gap == 0.08
     assert summary.evaluation.walk_forward_pass_rate == 0.67
     assert summary.evaluation.walk_forward_requested_folds == 3

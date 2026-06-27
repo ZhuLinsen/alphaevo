@@ -101,6 +101,11 @@ class EvaluationSummaryView(BaseModel):
     benchmark_beats_random: float | None = None
     event_context_provider_coverage: float | None = None
     event_context_proxy_only_coverage: float | None = None
+    event_context_mixed_symbols: int | None = None
+    event_context_is_proxy_dominant: bool | None = None
+    event_context_has_proxy_caveat: bool | None = None
+    event_context_relevant_indicators: list[str] = Field(default_factory=list)
+    event_context_source_breakdown: dict[str, int] = Field(default_factory=dict)
     walk_forward_gap: float | None = None
     walk_forward_pass_rate: float | None = None
     walk_forward_requested_folds: int | None = None
@@ -253,6 +258,21 @@ def build_evaluation_summary(report: EvaluationReport) -> EvaluationSummaryView:
         ),
         event_context_proxy_only_coverage=(
             event_context.proxy_only_coverage if event_context is not None else None
+        ),
+        event_context_mixed_symbols=(
+            event_context.mixed_symbols if event_context is not None else None
+        ),
+        event_context_is_proxy_dominant=(
+            event_context.is_proxy_dominant if event_context is not None else None
+        ),
+        event_context_has_proxy_caveat=(
+            event_context.has_proxy_caveat if event_context is not None else None
+        ),
+        event_context_relevant_indicators=(
+            list(event_context.relevant_indicators) if event_context is not None else []
+        ),
+        event_context_source_breakdown=(
+            dict(event_context.source_breakdown) if event_context is not None else {}
         ),
         walk_forward_gap=anti_fit.walk_forward_gap,
         walk_forward_pass_rate=anti_fit.walk_forward_pass_rate,
