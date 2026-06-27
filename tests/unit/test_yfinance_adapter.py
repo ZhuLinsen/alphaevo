@@ -10,6 +10,7 @@ import pandas as pd
 
 from alphaevo.data.adapters.yfinance import (
     YFinanceAdapter,
+    _build_event_records,
     _days_to_yf_period,
     _to_yf_symbol,
 )
@@ -200,3 +201,76 @@ class TestPeriodMapping:
 
     def test_very_long(self):
         assert _days_to_yf_period(5000) == "max"
+
+
+# ---------------------------------------------------------------------------
+# Tests – event/news context
+# ---------------------------------------------------------------------------
+
+
+class TestEventContext:
+    def test_build_event_records_supports_current_content_schema(self):
+        records = _build_event_records(
+            [
+                {
+                    "content": {
+                        "pubDate": "2026-06-20T01:23:45Z",
+                        "title": "Company beats profit expectations",
+                        "summary": "Strong growth and optimistic guidance",
+                    }
+                }
+            ],
+            date(2026, 6, 1),
+            date(2026, 6, 30),
+        )
+
+        assert len(records) == 1
+        assert records[0].date == date(2026, 6, 20)
+        assert records[0].news_sentiment_score is not None
+        assert records[0].news_sentiment_score > 0.5
+        assert records[0].negative_news_score is not None
+        assert records[0].negative_news_score < 0.5
+
+    def test_build_event_records_supports_legacy_provider_publish_time_schema(self):
+        records = _build_event_records(
+            [
+                {
+                    "providerPublishTime": 1_781_913_600,
+                    "title": "Company faces fraud investigation and lawsuit",
+                }
+            ],
+            date(2026, 6, 1),
+            date(2026, 6, 30),
+        )
+
+        assert len(records) == 1
+        assert records[0].date == date(2026, 6, 20)
+        assert records[0].news_sentiment_score is not None
+        assert records[0].news_sentiment_score < 0.5
+        assert records[0].negative_news_score is not None
+        assert records[0].negative_news_score > 0.5
+
+    @patch("alphaevo.data.adapters.yfinance.YFinanceAdapter._fetch_news")
+    def test_get_event_context_returns_provider_series_for_legacy_yfinance_news(
+        self,
+        mock_fetch,
+    ):
+        mock_fetch.return_value = [
+            {
+                "providerPublishTime": 1_781_913_600,
+                "title": "A-share company reports strong profit growth",
+            }
+        ]
+
+        context = _run(
+            YFinanceAdapter().get_event_context(
+                "600519.SS",
+                date(2026, 6, 1),
+                date(2026, 6, 30),
+            )
+        )
+
+        assert context is not None
+        assert context.symbol == "600519.SS"
+        assert context.source == "yfinance_news"
+        assert len(context.records) == 1
