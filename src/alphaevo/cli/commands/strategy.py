@@ -805,6 +805,11 @@ def strategy_import(
 def strategy_validate(
     file: str = typer.Argument(..., help="Path to strategy YAML file"),
     strict: bool = typer.Option(False, "--strict", help="Treat warnings as errors"),
+    bias_check: bool = typer.Option(
+        False,
+        "--bias-check",
+        help="Also run heuristic lookahead/repainting checks",
+    ),
 ) -> None:
     """Validate a strategy YAML file."""
     from alphaevo.strategy.dsl.parser import StrategyParseError, StrategyParser
@@ -821,6 +826,23 @@ def strategy_validate(
         console.print(f"[green]✓[/green] Valid: {strategy.meta.id} ({strategy.meta.name})")
         for w in diagnostics.warnings:
             console.print(f"  [yellow]⚠ {w}[/yellow]")
+        if bias_check:
+            from alphaevo.strategy.bias import analyze_strategy_bias
+
+            report = analyze_strategy_bias(strategy)
+            console.print(f"[bold]Bias risk:[/bold] {report.risk_level}")
+            for finding in report.findings:
+                style = {
+                    "error": "red",
+                    "warning": "yellow",
+                    "info": "blue",
+                }[finding.severity]
+                console.print(
+                    f"  [{style}]{finding.severity.upper()} {finding.category}"
+                    f" at {finding.location}: {finding.message}[/{style}]"
+                )
+            if report.has_errors:
+                raise typer.Exit(1)
     except StrategyParseError as e:
         console.print(f"[red]✗ Invalid: {e}[/red]")
         raise typer.Exit(1) from None
