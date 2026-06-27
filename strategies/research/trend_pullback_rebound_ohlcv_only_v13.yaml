@@ -1,0 +1,104 @@
+meta:
+  id: trend_pullback_rebound_ohlcv_only_v13
+  name: 强趋势回踩放量反包（OHLCV-only候选）
+  version: 13
+  parent_id: trend_pullback_rebound_trigger_guard_v12_ma20_slope
+  created_at: '2026-06-27'
+  market: a_share
+  category: trend
+  tags:
+  - 趋势
+  - 回踩
+  - 放量
+  - 反包
+  - OHLCV-only
+  status: draft
+  preferred_regime:
+  - trending_up
+description: |
+  基于 trend_pullback_rebound_trigger_guard_v12_ma20_slope 的 OHLCV-only 研究候选。
+
+  目标：验证去掉 proxy-heavy event/news 过滤器后，趋势回踩结构本身是否仍有研究价值。
+  改动：移除 negative_news_score 与 st_flag filters，不新增事件/新闻/情绪类指标；保留放量触发、均线多头、回踩 MA10、站上 MA20 与 MA20 斜率等价格/量能结构。
+
+  研究结论需通过代表性 A 股样本与 v11/v12 基线对比后判定；本 YAML 是研究候选，不是收益承诺或官方基准。
+universe:
+  market:
+  - a_share_main
+  filters:
+  - field: market_cap
+    op: '>='
+    value: 5000000000.0
+  - field: daily_turnover_rate
+    op: '>='
+    value: 0.01
+entry:
+  logic: and
+  triggers:
+  - indicator: volume_ratio_1d_3d
+    op: '>'
+    value: 1.2
+  guards:
+  - indicator: relative_strength_43d
+    op: '>'
+    value: 0.06
+  - indicator: ma5_above_ma10
+    op: ==
+    value: true
+  - indicator: close_to_ma10_pct
+    op: <=
+    value: 0.015
+  - indicator: close_above_ma20
+    op: ==
+    value: true
+  - indicator: ma20_slope
+    op: '>'
+    value: 0.0
+  filters: []
+exit:
+  stop_loss:
+    type: pct
+    value: 0.0256
+  take_profit:
+    type: trailing
+    trigger_pct: 0.1
+    trail_pct: 0.05
+  max_holding_days: 10
+params:
+  tunable:
+  - target: entry.guards[indicator=relative_strength_43d].value
+    range:
+    - 0.05
+    - 0.2
+    step: 0.01
+    label: 相对强度阈值
+  - target: entry.guards[indicator=relative_strength_43d].indicator
+    range:
+    - 10.0
+    - 60.0
+    step: 5.0
+    label: 相对强度观察周期
+  - target: entry.triggers[indicator=volume_ratio_1d_3d].value
+    range:
+    - 1.2
+    - 2.5
+    step: 0.1
+    label: 量比阈值
+  - target: entry.triggers[indicator=volume_ratio_1d_3d].indicator
+    range:
+    - 3.0
+    - 20.0
+    step: 1.0
+    label: 量比基准窗口
+  - target: exit.stop_loss.value
+    range:
+    - 0.02
+    - 0.08
+    step: 0.01
+    label: 止损比例
+  - target: entry.guards[indicator=ma20_slope].value
+    range:
+    - -0.02
+    - 0.03
+    step: 0.01
+    label: 20日均线斜率阈值
