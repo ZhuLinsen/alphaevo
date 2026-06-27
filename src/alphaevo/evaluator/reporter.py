@@ -232,6 +232,15 @@ class Reporter:
                     f"{source} x {count}" for source, count in ec.source_breakdown.items()
                 )
                 lines.append(f"- Source Breakdown: {source_text}")
+            if ec.is_proxy_dominant:
+                lines.append(
+                    "- **Data Quality Caveat**: event/news indicators are proxy-dominant; "
+                    "diagnose provider coverage before mutating or optimizing these filters."
+                )
+            elif ec.has_proxy_caveat:
+                lines.append(
+                    "- Caveat: some event/news values are price/volume proxy-derived, not direct provider evidence."
+                )
 
         # Top failure cases
         if report.failure_cases:

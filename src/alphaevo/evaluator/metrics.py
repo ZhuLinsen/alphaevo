@@ -465,16 +465,14 @@ class Evaluator:
 
         for ctx in contexts.values():
             source = getattr(ctx, "event_context_source", None) or "proxy"
+            source_breakdown[source] += 1
             if source == "proxy":
                 proxy_symbols += 1
                 continue
             if "+proxy" in source:
                 mixed_symbols += 1
-                provider_name = source.split("+proxy", 1)[0] or "provider"
-                source_breakdown[provider_name] += 1
                 continue
             provider_symbols += 1
-            source_breakdown[source] += 1
 
         return EventContextMetrics(
             total_symbols=total,
@@ -522,9 +520,16 @@ class Evaluator:
             relation = "outperformed" if benchmark_excess_return > 0 else "lagged"
             patterns.append(f"Buy-and-hold {relation} by {abs(benchmark_excess_return):.2%}")
         if event_context and event_context.relevant_indicators:
-            patterns.append(
-                f"Event-aware indicators active with {event_context.provider_coverage:.1%} provider coverage"
-            )
+            if event_context.is_proxy_dominant:
+                patterns.append(
+                    "Data-quality remediation should precede event/news mutation: "
+                    f"provider coverage {event_context.provider_coverage:.1%}, "
+                    f"proxy-only coverage {event_context.proxy_only_coverage:.1%}"
+                )
+            else:
+                patterns.append(
+                    f"Event-aware indicators active with {event_context.provider_coverage:.1%} provider coverage"
+                )
         return patterns[:5]
 
     # ── Internal helpers ─────────────────────────────────────────────

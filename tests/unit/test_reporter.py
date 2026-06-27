@@ -253,6 +253,26 @@ class TestToMarkdown:
         assert "Provider Coverage: 50.0% (2/4 symbols)" in md
         assert "negative_news_score, days_since_event" in md
         assert "provider:mock_feed x 1" in md
+        assert "Caveat: some event/news values are price/volume proxy-derived" in md
+
+    def test_proxy_dominant_event_context_warns_before_mutation(self) -> None:
+        report = _make_report()
+        report.event_context = EventContextMetrics(
+            total_symbols=10,
+            provider_symbols=1,
+            proxy_symbols=9,
+            provider_coverage=0.1,
+            proxy_only_coverage=0.9,
+            relevant_indicators=["negative_news_score"],
+            source_breakdown={"provider:mock_feed": 1, "proxy": 9},
+        )
+
+        md = Reporter.to_markdown(report)
+
+        assert "Provider Coverage: 10.0% (1/10 symbols)" in md
+        assert "Proxy-Only Coverage: 90.0% (9/10 symbols)" in md
+        assert "Data Quality Caveat" in md
+        assert "before mutating or optimizing these filters" in md
 
     def test_regime_holdout_rendered(self) -> None:
         report = _make_report(with_regime=True)

@@ -165,6 +165,23 @@ class EventContextMetrics(BaseModel):
     relevant_indicators: list[str] = Field(default_factory=list)
     source_breakdown: dict[str, int] = Field(default_factory=dict)
 
+    @property
+    def uses_event_indicators(self) -> bool:
+        """Whether the strategy evaluation actually depends on event/news fields."""
+        return bool(self.relevant_indicators)
+
+    @property
+    def is_proxy_dominant(self) -> bool:
+        """True when event/news signals are mostly price/volume proxy-derived."""
+        return self.uses_event_indicators and (
+            self.provider_coverage < 0.30 or self.proxy_only_coverage > 0.50
+        )
+
+    @property
+    def has_proxy_caveat(self) -> bool:
+        """True when any active event/news indicator used proxy-derived context."""
+        return self.uses_event_indicators and self.proxy_only_coverage > 0.0
+
 
 class WalkForwardFoldMetrics(BaseModel):
     """One rolling walk-forward fold."""
