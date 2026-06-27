@@ -10,7 +10,11 @@ import pytest
 
 from alphaevo.backtest.condition import ConditionEvaluator
 from alphaevo.backtest.engine import BacktestEngine
-from alphaevo.backtest.indicators import IndicatorRegistry, enrich_with_event_proxies
+from alphaevo.backtest.indicators import (
+    IndicatorRegistry,
+    enrich_with_event_proxies,
+    merge_event_context,
+)
 from alphaevo.backtest.rules import MarketRuleChecker
 from alphaevo.models.enums import (
     ExitReason,
@@ -19,6 +23,7 @@ from alphaevo.models.enums import (
     StrategyCategory,
 )
 from alphaevo.models.execution import SampleBatch
+from alphaevo.models.market import EventContextRecord, EventContextSeries
 from alphaevo.models.strategy import (
     ExecutionConfig,
     MarketRuleConfig,
@@ -128,6 +133,69 @@ class TestIndicatorRegistry:
 
         assert "negative_news_score" in enriched.columns
         assert not any("Downcasting object dtype arrays" in str(w.message) for w in caught)
+
+    def test_event_context_maps_weekend_news_to_next_trading_date(self) -> None:
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-19", "2026-06-22", "2026-06-23"]).date,
+                "open": [10.0, 10.5, 10.7],
+                "high": [10.2, 10.8, 10.9],
+                "low": [9.8, 10.4, 10.5],
+                "close": [10.0, 10.7, 10.8],
+                "volume": [1_000_000, 1_100_000, 1_200_000],
+                "prev_close": [9.9, 10.0, 10.7],
+            }
+        )
+        event_context = EventContextSeries(
+            symbol="600519.SS",
+            source="yfinance_news",
+            records=[
+                EventContextRecord(
+                    date=date(2026, 6, 20),
+                    negative_news_score=0.9,
+                    news_sentiment_score=0.1,
+                    days_since_event=0,
+                )
+            ],
+        )
+
+        merged, source = merge_event_context(df, event_context)
+
+        assert source == "yfinance_news+proxy"
+        assert merged.loc[0, "negative_news_score"] != pytest.approx(0.9)
+        assert merged.loc[1, "negative_news_score"] == pytest.approx(0.9)
+        assert merged.loc[1, "news_sentiment_score"] == pytest.approx(0.1)
+
+    def test_event_context_after_last_trading_date_stays_proxy(self) -> None:
+        df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-06-19", "2026-06-22"]).date,
+                "open": [10.0, 10.5],
+                "high": [10.2, 10.8],
+                "low": [9.8, 10.4],
+                "close": [10.0, 10.7],
+                "volume": [1_000_000, 1_100_000],
+                "prev_close": [9.9, 10.0],
+            }
+        )
+        event_context = EventContextSeries(
+            symbol="600519.SS",
+            source="yfinance_news",
+            records=[
+                EventContextRecord(
+                    date=date(2026, 6, 23),
+                    negative_news_score=0.9,
+                    news_sentiment_score=0.1,
+                    days_since_event=0,
+                )
+            ],
+        )
+
+        merged, source = merge_event_context(df, event_context)
+
+        assert source == "proxy"
+        assert "negative_news_score" in merged.columns
+        assert not (merged["negative_news_score"] == pytest.approx(0.9)).any()
 
     def test_compute_unknown_indicator_raises(self) -> None:
         df = _make_ohlcv(5)

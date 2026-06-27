@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import inspect
 import re
+from bisect import bisect_left
+from datetime import date
 from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
@@ -984,9 +986,16 @@ def merge_event_context(
     if provider_df.empty:
         return enriched, "proxy"
 
-    provider_df["date"] = pd.to_datetime(provider_df["date"]).dt.date
-    provider_df = provider_df.drop_duplicates(subset=["date"], keep="last")
     merged = enriched.copy()
+    trading_dates = sorted(pd.to_datetime(merged["date"]).dt.date.unique())
+    provider_df["date"] = pd.to_datetime(provider_df["date"]).dt.date
+    provider_df["date"] = provider_df["date"].map(
+        lambda provider_date: _next_trading_date(provider_date, trading_dates)
+    )
+    provider_df = provider_df.dropna(subset=["date"])
+    if provider_df.empty:
+        return merged, "proxy"
+    provider_df = provider_df.drop_duplicates(subset=["date"], keep="last")
 
     provider_lookup = provider_df.set_index("date")
     provider_dates = set(provider_lookup.index)
@@ -1012,6 +1021,19 @@ def merge_event_context(
     if len(matched_dates) == len(merged):
         return merged, provider_name
     return merged, f"{provider_name}+proxy"
+
+
+def _next_trading_date(
+    provider_date: date,
+    trading_dates: list[date],
+) -> date | None:
+    """Map sparse provider news dates to the next available trading date."""
+    if not trading_dates:
+        return None
+    idx = bisect_left(trading_dates, provider_date)
+    if idx >= len(trading_dates):
+        return None
+    return trading_dates[idx]
 
 
 def _event_proxy_value(
