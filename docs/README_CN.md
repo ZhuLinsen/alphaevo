@@ -450,6 +450,8 @@ pip install "alphaevo[dev]"
 
 ## 🗺️ 路线图
 
+参考同类项目后的优化分析见：[competitive_optimization_analysis.md](competitive_optimization_analysis.md)。
+
 - [x] Phase 1: 策略研究闭环 (MVP) — 回测引擎、指标、评估器
 - [x] Phase 2: 自我进化流水线 — LLM 反思、变异、多轮改进
 - [x] Phase 3: CLI & 编排 — 完整命令行、策略存储、排行榜
