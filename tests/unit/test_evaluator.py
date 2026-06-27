@@ -430,12 +430,33 @@ class TestEvaluateReport:
         assert report.event_context is not None
         assert report.event_context.provider_symbols == 1
         assert report.event_context.proxy_symbols == 1
+        assert report.event_context.source_breakdown == {"provider": 1, "proxy": 1}
         assert "negative_news_score" in report.event_context.relevant_indicators
         assert report.walk_forward_protocol is not None
         assert report.walk_forward_protocol.effective_folds >= 1
         assert report.regime_holdout is not None
         assert report.regime_holdout.total_cases >= 2
         assert len(report.top_patterns) > 0
+
+    def test_event_context_proxy_dominant_pattern_prefers_data_quality(self) -> None:
+        strategy = _strategy()
+        strategy.entry.filters.append(
+            StrategyCondition(indicator="negative_news_score", op="<", value=0.4)
+        )
+        contexts: dict[str, object] = {
+            f"SYM{i}": IndicatorContext(event_context_source="proxy") for i in range(8)
+        }
+        contexts["PROVIDER"] = IndicatorContext(event_context_source="provider:mock_feed")
+
+        event_context = Evaluator().compute_event_context_metrics(strategy, contexts)
+
+        assert event_context is not None
+        assert event_context.provider_coverage < 0.30
+        assert event_context.proxy_only_coverage > 0.50
+        assert event_context.is_proxy_dominant
+        assert event_context.source_breakdown == {"proxy": 8, "provider:mock_feed": 1}
+        patterns = Evaluator.compute_top_patterns([], {}, event_context=event_context)
+        assert any("Data-quality remediation" in pattern for pattern in patterns)
 
 
 class TestAntiOverfit:

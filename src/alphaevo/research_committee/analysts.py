@@ -134,13 +134,28 @@ def data_quality_verdict(
         f"symbols={len(symbols)}",
         f"symbol_list={', '.join(symbols[:8])}",
     ]
+    if report.event_context is not None:
+        event = report.event_context
+        evidence.extend(
+            [
+                f"event_provider_coverage={event.provider_coverage:.1%}",
+                f"event_proxy_only_coverage={event.proxy_only_coverage:.1%}",
+                f"event_indicators={', '.join(event.relevant_indicators) or 'none'}",
+            ]
+        )
     recommendations: list[str] = []
 
     if len(symbols) < 5:
         status = "watch"
         summary = "Data sample is small; useful for demo but not for broad claims."
         recommendations.append("Keep README claims scoped to the named showcase basket.")
-    elif report.event_context and report.event_context.proxy_only_coverage > 0:
+    elif report.event_context and report.event_context.is_proxy_dominant:
+        status = "fail"
+        summary = "Event/news filters are proxy-dominant, so mutation evidence is not trustworthy."
+        recommendations.append(
+            "Prioritize event/news provider coverage or switch to an OHLCV-only variant before tuning thresholds."
+        )
+    elif report.event_context and report.event_context.has_proxy_caveat:
         status = "watch"
         summary = "Some event/news fields rely on proxy context."
         recommendations.append("Label event/news semantics as proxy-backed in reports.")
