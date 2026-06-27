@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import cast
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -839,6 +839,46 @@ def _score_headline(title: str, summary: str) -> float:
     return max(0.0, min(1.0, 0.5 + raw * 0.5))
 
 
+def _parse_news_date(value: object) -> date | None:
+    """Parse yfinance news timestamps across current and legacy schemas."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).date()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.isdigit():
+            return _parse_news_date(float(stripped))
+        try:
+            return datetime.fromisoformat(stripped.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_news_fields(item: dict) -> tuple[date | None, str, str]:
+    """Extract date/title/summary from supported yfinance news item schemas."""
+    content = item.get("content")
+    if isinstance(content, dict):
+        pub_date = _parse_news_date(content.get("pubDate") or content.get("displayTime"))
+        title = str(content.get("title") or item.get("title") or "")
+        summary = str(content.get("summary") or item.get("summary") or "")
+        return pub_date, title, summary
+
+    # Older yfinance releases expose flat dictionaries with providerPublishTime.
+    pub_date = _parse_news_date(
+        item.get("providerPublishTime") or item.get("pubDate") or item.get("displayTime")
+    )
+    title = str(item.get("title") or "")
+    summary = str(item.get("summary") or "")
+    return pub_date, title, summary
+
+
 def _build_event_records(
     news_items: list[dict],
     start: date,
@@ -850,21 +890,14 @@ def _build_event_records(
     date_news: dict[date, list[tuple[str, str]]] = defaultdict(list)
 
     for item in news_items:
-        content = item.get("content", {})
-        pub_str = content.get("pubDate") or content.get("displayTime")
-        if not pub_str:
-            continue
-        try:
-            pub_dt = datetime.fromisoformat(pub_str.replace("Z", "+00:00"))
-            pub_date = pub_dt.date()
-        except (ValueError, AttributeError):
+        pub_date, title, summary = _extract_news_fields(item)
+        if pub_date is None:
             continue
 
         if pub_date < start or pub_date > end:
             continue
-
-        title = content.get("title", "")
-        summary = content.get("summary", "")
+        if not title and not summary:
+            continue
         date_news[pub_date].append((title, summary))
 
     if not date_news:
