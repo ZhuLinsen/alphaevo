@@ -8,6 +8,14 @@ from alphaevo.strategy.dsl.parser import StrategyParseError, StrategyParser
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 BUILTIN_DIR = Path(__file__).parent.parent.parent / "strategies" / "builtin"
+RESEARCH_DIR = Path(__file__).parent.parent.parent / "strategies" / "research"
+EVENT_NEWS_INDICATORS = {
+    "negative_news_score",
+    "news_sentiment_score",
+    "days_since_event",
+    "price_above_pre_event",
+    "already_overreacted",
+}
 
 
 class TestStrategyParser:
@@ -85,6 +93,28 @@ class TestStrategyParser:
         assert "entry.guards[indicator=price_position_120d].indicator" in tunable_targets
         assert "exit.take_profit.trigger_pct" in tunable_targets
         assert "exit.take_profit.trail_pct" in tunable_targets
+
+    def test_research_ohlcv_trend_pullback_has_no_event_news_filters(self) -> None:
+        path = RESEARCH_DIR / "trend_pullback_rebound_ohlcv_only_v13.yaml"
+        if not path.exists():
+            pytest.skip("Research strategy file not found")
+
+        strategy = self.parser.parse_file(path)
+        diagnostics = self.parser.diagnose(strategy)
+        active_indicators = {
+            condition.indicator
+            for condition in [
+                *strategy.entry.triggers,
+                *strategy.entry.guards,
+                *strategy.entry.conditions,
+                *strategy.entry.filters,
+            ]
+        }
+
+        assert diagnostics.errors == []
+        assert strategy.meta.id == "trend_pullback_rebound_ohlcv_only_v13"
+        assert active_indicators.isdisjoint(EVENT_NEWS_INDICATORS)
+        assert strategy.entry.filters == []
 
     def test_parse_invalid_yaml(self) -> None:
         with pytest.raises(StrategyParseError):
