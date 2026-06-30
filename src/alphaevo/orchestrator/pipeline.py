@@ -23,6 +23,7 @@ from alphaevo.backtest.indicators import merge_event_context
 from alphaevo.core.config import AppConfig, DataConfig
 from alphaevo.data.adapter import DataAdapter, DataManager, DataSourceHealth, get_adapter_chain
 from alphaevo.data.cache import DataCache
+from alphaevo.data.quality import DataQualityReport, build_data_quality_report
 from alphaevo.evaluator.metrics import Evaluator
 from alphaevo.evaluator.reporter import Reporter
 from alphaevo.models import (
@@ -102,6 +103,7 @@ class RunResult:
     evaluation: EvaluationReport
     report_path: Path | None = field(default=None)
     data_source_health: list[DataSourceHealth] = field(default_factory=list)
+    data_quality: DataQualityReport = field(default_factory=DataQualityReport)
     # Retained for post-hoc analysis (param sensitivity, etc.)
     _engine: object | None = field(default=None, repr=False)
     _data: dict | None = field(default=None, repr=False)
@@ -378,13 +380,21 @@ class RunPipeline:
             backtest_config=self.config.backtest,
         )
         on_progress(f"Confidence score: {evaluation.confidence_score:.2%}")
+        data_source_health = self.data_manager.health_status()
+        data_quality = build_data_quality_report(
+            event_context=evaluation.event_context,
+            data_source_health=data_source_health,
+        )
+        if data_quality.risk_level != "low":
+            on_progress(f"Data quality gate: {data_quality.summary}")
 
         return RunResult(
             strategy=strategy,
             batch=batch,
             backtest_result=result,
             evaluation=evaluation,
-            data_source_health=self.data_manager.health_status(),
+            data_source_health=data_source_health,
+            data_quality=data_quality,
             _engine=engine,
             _data=data,
             _contexts=contexts,

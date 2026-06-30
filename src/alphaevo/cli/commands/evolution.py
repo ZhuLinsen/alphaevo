@@ -228,6 +228,7 @@ def run_command(
     table.add_row("Total Return", f"{ev.overall.total_return:.2%}")
     table.add_row("Confidence Score", f"[bold green]{ev.confidence_score:.1%}[/bold green]")
     console.print(table)
+    _print_data_quality_summary(getattr(result, "data_quality", None))
 
     # Equity curve and charts (plotext)
     if ev.overall.signal_count > 0:
@@ -296,6 +297,39 @@ def run_command(
 
     if result.report_path:
         console.print(f"\n📄 Report saved to: {result.report_path}")
+
+
+def _print_data_quality_summary(data_quality: object) -> None:
+    """Render run-level data-quality findings for CLI users."""
+    if data_quality is None:
+        return
+    findings = getattr(data_quality, "findings", [])
+    if not findings:
+        return
+
+    risk = getattr(data_quality, "risk_level", "low")
+    style = "red" if risk == "high" else "yellow"
+    table = Table(title="Data Quality Gate")
+    table.add_column("Severity", style=style)
+    table.add_column("Category", style="cyan")
+    table.add_column("Finding")
+    for finding in findings[:6]:
+        evidence = getattr(finding, "evidence", [])
+        message = getattr(finding, "message", "")
+        if evidence:
+            message = f"{message} ({'; '.join(str(item) for item in evidence[:2])})"
+        table.add_row(
+            str(getattr(finding, "severity", "")),
+            str(getattr(finding, "category", "")),
+            message,
+        )
+    console.print(table)
+
+    if getattr(data_quality, "blocks_strategy_iteration", False):
+        console.print(
+            "[yellow]Data quality gate would pause strategy mutation until provider/proxy "
+            "coverage is diagnosed.[/yellow]"
+        )
 
 
 def _split_optimize_spaces(

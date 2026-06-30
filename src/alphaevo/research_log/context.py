@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from alphaevo.data.quality import DataQualityReport
     from alphaevo.models.execution import EvaluationReport
     from alphaevo.models.strategy import Strategy
     from alphaevo.orchestrator.evolution import EvolutionRound
@@ -120,6 +121,7 @@ class ContextBuilder:
         *,
         rounds: list[EvolutionRound] | None = None,
         meta_profile: EvolutionProfile | None = None,
+        data_quality_report: DataQualityReport | None = None,
         family_id: str | None = None,
         round_num: int = 1,
     ) -> ResearchContext:
@@ -127,13 +129,26 @@ class ContextBuilder:
         ctx = ResearchContext()
 
         # ── Tier 1: Compressed state summary ──────────────────────
-        ctx.tier1_summary.content = self._build_summary(strategy, evaluation, round_num=round_num)
+        ctx.tier1_summary.content = self._build_summary(
+            strategy,
+            evaluation,
+            round_num=round_num,
+            data_quality_report=data_quality_report,
+        )
 
         # ── Tier 2: Retrieved relevant context ────────────────────
         tier2_parts: list[str] = []
 
         # 2a. Classify current problems
-        problems = self._classify_problems(evaluation)
+        problems = self._classify_problems(
+            evaluation,
+            data_quality_report=data_quality_report,
+        )
+
+        if data_quality_report is not None and data_quality_report.should_prioritize_data_quality:
+            data_quality_text = data_quality_report.format_for_prompt()
+            if data_quality_text:
+                tier2_parts.append(data_quality_text)
 
         # 2b. Inject matching playbooks
         if self._playbooks and problems:
@@ -217,6 +232,7 @@ class ContextBuilder:
         evaluation: EvaluationReport,
         *,
         round_num: int = 1,
+        data_quality_report: DataQualityReport | None = None,
     ) -> str:
         """Tier 1: Compressed state (~200 tokens)."""
         m = evaluation.overall
@@ -231,13 +247,23 @@ class ContextBuilder:
         ]
 
         # One-line problem statement
-        problems = self._classify_problems(evaluation)
+        problems = self._classify_problems(
+            evaluation,
+            data_quality_report=data_quality_report,
+        )
         if problems:
             lines.append(f"Key problems: {', '.join(problems)}")
+        if data_quality_report is not None and data_quality_report.risk_level != "low":
+            lines.append(f"Data quality: {data_quality_report.summary}")
 
         return "\n".join(lines)
 
-    def _classify_problems(self, evaluation: EvaluationReport) -> list[str]:
+    def _classify_problems(
+        self,
+        evaluation: EvaluationReport,
+        *,
+        data_quality_report: DataQualityReport | None = None,
+    ) -> list[str]:
         """Classify current strategy problems into categories."""
         problems: list[str] = []
         m = evaluation.overall
@@ -263,6 +289,13 @@ class ContextBuilder:
                 event.provider_coverage < 0.30 or event.proxy_only_coverage > 0.50
             ):
                 problems.append("data_quality")
+
+        if (
+            data_quality_report is not None
+            and data_quality_report.should_prioritize_data_quality
+            and "data_quality" not in problems
+        ):
+            problems.append("data_quality")
 
         return problems
 
