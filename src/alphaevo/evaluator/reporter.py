@@ -10,6 +10,11 @@ import json
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, cast
 
+from alphaevo.evaluator.maturity import (
+    build_research_maturity_report,
+    render_research_maturity_markdown,
+)
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -348,6 +353,9 @@ class Reporter:
                 f"- Mean Walk-Forward Gap: {af.walk_forward_gap:.1%}",
                 f"- Pass Rate (gap <= {pass_gap:.1%}): {af.walk_forward_pass_rate:.1%}",
             ]
+
+        maturity = build_research_maturity_report(report, strategy)
+        lines += render_research_maturity_markdown(maturity)
 
         # Footer
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

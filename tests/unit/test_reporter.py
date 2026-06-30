@@ -232,6 +232,17 @@ class TestToMarkdown:
         assert "Family Entry" in md
         assert "ATR Exit" in md
 
+    def test_research_maturity_checklist_rendered(self) -> None:
+        report = _make_report()
+        strategy = _make_strategy()
+
+        md = Reporter.to_markdown(report, strategy)
+
+        assert "## Research Maturity Checklist" in md
+        assert "Sample Evidence" in md
+        assert "Baseline Protocol" in md
+        assert "Optimization Readiness" in md
+
     def test_event_context_rendered(self) -> None:
         report = _make_report()
         report.event_context = EventContextMetrics(
