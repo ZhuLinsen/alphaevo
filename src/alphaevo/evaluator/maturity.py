@@ -10,6 +10,15 @@ from alphaevo.models.execution import EvaluationReport
 from alphaevo.models.strategy import Strategy
 
 MaturityStatus = Literal["pass", "watch", "fail"]
+MaturityAction = Literal[
+    "promote_to_validation",
+    "expand_sample",
+    "add_baseline",
+    "run_robustness",
+    "repair_data",
+    "simplify_strategy",
+    "optimize_strategy",
+]
 
 
 class MaturityCheck(BaseModel):
@@ -23,12 +32,23 @@ class MaturityCheck(BaseModel):
     inspired_by: list[str] = Field(default_factory=list)
 
 
+class MaturityNextAction(BaseModel):
+    """The single highest-priority next step implied by maturity checks."""
+
+    action: MaturityAction
+    priority: Literal["high", "medium", "low"] = "medium"
+    title: str
+    rationale: str
+    commands: list[str] = Field(default_factory=list)
+
+
 class ResearchMaturityReport(BaseModel):
     """Aggregate maturity report for deciding the next research action."""
 
     status: MaturityStatus
     score: float
     checks: list[MaturityCheck] = Field(default_factory=list)
+    next_action: MaturityNextAction
 
     @property
     def failed_checks(self) -> list[MaturityCheck]:
@@ -68,7 +88,18 @@ def build_research_maturity_report(
     ]
     status = _aggregate_status(checks)
     score = _aggregate_score(checks)
-    return ResearchMaturityReport(status=status, score=score, checks=checks)
+    next_action = _select_next_action(
+        checks,
+        report,
+        strategy,
+        min_signal_count=min_signal_count,
+    )
+    return ResearchMaturityReport(
+        status=status,
+        score=score,
+        checks=checks,
+        next_action=next_action,
+    )
 
 
 def render_research_maturity_markdown(maturity: ResearchMaturityReport) -> list[str]:
@@ -79,6 +110,15 @@ def render_research_maturity_markdown(maturity: ResearchMaturityReport) -> list[
         "",
         f"- Overall Status: **{maturity.status.upper()}**",
         f"- Maturity Score: {maturity.score:.0%}",
+        f"- Recommended Action: **{maturity.next_action.title}**",
+        f"- Action Priority: {maturity.next_action.priority}",
+        f"- Rationale: {maturity.next_action.rationale}",
+    ]
+    if maturity.next_action.commands:
+        lines.append("- Suggested Commands:")
+        for command in maturity.next_action.commands:
+            lines.append(f"  - `{command}`")
+    lines += [
         "",
         "| Gate | Status | Evidence | Next Action | Inspired By |",
         "|------|--------|----------|-------------|-------------|",
@@ -310,3 +350,112 @@ def _aggregate_score(checks: list[MaturityCheck]) -> float:
         return 0.0
     values = {"pass": 1.0, "watch": 0.5, "fail": 0.0}
     return round(sum(values[check.status] for check in checks) / len(checks), 4)
+
+
+def _select_next_action(
+    checks: list[MaturityCheck],
+    report: EvaluationReport,
+    strategy: Strategy | None,
+    *,
+    min_signal_count: int,
+) -> MaturityNextAction:
+    check_by_id = {check.check_id: check for check in checks}
+    strategy_id = strategy.meta.id if strategy is not None else report.strategy_id
+
+    sample = check_by_id.get("sample_evidence")
+    if sample is not None and sample.status == "fail":
+        return MaturityNextAction(
+            action="expand_sample",
+            priority="high",
+            title="Expand the evidence sample",
+            rationale=(
+                f"Only {report.overall.signal_count} signals are available, below the "
+                f"{min_signal_count}-signal research threshold."
+            ),
+            commands=[
+                f"alphaevo run {strategy_id} --samples 120 --sampling strategy_scoped",
+            ],
+        )
+
+    data_quality = check_by_id.get("data_quality")
+    if data_quality is not None and data_quality.status == "fail":
+        return MaturityNextAction(
+            action="repair_data",
+            priority="high",
+            title="Repair data/event coverage before strategy mutation",
+            rationale=(
+                "Event/news evidence is not provider-backed enough for reliable "
+                "optimization or evolution."
+            ),
+            commands=[
+                f"alphaevo run {strategy_id} --sampling strategy_scoped",
+                (
+                    f"alphaevo strategy revise {strategy_id} "
+                    '"switch to OHLCV-only event logic or remove proxy-dominant conditions"'
+                ),
+            ],
+        )
+
+    complexity = check_by_id.get("complexity")
+    if complexity is not None and complexity.status == "fail":
+        return MaturityNextAction(
+            action="simplify_strategy",
+            priority="high",
+            title="Simplify strategy structure",
+            rationale="The DSL is too complex to promote or optimize safely.",
+            commands=[
+                (
+                    f"alphaevo strategy revise {strategy_id} "
+                    '"remove low-contribution conditions and keep core triggers plus risk controls"'
+                ),
+            ],
+        )
+
+    baseline = check_by_id.get("baseline_protocol")
+    if baseline is not None and baseline.status == "watch":
+        return MaturityNextAction(
+            action="add_baseline",
+            priority="medium",
+            title="Add stronger baseline evidence",
+            rationale="The run is missing either buy-and-hold or random baseline context.",
+            commands=[
+                f"alphaevo run {strategy_id} --samples 120 --sampling strategy_scoped",
+            ],
+        )
+
+    robustness = check_by_id.get("robustness_protocol")
+    if robustness is not None and robustness.status == "watch":
+        return MaturityNextAction(
+            action="run_robustness",
+            priority="medium",
+            title="Run robustness validation",
+            rationale="The strategy has enough raw evidence but lacks walk-forward or stress evidence.",
+            commands=[
+                f"alphaevo run {strategy_id} --sampling strategy_scoped --wf-folds 5",
+            ],
+        )
+
+    optimization = check_by_id.get("optimization_readiness")
+    if optimization is not None and optimization.status == "pass":
+        return MaturityNextAction(
+            action="optimize_strategy",
+            priority="medium",
+            title="Optimize with robust objective",
+            rationale="Blocking gates passed, so the next search can focus on robust profit quality.",
+            commands=[
+                (
+                    f"alphaevo optimize {strategy_id} --objective robust_profit_quality "
+                    "--spaces entry,params,exit"
+                ),
+            ],
+        )
+
+    return MaturityNextAction(
+        action="promote_to_validation",
+        priority="low",
+        title="Promote to broader validation",
+        rationale="All maturity gates passed; validate on a larger universe before showcasing.",
+        commands=[
+            f"alphaevo run {strategy_id} --samples 120 --sampling strategy_scoped",
+        ],
+    )

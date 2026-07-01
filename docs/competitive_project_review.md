@@ -21,6 +21,11 @@ objectives, and visible promotion gates.
 | [mementum/backtrader](https://github.com/mementum/backtrader) | Backtesting engine | Mature strategy/backtest separation with benchmark-style evaluation patterns. | Keep executable DSL separate from evaluation/reporting concerns. |
 | [virattt/ai-hedge-fund](https://github.com/virattt/ai-hedge-fund) | Multi-agent investment analysis | Makes analyst roles explicit for explainability. | Continue exposing research committee and data-quality auditor outputs in reports. |
 | [OpenBB-finance/OpenBB](https://github.com/OpenBB-finance/OpenBB) | Financial data platform for analysts, quants, and AI agents | Prioritizes broad data access and agent-facing data workflows. | Data provenance and provider coverage must be visible before news/event strategy mutation. |
+| [ranaroussi/quantstats](https://github.com/ranaroussi/quantstats) | Portfolio analytics and tear sheets | Focuses on translating returns into risk/analytics reports. | Reports should not only list checks; they should recommend the next research action. |
+| [quantopian/pyfolio](https://github.com/quantopian/pyfolio) | Portfolio and risk analytics | Popularized tear-sheet style risk diagnostics for strategies. | Maturity reporting should elevate risk/protocol interpretation above raw metrics. |
+| [QuantConnect/Lean](https://github.com/QuantConnect/Lean) | Algorithmic trading engine | Production-oriented engine with explicit algorithm lifecycle and validation concerns. | AlphaEvo should keep promotion/validation gates explicit before a strategy leaves research mode. |
+| [vnpy/vnpy](https://github.com/vnpy/vnpy) | Python quant trading framework | Practical trading framework with operational workflow emphasis. | AlphaEvo reports should guide the operator toward the next concrete command. |
+| [nautechsystems/nautilus_trader](https://github.com/nautechsystems/nautilus_trader) | Deterministic event-driven trading engine | Emphasizes deterministic architecture and production-grade workflow discipline. | Keep deterministic next-action heuristics separate from LLM reflection. |
 
 ## Implemented In This PR
 
@@ -29,6 +34,10 @@ objectives, and visible promotion gates.
   readiness instead of only performance metrics.
 - The checklist covers sample evidence, baseline protocol, robustness protocol,
   data quality, strategy complexity, and optimization readiness.
+- Added a structured recommended next action for the maturity report, mapping
+  failed/watch gates to concrete commands such as expanding samples, repairing
+  data coverage, simplifying the DSL, running walk-forward validation, or
+  launching robust optimization.
 - The maturity checks complement the existing data-quality gate: proxy-dominant
   event/news context now blocks promotion readiness and strategy optimization
   readiness.
