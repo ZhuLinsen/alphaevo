@@ -7,12 +7,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from alphaevo.core.config import AppConfig
+from alphaevo.data.quality import build_data_quality_report
 from alphaevo.models.enums import ChangeType, EvolutionMethod, MarketRegime
 from alphaevo.models.execution import (
     AntiFitMetrics,
     BacktestResult,
     CandidateExperiment,
     EvaluationReport,
+    EventContextMetrics,
     OverallMetrics,
     ReflectionResult,
     RegimeMetrics,
@@ -320,6 +322,41 @@ class TestEvolutionPipeline:
         assert len(result.rounds) == 1
         assert result.rounds[0].batch is not None
         assert result.rounds[0].batch.insufficient_signals is True
+
+    def test_data_quality_gate_blocks_proxy_dominant_strategy_iteration(self, config):
+        """Proxy-dominant event context should stop mutation before threshold tuning."""
+        pipeline = EvolutionPipeline(config)
+
+        async def mock_run(*args, **kwargs):
+            run_result = _make_run_result(confidence=0.32, signal_count=60)
+            run_result.evaluation.event_context = EventContextMetrics(
+                total_symbols=10,
+                provider_symbols=1,
+                proxy_symbols=9,
+                provider_coverage=0.10,
+                proxy_only_coverage=0.90,
+                relevant_indicators=["negative_news_score"],
+            )
+            run_result.data_quality = build_data_quality_report(
+                event_context=run_result.evaluation.event_context,
+                data_source_health=[],
+            )
+            return run_result
+
+        pipeline._run_pipeline.run = mock_run
+        pipeline._run_pipeline.ensure_builtin_strategies = MagicMock()
+        pipeline.store.save = MagicMock()
+
+        result = pipeline.evolve(
+            "test_v1",
+            rounds=3,
+            method=EvolutionMethod.PARAM_SEARCH,
+        )
+
+        assert result.early_stopped is True
+        assert "Data quality gate" in result.stop_reason
+        assert len(result.rounds) == 1
+        assert result.rounds[0].hypothesis_status == "data_quality_blocked"
 
     def test_param_search_can_adjust_ma_period(self, config):
         """Param search can tune MA periods like ma60 -> ma55."""

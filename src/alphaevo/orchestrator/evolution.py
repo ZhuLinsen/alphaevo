@@ -344,6 +344,24 @@ class EvolutionPipeline:
             hypothesis_assessment = run_result.strategy.assess_market_hypothesis(
                 run_result.evaluation
             )
+            data_quality_report = run_result.data_quality
+            data_quality_block = data_quality_report.blocks_strategy_iteration
+            if data_quality_report.should_prioritize_data_quality:
+                _progress(f"  Data quality gate: {data_quality_report.summary}")
+                self.research_log.log(
+                    "insight",
+                    f"Data quality gate triggered: {data_quality_report.summary}",
+                    round_num=round_num,
+                    strategy_id=current_id,
+                    data={
+                        "risk_level": data_quality_report.risk_level,
+                        "blocks_strategy_iteration": data_quality_block,
+                        "findings": [
+                            finding.model_dump(mode="json")
+                            for finding in data_quality_report.findings
+                        ],
+                    },
+                )
 
             # Compute param sensitivity if engine and data are available
             if (
@@ -480,7 +498,9 @@ class EvolutionPipeline:
             _round_verdict_summary: str = ""
             _round_playbooks: str = ""
             _round_llm_telemetry: dict[str, object] = {}
-            if round_num < rounds and not sparse_signal_block:  # Don't reflect on last round
+            if (
+                round_num < rounds and not sparse_signal_block and not data_quality_block
+            ):  # Don't reflect on last round
                 family_lessons = self._experience_store.get_family_lessons(
                     family_id,
                     limit=10,
@@ -499,6 +519,7 @@ class EvolutionPipeline:
                     run_result.evaluation,
                     rounds=result.rounds,
                     meta_profile=meta_profile,
+                    data_quality_report=data_quality_report,
                     family_id=family_id,
                     round_num=round_num,
                 )
@@ -828,9 +849,19 @@ class EvolutionPipeline:
                 batch=run_result.batch,
                 reflection=reflection,
                 improved=improved,
-                hypothesis_status=hypothesis_assessment.status,
-                hypothesis_rationale=hypothesis_assessment.rationale,
-                hypothesis_next_step=hypothesis_assessment.next_step,
+                hypothesis_status=(
+                    "data_quality_blocked" if data_quality_block else hypothesis_assessment.status
+                ),
+                hypothesis_rationale=(
+                    data_quality_report.summary
+                    if data_quality_block
+                    else hypothesis_assessment.rationale
+                ),
+                hypothesis_next_step=(
+                    "Remediate data source/event coverage before mutating strategy rules."
+                    if data_quality_block
+                    else hypothesis_assessment.next_step
+                ),
                 meta_insights=[
                     ins.description for ins in meta_profile.insights if ins.confidence > 0.2
                 ]
@@ -906,6 +937,15 @@ class EvolutionPipeline:
                     "Insufficient signals after sample expansion "
                     f"({signal_count}/{min_signal_count})"
                 )
+                break
+
+            if data_quality_block:
+                _progress(
+                    "Early stop: data quality gate blocked strategy mutation "
+                    f"({data_quality_report.summary})"
+                )
+                result.early_stopped = True
+                result.stop_reason = f"Data quality gate: {data_quality_report.summary}"
                 break
 
             # Step 3: Safety guardrails
