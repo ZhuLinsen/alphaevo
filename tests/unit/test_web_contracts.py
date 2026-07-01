@@ -43,6 +43,7 @@ from alphaevo.research_log.logger import ResearchEvent
 from alphaevo.web import (
     EvolutionJobRequest,
     RunJobRequest,
+    build_evaluation_summary,
     build_evolution_session,
     build_research_feed,
     build_run_summary,
@@ -192,6 +193,13 @@ def test_build_strategy_card_and_run_summary() -> None:
     assert card.family_id == "trend_alpha"
     assert card.latest_evaluation is not None
     assert card.latest_evaluation.confidence_score == 0.64
+    assert card.latest_evaluation.research_maturity is not None
+    assert card.latest_evaluation.research_maturity.status == "watch"
+    assert card.latest_evaluation.research_maturity.next_action.action == "add_baseline"
+    assert (
+        card.latest_evaluation.research_maturity.next_action.commands[0]
+        == "alphaevo run trend_alpha_v3 --samples 120 --sampling strategy_scoped"
+    )
 
     run_result = RunResult(
         strategy=strategy,
@@ -242,6 +250,37 @@ def test_build_strategy_card_and_run_summary() -> None:
     assert summary.evaluation.stress_window_average_alpha == 0.03
     assert summary.evaluation.stress_window_worst_alpha == -0.04
     assert summary.evaluation.stress_window_window_days == 20
+    assert summary.evaluation.research_maturity is not None
+    assert "baseline_protocol" in summary.evaluation.research_maturity.watch_checks
+    assert "complexity" not in summary.evaluation.research_maturity.watch_checks
+
+
+def test_evaluation_summary_exposes_data_quality_next_action() -> None:
+    evaluation = _make_evaluation()
+    evaluation.event_context = EventContextMetrics(
+        total_symbols=4,
+        provider_symbols=0,
+        proxy_symbols=4,
+        provider_coverage=0.0,
+        proxy_only_coverage=1.0,
+        relevant_indicators=["negative_news_score", "news_sentiment_score"],
+        source_breakdown={"proxy": 4},
+    )
+
+    summary = build_evaluation_summary(evaluation, strategy=_make_strategy())
+
+    assert summary.research_maturity is not None
+    assert summary.research_maturity.status == "fail"
+    assert "data_quality" in summary.research_maturity.failed_checks
+    assert summary.research_maturity.next_action.action == "repair_data"
+    assert summary.research_maturity.next_action.priority == "high"
+    assert summary.research_maturity.next_action.commands == [
+        "alphaevo run trend_alpha_v3 --sampling strategy_scoped",
+        (
+            "alphaevo strategy revise trend_alpha_v3 "
+            '"switch to OHLCV-only event logic or remove proxy-dominant conditions"'
+        ),
+    ]
 
 
 def test_build_evolution_session_and_research_feed() -> None:

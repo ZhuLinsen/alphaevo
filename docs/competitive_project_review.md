@@ -38,6 +38,9 @@ objectives, and visible promotion gates.
   failed/watch gates to concrete commands such as expanding samples, repairing
   data coverage, simplifying the DSL, running walk-forward validation, or
   launching robust optimization.
+- Exposed the same maturity status, gate list, and recommended next action in
+  web-facing evaluation summaries so future dashboards can drive the same
+  research loop as Markdown reports.
 - The maturity checks complement the existing data-quality gate: proxy-dominant
   event/news context now blocks promotion readiness and strategy optimization
   readiness.
