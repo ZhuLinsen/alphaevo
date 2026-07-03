@@ -242,6 +242,8 @@ class TestToMarkdown:
         assert "Sample Evidence" in md
         assert "Baseline Protocol" in md
         assert "Optimization Readiness" in md
+        assert "Recommended Action" in md
+        assert "Suggested Commands" in md
 
     def test_event_context_rendered(self) -> None:
         report = _make_report()

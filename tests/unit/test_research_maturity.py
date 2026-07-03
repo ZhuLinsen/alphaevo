@@ -89,6 +89,8 @@ def test_maturity_report_passes_for_complete_research_protocol() -> None:
 
     assert maturity.status == "pass"
     assert maturity.score == 1.0
+    assert maturity.next_action.action == "optimize_strategy"
+    assert maturity.next_action.priority == "medium"
     assert {check.check_id for check in maturity.checks} == {
         "sample_evidence",
         "baseline_protocol",
@@ -113,6 +115,7 @@ def test_proxy_dominant_event_context_blocks_maturity() -> None:
     maturity = build_research_maturity_report(report, _strategy())
 
     assert maturity.status == "fail"
+    assert maturity.next_action.action == "repair_data"
     failed = {check.check_id for check in maturity.failed_checks}
     assert "data_quality" in failed
     assert "optimization_readiness" in failed
@@ -125,6 +128,7 @@ def test_missing_baseline_is_watch_not_blocker() -> None:
     maturity = build_research_maturity_report(report, _strategy())
 
     assert maturity.status == "watch"
+    assert maturity.next_action.action == "add_baseline"
     baseline = next(check for check in maturity.checks if check.check_id == "baseline_protocol")
     assert baseline.status == "watch"
     assert "Add buy-and-hold" in baseline.recommendation
@@ -135,4 +139,28 @@ def test_high_complexity_blocks_promotion() -> None:
 
     complexity = next(check for check in maturity.checks if check.check_id == "complexity")
     assert maturity.status == "fail"
+    assert maturity.next_action.action == "simplify_strategy"
     assert complexity.status == "fail"
+
+
+def test_sparse_sample_next_action_expands_evidence() -> None:
+    report = _report()
+    report.overall.signal_count = 8
+
+    maturity = build_research_maturity_report(report, _strategy())
+
+    assert maturity.status == "fail"
+    assert maturity.next_action.action == "expand_sample"
+    assert "alphaevo run maturity_v1" in maturity.next_action.commands[0]
+
+
+def test_robustness_gap_next_action_runs_walk_forward() -> None:
+    report = _report()
+    report.walk_forward = []
+    report.anti_overfit.walk_forward_pass_rate = 0.0
+
+    maturity = build_research_maturity_report(report, _strategy())
+
+    assert maturity.status == "watch"
+    assert maturity.next_action.action == "run_robustness"
+    assert "--wf-folds 5" in maturity.next_action.commands[0]

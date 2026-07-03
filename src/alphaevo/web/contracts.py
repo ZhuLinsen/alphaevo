@@ -12,6 +12,12 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from alphaevo.evaluator.maturity import (
+    MaturityAction,
+    MaturityStatus,
+    ResearchMaturityReport,
+    build_research_maturity_report,
+)
 from alphaevo.models.enums import EvolutionMethod, SamplingMethod, StrategyCategory
 
 if TYPE_CHECKING:
@@ -88,6 +94,37 @@ class EvolutionJobRequest(BaseModel):
     avoid: str | None = None
 
 
+class MaturityCheckView(BaseModel):
+    """One web-facing maturity gate result."""
+
+    check_id: str
+    title: str
+    status: MaturityStatus
+    evidence: list[str] = Field(default_factory=list)
+    recommendation: str
+
+
+class MaturityNextActionView(BaseModel):
+    """Web-facing recommended action for continuing the research loop."""
+
+    action: MaturityAction
+    priority: Literal["high", "medium", "low"]
+    title: str
+    rationale: str
+    commands: list[str] = Field(default_factory=list)
+
+
+class ResearchMaturitySummaryView(BaseModel):
+    """Compact maturity summary for dashboards and strategy detail pages."""
+
+    status: MaturityStatus
+    score: float
+    checks: list[MaturityCheckView] = Field(default_factory=list)
+    failed_checks: list[str] = Field(default_factory=list)
+    watch_checks: list[str] = Field(default_factory=list)
+    next_action: MaturityNextActionView
+
+
 class EvaluationSummaryView(BaseModel):
     """Compact evaluation summary for cards, tables, and dashboard tiles."""
 
@@ -119,6 +156,7 @@ class EvaluationSummaryView(BaseModel):
     stress_window_average_alpha: float | None = None
     stress_window_worst_alpha: float | None = None
     stress_window_window_days: int | None = None
+    research_maturity: ResearchMaturitySummaryView | None = None
 
 
 class StrategyCardView(BaseModel):
@@ -234,7 +272,11 @@ def default_web_manifest() -> WebManifest:
     )
 
 
-def build_evaluation_summary(report: EvaluationReport) -> EvaluationSummaryView:
+def build_evaluation_summary(
+    report: EvaluationReport,
+    *,
+    strategy: Strategy | None = None,
+) -> EvaluationSummaryView:
     """Convert a full evaluation report into a web-friendly summary."""
     benchmark = report.benchmark
     event_context = report.event_context
@@ -242,6 +284,7 @@ def build_evaluation_summary(report: EvaluationReport) -> EvaluationSummaryView:
     protocol = report.walk_forward_protocol
     regime_holdout = report.regime_holdout
     stress_windows = report.stress_windows
+    maturity = build_research_maturity_report(report, strategy)
     return EvaluationSummaryView(
         confidence_score=report.confidence_score,
         win_rate=report.overall.win_rate,
@@ -297,6 +340,7 @@ def build_evaluation_summary(report: EvaluationReport) -> EvaluationSummaryView:
         stress_window_window_days=(
             stress_windows.window_days if stress_windows is not None else None
         ),
+        research_maturity=_build_research_maturity_summary(maturity),
     )
 
 
@@ -319,7 +363,9 @@ def build_strategy_card(
         complexity_score=strategy.complexity_score,
         description=strategy.description,
         latest_evaluation=(
-            build_evaluation_summary(latest_evaluation) if latest_evaluation is not None else None
+            build_evaluation_summary(latest_evaluation, strategy=strategy)
+            if latest_evaluation is not None
+            else None
         ),
     )
 
@@ -332,7 +378,7 @@ def build_run_summary(run_result: RunResult) -> RunSummaryView:
         sampling_method=run_result.batch.sampling_method,
         sampling_reason=run_result.batch.sampling_reason,
         market_regimes=[regime.value for regime in run_result.batch.market_regimes],
-        evaluation=build_evaluation_summary(run_result.evaluation),
+        evaluation=build_evaluation_summary(run_result.evaluation, strategy=run_result.strategy),
         report_path=_path_to_str(run_result.report_path),
     )
 
@@ -402,3 +448,32 @@ def _path_to_str(path: Path | None) -> str | None:
     if path is None:
         return None
     return str(path)
+
+
+def _build_research_maturity_summary(
+    maturity: ResearchMaturityReport,
+) -> ResearchMaturitySummaryView:
+    """Convert maturity diagnostics into a stable web-facing DTO."""
+    return ResearchMaturitySummaryView(
+        status=maturity.status,
+        score=maturity.score,
+        checks=[
+            MaturityCheckView(
+                check_id=check.check_id,
+                title=check.title,
+                status=check.status,
+                evidence=list(check.evidence),
+                recommendation=check.recommendation,
+            )
+            for check in maturity.checks
+        ],
+        failed_checks=[check.check_id for check in maturity.failed_checks],
+        watch_checks=[check.check_id for check in maturity.watch_checks],
+        next_action=MaturityNextActionView(
+            action=maturity.next_action.action,
+            priority=maturity.next_action.priority,
+            title=maturity.next_action.title,
+            rationale=maturity.next_action.rationale,
+            commands=list(maturity.next_action.commands),
+        ),
+    )
