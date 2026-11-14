@@ -107,10 +107,10 @@ def _parse_llm_json(raw: str, model_cls: type[BaseModel]) -> BaseModel:
 
 ```python
 # 推荐默认配置
-AlphaEvo_LLM_MODEL=gemini/gemini-2.0-flash      # 便宜快, 适合策略生成
-AlphaEvo_LLM_REFLECT_MODEL=                      # 留空则复用上面的
-# 如果用户想用更强的模型做反思:
-AlphaEvo_LLM_REFLECT_MODEL=anthropic/claude-3.5-sonnet
+ALPHAEVO_LLM_MODEL=gemini/gemini-3.8-flash        # 默认快速主力模型，适合策略生成与日常反思
+ALPHAEVO_LLM_REFLECT_MODEL=                        # 留空则复用上面的
+# 如果用户想用更强的模型做深度反思:
+ALPHAEVO_LLM_REFLECT_MODEL=anthropic/claude-sonnet-5.5
 
 # 不同场景可配不同模型, 但默认用同一个
 ```

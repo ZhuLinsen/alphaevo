@@ -61,11 +61,31 @@ class LLMClient:
         try:
             import litellm
 
-            litellm.set_verbose = False
+            litellm.suppress_debug_info = True
+            litellm.drop_params = True
             self._litellm = litellm
             return litellm
         except ImportError as e:
             raise LLMNotAvailableError() from e
+
+    @staticmethod
+    def _effective_temperature(model_name: str, temperature: float) -> float:
+        """Normalize temperature for Gemini 3/4 and reasoning-first models.
+
+        Gemini 3/4 degrades reasoning below 1.0, while OpenAI GPT-5/6, o-series,
+        and DeepSeek reasoning endpoints reject custom non-1.0 temperatures.
+        """
+        slug = model_name.strip().lower().rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        if (
+            slug.startswith(("gemini-3", "gemini-4", "gpt-5", "gpt-6", "qwq"))
+            or slug in {"o1", "o3", "o4"}
+            or slug.startswith(("o1-", "o3-", "o4-"))
+            or "deepseek-r1" in slug
+            or "deepseek-reasoner" in slug
+            or "deepseek-v4-pro" in slug
+        ):
+            return 1.0
+        return temperature
 
     def chat(
         self,
@@ -84,7 +104,7 @@ class LLMClient:
         kwargs: dict[str, Any] = {
             "model": use_model,
             "messages": messages,
-            "temperature": temperature,
+            "temperature": self._effective_temperature(use_model, temperature),
             "max_tokens": max_tokens,
             "timeout": timeout if timeout is not None else self.timeout,
             "num_retries": max_retries if max_retries is not None else self.max_retries,

@@ -143,7 +143,7 @@
 
 | 配置项 | 环境变量 | 默认值 | 说明 |
 |--------|----------|--------|------|
-| `llm.model` | `ALPHAEVO_LLM_MODEL` | `gemini/gemini-2.0-flash` | 策略生成/反思用的 LLM |
+| `llm.model` | `ALPHAEVO_LLM_MODEL` | `gemini/gemini-3.8-flash` | 策略生成/反思用的 LLM |
 | `llm.reflect_model` | `ALPHAEVO_LLM_REFLECT_MODEL` | 空（复用 llm.model） | 反思专用模型 |
 | `llm.api_key` | `ALPHAEVO_API_KEY` | — | LLM API Key（**仅通过环境变量**） |
 | `data.adapter` | `ALPHAEVO_DATA_ADAPTER` | `auto` | 数据源：auto / tencent / yfinance / akshare / dsa；auto 为 dsa(可选) → tencent → akshare → yfinance |
@@ -162,6 +162,10 @@
 | `evolution.max_rounds` | — | `5` | 进化最大轮数 |
 | `evolution.max_changes_per_round` | — | `3` | 每轮最大修改数 |
 | `evolution.num_candidates` | — | `3` | LLM 每轮生成候选实验数量 |
+| `rsi.shadow_ledger_dir` | `ALPHAEVO_SHADOW_LEDGER_DIR` | `~/.alphaevo/shadow_ledger` | 双时钟前瞻影子账本目录 |
+| `rsi.proposer_model` | `ALPHAEVO_RSI_PROPOSER_MODEL` | `None` | RSI 异构议会 Proposer 模型（如 `openai/gpt-6-astra`） |
+| `rsi.prosecutor_model` | `ALPHAEVO_RSI_PROSECUTOR_MODEL` | `None` | RSI 异构议会 Prosecutor 模型（如 `anthropic/claude-opus-5.5`） |
+| `rsi.null_permutations` | `ALPHAEVO_RSI_NULL_PERMUTATIONS` | `100` | RSI Null 对照置换次数 |
 
 ### `alphaevo init` 命令
 

@@ -24,19 +24,26 @@ from alphaevo.strategy.tunable import is_period_tunable_target, resolve_tunable_
 logger = logging.getLogger(__name__)
 
 
+_FAMILY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("anthropic", ("claude", "anthropic")),
+    ("openai", ("gpt", "openai", "codex", "o1", "o3", "o4")),
+    ("google", ("gemini", "google", "agy", "vertex_ai")),
+    ("deepseek", ("deepseek",)),
+    ("qwen", ("qwen",)),
+    ("moonshot", ("kimi", "moonshot")),
+    ("zhipu", ("glm", "zhipu")),
+    ("minimax", ("minimax",)),
+)
+
+
 def infer_model_family(model_name: str) -> str:
     """Map model identifiers to provider/architecture families for independence checks."""
     lower = model_name.strip().lower()
     if not lower or lower.startswith(("heuristic", "deterministic", "offline")):
         return "deterministic"
-    if any(tok in lower for tok in ("claude", "anthropic")):
-        return "anthropic"
-    if any(tok in lower for tok in ("gpt", "openai", "codex", "o1", "o3", "o4")):
-        return "openai"
-    if any(tok in lower for tok in ("gemini", "google", "agy")):
-        return "google"
-    if "deepseek" in lower:
-        return "deepseek"
+    for family, tokens in _FAMILY_KEYWORDS:
+        if any(tok in lower for tok in tokens):
+            return family
     if "/" in lower:
         return lower.split("/", 1)[0]
     return lower

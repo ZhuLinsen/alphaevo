@@ -195,3 +195,58 @@ class TestMockedCalls:
         self._mock_litellm(client, '{"patterns": ["a", "b"]}')
         result = client.reflect_json([{"role": "user", "content": "?"}])
         assert result == {"patterns": ["a", "b"]}
+
+    @pytest.mark.parametrize(
+        ("model_name", "input_temp", "expected"),
+        [
+            ("gemini/gemini-3.8-flash", 0.4, 1.0),
+            ("gemini/gemini-4-carbon", 0.0, 1.0),
+            ("openai/gpt-6-astra", 0.4, 1.0),
+            ("openai/gpt-5-mini", 0.2, 1.0),
+            ("openai/o3-mini", 0.5, 1.0),
+            ("deepseek/deepseek-v4-pro", 0.4, 1.0),
+            ("anthropic/claude-sonnet-5.5", 0.4, 0.4),
+            ("deepseek/deepseek-v4-flash", 0.3, 0.3),
+            ("test-model", 0.0, 0.0),
+        ],
+    )
+    def test_effective_temperature_normalizes_gemini3_and_reasoning_models(
+        self, model_name, input_temp, expected
+    ):
+        assert LLMClient._effective_temperature(model_name, input_temp) == expected
+
+    def test_chat_json_normalizes_temperature_for_gemini_3_8_flash(self):
+        calls = []
+
+        class FakeMessage:
+            content = '{"ok": true}'
+
+        class FakeChoice:
+            message = FakeMessage()
+
+        class FakeResponse:
+            choices = [FakeChoice()]
+
+        class FakeLitellm:
+            @staticmethod
+            def completion(**kwargs):
+                calls.append(kwargs)
+                return FakeResponse()
+
+        client = LLMClient(LLMConfig(model="gemini/gemini-3.8-flash"))
+        client._litellm = FakeLitellm()
+        result = client.chat_json([{"role": "user", "content": "?"}], temperature=0.4)
+        assert result == {"ok": True}
+        assert calls[0]["temperature"] == 1.0
+
+    def test_ensure_litellm_configures_drop_params_and_suppress_debug(self, monkeypatch):
+        import sys
+        from types import SimpleNamespace
+
+        fake_mod = SimpleNamespace(suppress_debug_info=False, drop_params=False)
+        monkeypatch.setitem(sys.modules, "litellm", fake_mod)
+        client = LLMClient(LLMConfig(model="gemini/gemini-3.8-flash"))
+        loaded = client._ensure_litellm()
+        assert loaded is fake_mod
+        assert fake_mod.suppress_debug_info is True
+        assert fake_mod.drop_params is True

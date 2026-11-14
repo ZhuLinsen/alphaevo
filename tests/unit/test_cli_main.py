@@ -218,9 +218,9 @@ class TestEvolveCommand:
                     "--adapter",
                     "akshare",
                     "--model",
-                    "openai/gpt-4o-mini",
+                    "openai/gpt-5-mini",
                     "--reflect-model",
-                    "openai/gpt-4o",
+                    "openai/gpt-6.1-sol",
                     "--sampling",
                     "regime_based",
                     "--wf-folds",
@@ -243,8 +243,8 @@ class TestEvolveCommand:
             {
                 "data": {"adapter": "akshare"},
                 "llm": {
-                    "model": "openai/gpt-4o-mini",
-                    "reflect_model": "openai/gpt-4o",
+                    "model": "openai/gpt-5-mini",
+                    "reflect_model": "openai/gpt-6.1-sol",
                 },
                 "backtest": {
                     "walk_forward_folds": 5,

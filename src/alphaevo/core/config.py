@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 class LLMConfig(BaseModel):
     """LLM provider configuration."""
 
-    model: str = "gemini/gemini-2.0-flash"
+    model: str = "gemini/gemini-3.8-flash"
     reflect_model: str | None = None  # None = reuse model
     base_url: str | None = None
     timeout: int = 120

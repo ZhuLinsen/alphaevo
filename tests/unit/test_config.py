@@ -20,7 +20,7 @@ class TestAppConfig:
 
     def test_default_config(self) -> None:
         config = AppConfig()
-        assert config.llm.model == "gemini/gemini-2.0-flash"
+        assert config.llm.model == "gemini/gemini-3.8-flash"
         assert config.data.adapter == "auto"
         assert config.backtest.slippage == 0.001
         assert config.backtest.commission == 0.0003
@@ -37,10 +37,10 @@ class TestAppConfig:
 
     def test_custom_config(self) -> None:
         config = AppConfig(
-            llm={"model": "openai/gpt-4o"},
+            llm={"model": "openai/gpt-6.1-sol"},
             data={"adapter": "akshare"},
         )
-        assert config.llm.model == "openai/gpt-4o"
+        assert config.llm.model == "openai/gpt-6.1-sol"
         assert config.data.adapter == "akshare"
 
     def test_db_path_default(self) -> None:
@@ -97,13 +97,13 @@ class TestHelpers:
         env_file = tmp_path / ".env"
         env_file.write_text(
             "# comment\n"
-            "ALPHAEVO_LLM_MODEL=gemini/gemini-2.5-flash\n"
+            "ALPHAEVO_LLM_MODEL=gemini/gemini-3.8-flash\n"
             "export ALPHAEVO_DATA_ADAPTER=akshare\n"
             "ALPHAEVO_API_KEY='test-key'\n"
         )
         result = _read_env_file(env_file)
         assert result == {
-            "ALPHAEVO_LLM_MODEL": "gemini/gemini-2.5-flash",
+            "ALPHAEVO_LLM_MODEL": "gemini/gemini-3.8-flash",
             "ALPHAEVO_DATA_ADAPTER": "akshare",
             "ALPHAEVO_API_KEY": "test-key",
         }
@@ -121,7 +121,7 @@ class TestConfigManager:
         monkeypatch.setattr(mgr, "USER_CONFIG_FILE", tmp_path / "no_such_config.yaml")
         config = mgr.load()
         assert isinstance(config, AppConfig)
-        assert config.llm.model == "gemini/gemini-2.0-flash"
+        assert config.llm.model == "gemini/gemini-3.8-flash"
         assert config.data.adapter == "auto"
 
     def test_load_with_cli_overrides(self) -> None:

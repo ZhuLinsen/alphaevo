@@ -31,23 +31,32 @@ python -m pytest tests/ -q
 
 ```
 src/alphaevo/
-├── cli/            # Typer + Rich CLI
-├── core/           # Config, LLM client
-├── data/           # Data adapters (yfinance, akshare, etc.)
-├── strategy/       # Strategy DSL parser, serializer, generator
-├── sampler/        # Market-aware sampling
-├── backtest/       # Indicator registry, condition evaluator, engine
-├── evaluator/      # Multi-dimensional metrics
-├── reflection/     # Failure analysis, strategy mutation
-├── orchestrator/   # End-to-end pipeline
-├── leaderboard/    # Strategy ranking
-├── models/         # Pydantic v2 data models
-└── utils/          # Shared utilities
+├── alpha_factory/       # LLM-assisted factor discovery + sandbox
+├── backtest/            # Indicator registry, condition evaluator, engine
+├── cli/                 # Typer + Rich CLI
+├── core/                # Config, LLM client
+├── data/                # Data adapters (auto, tencent, yfinance, akshare, dsa)
+├── evaluator/           # Multi-dimensional metrics + maturity checks
+├── forward/             # Bitemporal forward shadow ledger
+├── leaderboard/         # Strategy ranking
+├── models/              # Pydantic v2 data models
+├── optimizer/           # Entry, parameter, exit/risk optimizers
+├── orchestrator/        # End-to-end research & evolution pipelines
+├── reflection/          # Failure analysis, strategy mutation, experience/scars
+├── research_committee/  # Multi-gate adversarial research review
+├── research_log/        # Structured research audit logs
+├── rsi/                 # Dual-clock RSI engine, charter parser, heterogeneous council
+├── sampler/             # Market-aware sampling
+├── strategy/            # Strategy DSL parser, serializer, generator
+├── truth/               # Immutable L0 SHA-256 Truth Kernel
+├── utils/               # Shared utilities
+└── web/                 # Web-ready Pydantic view contracts
+examples/                # Showcase data & RSI charter templates (rsi_stock_program.md)
 strategies/
-└── builtin/        # Built-in strategy YAML templates
+└── builtin/             # Built-in strategy YAML templates
 tests/
-├── unit/           # Unit tests
-└── integration/    # Integration tests
+├── unit/                # Unit tests
+└── integration/         # Integration tests
 ```
 
 ## Coding Standards
@@ -97,10 +106,16 @@ python -m pytest tests/unit/test_parser.py -v
 
 ```bash
 # Check for errors
-ruff check src/ --select E,W,F
+ruff check src/ tests/ scripts/
+
+# Check formatting
+ruff format --check src/
+
+# Type checking
+python -m mypy src/alphaevo/ --ignore-missing-imports
 
 # Auto-fix where possible
-ruff check src/ --select E,W,F --fix
+ruff check src/ tests/ scripts/ --fix
 ```
 
 ## Pull Request Process
@@ -108,9 +123,9 @@ ruff check src/ --select E,W,F --fix
 1. **Fork** the repository and create a feature branch from `main`.
 2. Make your changes, following the coding standards above.
 3. Add or update tests as needed.
-4. Run the full test suite and linter to make sure nothing is broken:
+4. Run the full test suite, linter, formatter, and type checker to make sure nothing is broken:
    ```bash
-   python -m pytest tests/ -q && ruff check src/ --select E,W,F
+   python -m pytest tests/ -q && ruff check src/ tests/ scripts/ && ruff format --check src/ && python -m mypy src/alphaevo/ --ignore-missing-imports
    ```
 5. Submit a PR with the following in the description:
    - **What changed** — summary of the changes.
@@ -121,7 +136,8 @@ ruff check src/ --select E,W,F --fix
 ### PR Checklist
 
 - [ ] Tests pass (`python -m pytest tests/ -q`)
-- [ ] Lint passes (`ruff check src/ --select E,W,F`)
+- [ ] Lint & format pass (`ruff check src/ tests/ scripts/ && ruff format --check src/`)
+- [ ] Type check passes (`python -m mypy src/alphaevo/ --ignore-missing-imports`)
 - [ ] New public APIs use Pydantic v2 models
 - [ ] No hardcoded secrets or paths
 - [ ] Documentation updated if applicable

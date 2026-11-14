@@ -307,7 +307,7 @@ class EvolutionNode(BaseModel):
 
 ```python
 class LLMConfig(BaseModel):
-    model: str = "gemini/gemini-2.0-flash"
+    model: str = "gemini/gemini-3.8-flash"
     reflect_model: Optional[str] = None  # 留空则复用 model
     api_key: Optional[str] = None        # 仅通过环境变量
     base_url: Optional[str] = None

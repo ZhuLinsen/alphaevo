@@ -125,6 +125,12 @@ def test_heterogeneous_council_enforces_adversarial_family_separation() -> None:
     assert infer_model_family("gpt-6-astra") == "openai"
     assert infer_model_family("claude-opus-5-5-high") == "anthropic"
     assert infer_model_family("gemini-4-carbon") == "google"
+    assert infer_model_family("vertex_ai/gemini-3.8-flash") == "google"
+    assert infer_model_family("deepseek/deepseek-v4-pro") == "deepseek"
+    assert infer_model_family("qwen/qwen3-coder") == "qwen"
+    assert infer_model_family("moonshot/kimi-k2") == "moonshot"
+    assert infer_model_family("zhipu/glm-5") == "zhipu"
+    assert infer_model_family("minimax/minimax-m2") == "minimax"
 
     # Same non-deterministic family must raise ValidationError
     with pytest.raises(ValidationError, match="proposer_family != prosecutor_family"):

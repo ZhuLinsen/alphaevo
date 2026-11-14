@@ -131,8 +131,8 @@ alphaevo evolve trend_v1 \
     --end 2025-12-31 \
     --adapter akshare \
     --fill-policy conservative \
-    --model openai/gpt-4o \
-    --reflect-model openai/gpt-4o-mini
+    --model gemini/gemini-3.8-flash \
+    --reflect-model anthropic/claude-sonnet-5.5
 ```
 
 Available controls:
