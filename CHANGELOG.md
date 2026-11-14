@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dual-Clock Stock RSI Loop (`alphaevo rsi`)**: `program.md`-driven hypothesis loop
+  with heterogeneous Proposer/Prosecutor/Adjudicator council (`rsi/council.py`),
+  Keep/Revert ratchet, and Research Maturity + Data Quality gates.
+- **Immutable L0 Truth Kernel (`alphaevo truth`)**: SHA-256 hash-locked verification
+  manifest covering evaluator, backtest, data-quality, and forward-ledger files.
+- **Bitemporal Forward Shadow Ledger (`alphaevo shadow`)**: append-only paper-signal
+  seal (`decision_ts` / `knowledge_ts` / `code_commit`) and forward OOS settlement gate.
 - **AlphaFactory → Evolution Integration**: Factor discovery pipeline now triggers
   automatically during evolution when conventional reflection yields no improvements.
   LLM generates candidate indicator code → sandboxed execution → statistical
@@ -96,6 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daily_stock_analysis market data through AlphaEvo's adapter boundary.
 
 ### Changed
+- Upgraded default `llm.model` from `gemini/gemini-2.0-flash` to
+  `gemini/gemini-3.8-flash` (plus modern CLI/docs examples for OpenAI GPT-6/5,
+  Anthropic Claude 5.5, and DeepSeek V4), and updated `LLMClient` with automatic
+  temperature normalization (`1.0`) and `litellm.drop_params = True` for Gemini 3/4
+  and reasoning-first models (`gpt-5`/`gpt-6`/`o1`/`o3`/`o4`/`deepseek-v4-pro`).
 - Default `alphaevo showcase` now runs a six-step validated mutation chain on
   the bundled yfinance snapshot, improving the reproducible no-key RSI showcase
   from 8.1% to a 68.7% champion while lowering max drawdown to 23.6%.

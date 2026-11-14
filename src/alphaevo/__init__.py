@@ -1,4 +1,4 @@
-"""AlphaEvo — Self-Evolving Stock Strategy Research Agent"""
+"""AlphaEvo — Open-Source Recursive Self-Improvement (RSI) Agent for Stock Strategy Research"""
 
 __version__ = "0.1.0"
 

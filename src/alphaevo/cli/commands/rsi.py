@@ -164,12 +164,12 @@ def rsi_run(
     council_proposer: str | None = typer.Option(
         None,
         "--council-proposer",
-        help="Proposer model (e.g. openai/gpt-4o or codex:gpt-6-astra)",
+        help="Proposer model (e.g. openai/gpt-6.1-sol or codex:gpt-6-astra)",
     ),
     council_prosecutor: str | None = typer.Option(
         None,
         "--council-prosecutor",
-        help="Prosecutor model from a different family (e.g. anthropic/claude-3-5-sonnet or agy:claude-opus-5-5-high)",
+        help="Prosecutor model from a different family (e.g. anthropic/claude-sonnet-5.5 or agy:claude-opus-5-5-high)",
     ),
     live: bool = typer.Option(False, "--live", help="Fetch live market data instead of snapshot"),
     output_dir: str = typer.Option(

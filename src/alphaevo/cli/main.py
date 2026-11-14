@@ -66,9 +66,10 @@ _CORE_DATA_ADAPTERS = ["auto", "tencent", "yfinance", "akshare"]
 _OPTIONAL_DATA_BRIDGES = ["dsa"]
 _KNOWN_DATA_ADAPTERS = [*_CORE_DATA_ADAPTERS, *_OPTIONAL_DATA_BRIDGES]
 _LLM_MODELS = [
-    "gemini/gemini-2.0-flash",
-    "deepseek/deepseek-chat",
-    "openai/gpt-4o-mini",
+    "gemini/gemini-3.8-flash",
+    "deepseek/deepseek-v4-flash",
+    "openai/gpt-5-mini",
+    "anthropic/claude-sonnet-5.5",
 ]
 
 
@@ -120,7 +121,7 @@ def init() -> None:
     console.print(f"\n[green]✓[/green] Config saved to {mgr.USER_CONFIG_FILE}")
     console.print(f"[green]✓[/green] Database at {config.db_path}")
     console.print(f"[green]✓[/green] Cache dir at {config.data.cache_dir}")
-    console.print("\n[dim]Run 'alphaevo demo' to try it out![/dim]")
+    console.print("\n[dim]Run 'alphaevo showcase' to try it out![/dim]")
 
 
 # ── Version ────────────────────────────────────────────────────────────

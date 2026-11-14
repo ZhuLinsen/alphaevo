@@ -12,8 +12,9 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 RUN pip install --no-cache-dir -e ".[data-yfinance]"
 
-# Copy strategies and config
+# Copy strategies, examples, and config
 COPY strategies/ strategies/
+COPY examples/ examples/
 
 # Default command: run demo
 ENTRYPOINT ["alphaevo"]

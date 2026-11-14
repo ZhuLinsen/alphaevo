@@ -122,7 +122,7 @@ pip install -e ".[llm,data-yfinance]"
 
 # Set your LLM API key
 export ALPHAEVO_API_KEY=your_api_key
-export ALPHAEVO_LLM_MODEL=gemini/gemini-2.0-flash  # or openai/gpt-4o, etc.
+export ALPHAEVO_LLM_MODEL=gemini/gemini-3.8-flash  # or openai/gpt-6.1-sol, anthropic/claude-sonnet-5.5, deepseek/deepseek-v4-flash
 
 # Run the flagship LLM research path
 alphaevo evolve rsi_reversion_v1 --method llm --rounds 3 --output reports/rsi_evolve/

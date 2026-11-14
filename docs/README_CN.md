@@ -120,7 +120,7 @@ pip install -e ".[llm,data-yfinance]"
 
 # 设置 LLM API Key
 export ALPHAEVO_API_KEY=your_api_key
-export ALPHAEVO_LLM_MODEL=gemini/gemini-2.0-flash  # 或 openai/gpt-4o 等
+export ALPHAEVO_LLM_MODEL=gemini/gemini-3.8-flash  # 或 openai/gpt-6.1-sol、anthropic/claude-sonnet-5.5、deepseek/deepseek-v4-flash
 
 # 跑旗舰 LLM 研究路径
 alphaevo evolve rsi_reversion_v1 --method llm --rounds 3 --output reports/rsi_evolve/
