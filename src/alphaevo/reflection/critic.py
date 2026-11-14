@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from alphaevo.backtest.indicators import IndicatorRegistry
 from alphaevo.models.enums import ChangeType
@@ -64,9 +64,15 @@ class SelfCritic:
         self,
         experience_store: ExperienceStore | None = None,
         complexity_limit: int = 8,
+        scars: list[Any] | None = None,
     ) -> None:
         self._experience_store = experience_store
         self._complexity_limit = complexity_limit
+        self._scars: list[Any] = list(scars or [])
+
+    def set_scars(self, scars: list[Any]) -> None:
+        """Update active executable pinned scars checked on every mutation proposal."""
+        self._scars = list(scars)
 
     def critique(
         self,
@@ -250,6 +256,12 @@ class SelfCritic:
                     break
             except Exception as e:
                 logger.debug("Recent success reversal check error: %s", e)
+
+        # 8. Check executable pinned scars (Meta-RSI guardrails)
+        for scar in self._scars:
+            check_fn = getattr(scar, "matches", None)
+            if callable(check_fn) and check_fn(strategy.meta.family_id, change):
+                reasons.append(f"Blocked by pinned scar [{scar.scar_id}]: {scar.failure_mechanism}")
 
         return reasons
 

@@ -86,6 +86,8 @@ def build_research_maturity_report(
             min_signal_count=min_signal_count,
         ),
     ]
+    if report.deflated_sharpe_prob is not None or report.null_control_passed is not None:
+        checks.append(_anti_delusion_check(report))
     status = _aggregate_status(checks)
     score = _aggregate_score(checks)
     next_action = _select_next_action(
@@ -334,6 +336,41 @@ def _optimization_readiness_check(
         evidence=evidence,
         recommendation=recommendation,
         inspired_by=["FinRL", "TradeMaster", "freqtrade"],
+    )
+
+
+def _anti_delusion_check(report: EvaluationReport) -> MaturityCheck:
+    evidence: list[str] = [f"family_trials={report.family_trial_count}"]
+    if report.deflated_sharpe_prob is not None:
+        evidence.append(f"dsr_prob={report.deflated_sharpe_prob:.1%}")
+    if report.null_control_passed is not None:
+        evidence.append(f"null_passed={report.null_control_passed}")
+    if report.null_p_value is not None:
+        evidence.append(f"null_p={report.null_p_value:.3f}")
+
+    if report.null_control_passed is False or (
+        report.deflated_sharpe_prob is not None and report.deflated_sharpe_prob < 0.50
+    ):
+        status: MaturityStatus = "fail"
+        recommendation = "Reject promotion; signal fails null-control or deflated Sharpe threshold."
+    elif (report.null_control_passed is None or report.null_control_passed is True) and (
+        report.deflated_sharpe_prob is None or report.deflated_sharpe_prob >= 0.70
+    ):
+        status = "pass"
+        recommendation = "Eligible for Forward Shadow Ledger registration."
+    else:
+        status = "watch"
+        recommendation = (
+            "Multiple-testing confidence is borderline; validate on forward shadow ledger."
+        )
+
+    return MaturityCheck(
+        check_id="anti_delusion",
+        title="Anti-Delusion (DSR & Null Control)",
+        status=status,
+        evidence=evidence,
+        recommendation=recommendation,
+        inspired_by=["autoresearch", "rrsi", "Bailey & Lopez de Prado"],
     )
 
 

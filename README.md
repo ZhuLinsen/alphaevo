@@ -4,9 +4,9 @@
 
 # 🧬 AlphaEvo
 
-**An Open-Source Self-Evolving Stock Strategy Research Agent**
+**An Open-Source Recursive Self-Improvement (RSI) Agent for Stock Strategy Research**
 
-*Watch strategies get diagnosed, mutated, re-tested, and pruned like research assets*
+*Diagnose, mutate, falsify, and shadow-verify equity strategies with a full evidence trail*
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/alphaevo?style=social)](https://github.com/ZhuLinsen/alphaevo/stargazers)
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
@@ -25,7 +25,9 @@
 
 ## ✨ Overview
 
-AlphaEvo is a self-evolving stock strategy research agent. It turns a readable YAML strategy into a research loop: backtest, diagnose failure, propose a controlled mutation, re-test the new version, and keep the full evidence trail.
+AlphaEvo is a self-evolving stock strategy research agent. It turns a readable YAML strategy into a disciplined recursive self-improvement (RSI) loop: backtest, diagnose failure, propose a controlled mutation or new factor, stress-test against overfitting, and keep the full evidence trail.
+
+To keep self-evolution honest on noisy equity data, AlphaEvo separates **fast offline hypothesis search** from **slow forward promotion**: historical backtests can only veto weak candidates, while a bitemporal forward shadow ledger tracks out-of-sample commitments (`T+5` / `T+10` / `T+20`) before any promotion.
 
 ### Reproducible no-key showcase
 
@@ -36,7 +38,7 @@ Bundled frozen yfinance snapshot, US tech basket, 2025-02-11 to 2026-04-10:
 | `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 8.1% |
 | `rsi_reversion_v7` champion | 37 | 48.6% | 2.94% | 23.6% | 68.7% |
 
-What happened: the deterministic research committee flagged an over-confirmed entry stack, unlocked enough signals, widened the stop, extended holding, raised the payoff target, switched support context to MA60, then tightened volume confirmation. Each change was accepted only after retest. The champion keeps train-val and val-test gaps at 7.1% / 7.1% on this snapshot. See the generated report: [showcase_rsi_reversion_real_snapshot.md](docs/reports/showcase_rsi_reversion_real_snapshot.md).
+What happened: the deterministic research committee flagged an over-confirmed entry stack, unlocked enough signals, widened the stop, extended holding, raised the payoff target, switched support context to MA60, then tightened volume confirmation. Each change was accepted only after retest. The champion keeps train-val and val-test gaps at 7.1% / 7.1% on this snapshot. See [showcase_rsi_reversion_real_snapshot.md](docs/reports/showcase_rsi_reversion_real_snapshot.md).
 
 ### Live-data LLM evolution path
 
@@ -51,10 +53,10 @@ Different data windows and protocols should not be ranked directly; the snapshot
 
 ## 🧠 Core Capabilities
 
-- **Backtesting and evaluation**: run strategies on real data with sampling, multi-metric scoring, and anti-overfitting checks.
-- **LLM-guided strategy evolution**: diagnose failure modes, propose targeted mutations, and re-test whether the new version is actually better.
-- **Deterministic research committee**: technical, risk, overfit, data-quality, and mutation-planning verdicts without requiring an API key.
-- **Traceable research workflow**: keep reports, LLM evidence, evolution trees, and trajectory exports for every iteration.
+- **Backtesting and evaluation**: run strategies on real data with regime sampling, multi-metric scoring, and walk-forward anti-overfitting checks.
+- **Recursive self-improvement (`alphaevo rsi`)**: drive `program.md`-steered L1 strategy mutations, L2 Co-STEER factor synthesis, `(regime × style × horizon)` MAP-Elites archives, executable reflection scars, and heterogeneous proposer/prosecutor reviews with `results.tsv` provenance.
+- **L0 truth kernel & forward shadow ledger (`truth` / `shadow`)**: enforce an append-only `TrialLedger` with Deflated Sharpe Ratio (DSR), shuffled-return null-signal controls, runtime point-in-time (PIT) leak probes, and SHA-256 hash-chained forward commitments.
+- **Traceable research workflow**: keep deterministic or LLM research committee verdicts, evolution trees, and SFT/DPO trajectory exports for every iteration.
 
 ## 🚀 Quick Start
 
@@ -90,36 +92,20 @@ Round 7 │ rsi_reversion_v7 │ Signals: 37 │ Score: 68.7% 🏆
 
 | Goal | Command | Data | LLM |
 |------|---------|------|-----|
-| Real-data showcase | `alphaevo showcase` | Bundled yfinance snapshot | No |
-| Quick first-run demo | `alphaevo demo` | Bundled yfinance snapshot | No |
+| Real-data showcase (30s first run) | `alphaevo showcase` | Bundled yfinance snapshot | No |
 | Synthetic dev smoke test | `alphaevo demo --synthetic` | Synthetic | No |
-| Turn a plain-language idea into executable YAML | `alphaevo strategy draft "<idea>" --save` | None | No |
-| Draft, backtest, and optimize a plain-language idea | `alphaevo strategy research "<idea>"` | Real data | No |
-| Revise an existing strategy and validate it | `alphaevo strategy improve <id> "<change request>"` | Real data | No |
-| Live market data smoke test | `alphaevo showcase --live` or `alphaevo demo --real` | Live yfinance / akshare | No |
-| Fuller real-data backtest | `alphaevo run ma_crossover_v1` | Live yfinance | No |
-| Test a breakout/volatility-compression template | `alphaevo run volatility_compression_breakout_v1` | Live yfinance | No |
-| Optimize entry thresholds and exit/risk rules | `alphaevo optimize <id> --spaces entry,params,indicator,exit,stoploss,takeprofit,holding` | Real data | No |
-| Balance win rate and payoff quality | `alphaevo optimize <id> --objective quality --min-win-rate 0.5 --min-avg-return 0 --min-profit-loss-ratio 1.0 --max-drawdown 0.35 --min-signals 30 --param-max-changes 2 --max-values-per-param 8 --evaluation-mode fast --full-eval-top 5` | Real data | No |
-| Push for higher return quality | `alphaevo optimize <id> --objective profit_quality --min-win-rate 0.5 --min-avg-return 0.006 --min-total-return 0.18 --min-profit-loss-ratio 1.1 --joint-top 4 --parallel-workers 4` | Real data | No |
-| Reject overfit-looking candidates | `alphaevo optimize <id> --objective robust_profit_quality --evaluation-mode fast --full-eval-top 8 --reject-overfit --max-train-val-gap 0.12 --max-val-test-gap 0.10 --max-walk-forward-gap 0.12 --min-walk-forward-pass-rate 0.5` | Real data | No |
-| Jointly refine entry and exits | `alphaevo optimize <id> --spaces all --objective quality --joint-top 3 --joint-candidates-per-seed 64` | Real data | No |
-| Flagship research-agent path | `alphaevo evolve <id> --method llm --output reports/` | Real data | Yes |
+| Draft & research a plain-language idea | `alphaevo strategy research "<idea>"` | Real data | No |
+| Run a fuller real-data backtest | `alphaevo run ma_crossover_v1` | Live yfinance | No |
+| Test breakout/volatility-compression template | `alphaevo run volatility_compression_breakout_v1` | Live yfinance | No |
+| Search parameters with anti-overfit gates | `alphaevo optimize <id> --objective robust_profit_quality --reject-overfit` | Real data | No |
+| Flagship LLM research-agent evolution | `alphaevo evolve <id> --method llm --output reports/` | Real data | Yes |
+| Run Stock RSI ratchet loop (`program.md`) | `alphaevo rsi run rsi_reversion_v1 --program examples/rsi_stock_program.md` | Snapshot or `--live` | Optional |
+| Verify zero false promotions under shuffled noise | `alphaevo rsi null-audit rsi_reversion_v1` | Snapshot or `--live` | No |
+| Track bitemporal forward commitments | `alphaevo shadow register <id> && alphaevo shadow status` | Snapshot or live | No |
 
-Real-data commands need a data adapter extra: install `pip install -e ".[data-yfinance]"` for the default US workflow, `pip install -e ".[data-akshare]"` for A-share, or `pip install -e ".[data-full]"` for both.
+Real-data commands need a data adapter extra: `pip install -e ".[data-yfinance]"` (US/global), `pip install -e ".[data-akshare]"` (A-share), or `pip install -e ".[data-full]"`. For US strategies, optional `ADANOS_API_KEY` enriches L3 event indicators with sentiment context (falling back to price/volume proxies when unset).
 
-For US strategies, you can optionally set `ADANOS_API_KEY` to let the default
-`yfinance` workflow enrich L3 event indicators with Adanos Market Sentiment
-context from Reddit, X / FinTwit, News, and Polymarket. When the key is missing,
-AlphaEvo keeps using its existing price/volume event proxies.
-
-`alphaevo showcase` is the stable real-data first run: it uses the bundled yfinance snapshot and writes a shareable report. `alphaevo showcase --live` tries live yfinance first and falls back to the snapshot if the provider is unavailable. If you want a stronger first backtest with more symbols on the default `yfinance` adapter, start with `alphaevo run ma_crossover_v1`.
-
-`--objective robust_profit_quality` ranks return quality with an additional
-stability score. Robust optimization gates such as `--reject-overfit`,
-`--max-train-val-gap`, and `--max-walk-forward-gap` require full candidate
-metrics. In fast searches, keep `--full-eval-top` high enough for the leading
-candidates you want to judge.
+`alphaevo showcase --live` tries live yfinance before falling back to the bundled snapshot. For `optimize` quality/overfit gates, inspect all options with `alphaevo optimize --help` (keep `--full-eval-top` high enough under `--evaluation-mode fast` when using `--reject-overfit`).
 
 ### Current release scope
 
@@ -138,14 +124,14 @@ pip install -e ".[llm,data-yfinance]"
 export ALPHAEVO_API_KEY=your_api_key
 export ALPHAEVO_LLM_MODEL=gemini/gemini-2.0-flash  # or openai/gpt-4o, etc.
 
-# Run a real-data research loop on the default yfinance adapter
-alphaevo run ma_crossover_v1
-
 # Run the flagship LLM research path
 alphaevo evolve rsi_reversion_v1 --method llm --rounds 3 --output reports/rsi_evolve/
+
+# Or run the L0-grounded Stock RSI loop with a research charter
+alphaevo rsi run rsi_reversion_v1 --program examples/rsi_stock_program.md --output reports/rsi/
 ```
 
-If you also want the built-in A-share workflow, install `pip install -e ".[llm,data-full]"` or add `pip install -e ".[data-akshare]"`, then use `alphaevo run trend_pullback_rebound_v1 --adapter akshare`.
+For built-in A-share workflows, install `pip install -e ".[llm,data-full]"` and run `alphaevo run trend_pullback_rebound_v1 --adapter akshare`.
 
 ## 🏗️ Architecture
 
@@ -155,27 +141,30 @@ If you also want the built-in A-share workflow, install `pip install -e ".[llm,d
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│              Orchestrator (Pipeline)                      │
-│   generate → sample → backtest → evaluate → reflect      │
-│                    → evolve → leaderboard                 │
+│              Orchestrator & Stock RSI Loop                │
+│   charter → sample → backtest → evaluate (L0 Truth)      │
+│         → reflect / Co-STEER → evolve → shadow ledger    │
 └──┬────────┬────────┬────────┬────────┬────────┬─────────┘
    │        │        │        │        │        │
 ┌──▼──┐ ┌──▼──┐ ┌───▼──┐ ┌──▼──┐ ┌───▼──┐ ┌──▼────────┐
-│Data │ │Stgy │ │Sample│ │Back │ │Eval  │ │Reflection │
-│Layer│ │Layer│ │Layer │ │test │ │Layer │ │Layer      │
+│Data │ │Stgy │ │Sample│ │Back │ │Truth/│ │Reflection │
+│Layer│ │Layer│ │Layer │ │test │ │Eval  │ │& RSI Engine│
 └─────┘ └─────┘ └──────┘ └─────┘ └──────┘ └───────────┘
 ```
 
-### Six-Layer Architecture
+### Core Architecture Layers
 
 | Layer | Purpose |
 |-------|---------|
-| **Data Layer** | Multi-source market data (yfinance, akshare, or daily_stock_analysis plugin) |
-| **Strategy Layer** | Dual-representation: human-readable + executable YAML DSL |
+| **Data Layer** | Multi-source market data (`yfinance`, `akshare`, or `daily_stock_analysis` plugin) |
+| **Strategy Layer** | Dual-representation: human-readable + executable YAML DSL (`SetupSpec`, `PortfolioProfile`) |
 | **Sampler Layer** | Smart sampling by market regime, style, and strategy scope |
-| **Backtest Engine** | Signal-level simulation with proper slippage and fees |
-| **Evaluator Layer** | Multi-dimensional metrics + anti-overfitting checks |
-| **Reflection Layer** | LLM failure attribution + LLM-first evolution with optional param-search fallback |
+| **Backtest Engine** | Signal-level simulation with slippage, fees, and point-in-time truncation |
+| **Evaluator & L0 Truth (`truth`)** | Multi-dimensional metrics + `TrialLedger`, Deflated Sharpe Ratio, null-signal controls, runtime PIT leak probe |
+| **Reflection & RSI (`reflection` / `rsi`)** | LLM & deterministic committee failure attribution, Co-STEER L1/L2 routing, MAP-Elites archive, heterogeneous council, `results.tsv` ratchet |
+| **Forward Shadow Ledger (`forward`)** | Bitemporal (`as_of` / `available_at`) SHA-256 hash-chained commitments, cluster-adjusted $N_{\text{eff}}$, and slow-promote / instant-halt gates |
+
+See [Dual-Clock Stock RSI Architecture](docs/rsi_stock_architecture.md) and [examples/rsi_stock_program.md](examples/rsi_stock_program.md) for details.
 
 ## 🧬 How Self-Evolution Works
 
@@ -259,17 +248,9 @@ We validate the system on **live yfinance data** with real `--method llm` runs, 
 
 This is part of the product story, not a footnote: AlphaEvo should be trusted more when it stops honestly than when it invents a prettier curve.
 
-Real factor discovery is also live-tested:
+Real factor discovery is also live-tested: `alphaevo factor discover AAPL` proposed `3` factors, passed `3` through sandboxing, validated `2`, and registered `2` ([Factor Discovery Walkthrough](docs/cookbook/07_factor_discovery_walkthrough.md)).
 
-- `alphaevo factor discover AAPL` proposed `3` factors, passed `3` through sandboxing, validated `2`, and registered `2`.
-- Walkthrough: [Factor Discovery Walkthrough](docs/cookbook/07_factor_discovery_walkthrough.md)
-
-Each real run can export:
-
-- `<strategy_id>_research_report.md`
-- `<strategy_id>_llm_evidence.md`
-- `<strategy_id>_research_log.md`
-- `trajectory/*.jsonl|json`
+Each real run can export `<strategy_id>_research_report.md`, `<strategy_id>_llm_evidence.md`, `<strategy_id>_research_log.md`, and `trajectory/*.jsonl|json`.
 
 ### Reproducible Benchmark Path
 
@@ -288,10 +269,9 @@ python scripts/validate_real_data.py \
   --output results/real-validation/
 ```
 
-See the detailed write-up: [April 10, 2026 real LLM validation](docs/reports/2026-04-10-real-llm-validation.md)
+See the detailed write-up: [April 10, 2026 real LLM validation](docs/reports/2026-04-10-real-llm-validation.md).
 
 Current limits:
-
 - live external LLM providers can still introduce latency spikes and timeout-driven fallback
 - some strategies, like `ma_crossover_v1`, show that a valid LLM diagnosis does not automatically survive anti-overfit checks
 - discovered factors are research artifacts first and should still be reviewed before any production-style use
@@ -304,9 +284,6 @@ Every real evolution run can export more than scores:
 - `sharegpt.jsonl` reformats the same run into SFT-style conversations
 - `preference.jsonl` stores improved vs. non-improved steps for preference learning
 
-That means AlphaEvo is not only a strategy optimizer. It is also a data engine
-for training better strategy-research agents over time.
-
 See: [Trajectory Data Flywheel](docs/trajectory_data_flywheel.md)
 
 ## 🛡️ Anti-Overfitting
@@ -315,10 +292,10 @@ AlphaEvo takes overfitting seriously:
 
 - **Time Separation**: Train / Validation / Test periods strictly separated
 - **Walk-Forward**: Rolling 12-month train → 1-month test windows
-- **Complexity Penalty**: More conditions = lower score
-- **Stability Check**: Performance must be consistent across years/sectors
-- **Minimum Signals**: Strategies with < 30 signals get reliability discount
-- **Parameter Sensitivity**: ±10% perturbation test, >30% decay = warning
+- **Complexity & Stability Checks**: Complexity penalty, minimum signal count (`< 30` discounted), multi-year/sector consistency, ±10% parameter perturbation sensitivity
+- **Multiple-Testing Control (`TrialLedger` + DSR)**: Append-only trial counting prevents silent p-hacking and penalizes inflated historical Sharpe ratios
+- **Null-Signal & Runtime PIT Probes**: Random-entry / shuffled-return null floors plus isolated subprocess future-noise perturbation checks block forward-looking factor leaks
+- **Forward Shadow Promotion Gate**: Historical backtests only veto; promotion requires bitemporal forward commitments with cluster-adjusted effective sample size ($N_{\text{eff}}$) and instant `HALTED` trips on drawdown/expectancy breaches
 
 ## 🔌 Compatibility
 
@@ -336,10 +313,14 @@ data_manager = DataManager([DSAAdapter(dsa_path="/path/to/dsa")])
 ## 📊 CLI Commands
 
 ```bash
-alphaevo demo                     # 🔥 Try instantly (no setup needed)
+alphaevo showcase                 # Real-data 30s snapshot showcase (no API key)
 alphaevo demo --real              # Real data demo without API key
 alphaevo run <id>                 # Full research loop
 alphaevo evolve <id> --method llm --rounds 3 --output reports/  # LLM-first evolution
+alphaevo rsi run <id> --program examples/rsi_stock_program.md   # Stock RSI ratchet loop
+alphaevo rsi null-audit <id>      # Verify 0 false promotions under shuffled returns
+alphaevo shadow status            # Forward shadow ledger & promotion stages
+alphaevo truth trials             # Inspect append-only TrialLedger & DSR records
 alphaevo factor discover <symbol> # LLM-driven factor discovery
 alphaevo leaderboard              # Strategy rankings
 alphaevo tree <id>                # Evolution tree visualization
@@ -352,9 +333,10 @@ For the full command surface, run `alphaevo --help`.
 - **FunSearch (Nature 2024)** — island-style parallel search and branch competition
 - **OPRO (DeepMind 2023)** — optimizer-style prompt refinement with trajectory history
 - **Voyager (2023)** — reusable skill/pattern libraries and long-horizon memory
+- **autoresearch (Karpathy)** — `program.md`-steered hypothesis charters, keep/revert ratchets, and verifiable `results.tsv` ledgers
+- **RD-Agent / Co-STEER** — co-steered strategy-level vs. factor-level blind-spot routing and empirical scar reuse
 
-AlphaEvo adapts these ideas to quantitative strategy research rather than
-general coding or benchmark optimization.
+AlphaEvo adapts these ideas to falsifiable quantitative equity strategy research rather than general coding or benchmark optimization.
 
 ## 🗺️ Roadmap
 
@@ -362,8 +344,9 @@ general coding or benchmark optimization.
 - [x] Phase 2: Self-Evolution Pipeline — LLM reflection, mutation, multi-round improvement
 - [x] Phase 3: CLI & Orchestration — full command suite, strategy store, leaderboard
 - [x] Phase 4: Open-Source Polish — CI/CD, docs, English templates, CHANGELOG
-- [ ] Phase 5: Market Regime Adaptive Gating — environment detection, strategy routing
-- [ ] Phase 6: Web UI Dashboard — visualization, interactive strategy exploration
+- [x] Phase 5: Recursive Stock Self-Improvement & Shadow Ledger — `TrialLedger` + DSR, null controls, runtime PIT probe, MAP-Elites, heterogeneous council, bitemporal forward tracking
+- [ ] Phase 6: Market Regime Adaptive Gating — multi-strategy portfolio allocation, risk budgets & PIT event caches
+- [ ] Phase 7: Web UI Dashboard — interactive strategy lineage, RSI ratchets & shadow ledger exploration
 
 ## 🤝 Contributing
 

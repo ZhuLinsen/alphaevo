@@ -293,6 +293,10 @@ class EvaluationReport(BaseModel):
     regime_holdout: RegimeHoldoutMetrics | None = None
     stress_windows: StressWindowMetrics | None = None
     cpcv: CPCVMetrics | None = None
+    deflated_sharpe_prob: float | None = None
+    family_trial_count: int = 0
+    null_control_passed: bool | None = None
+    null_p_value: float | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -13,6 +13,8 @@ from alphaevo.backtest.indicators import IndicatorRegistry
 from alphaevo.models.strategy import (
     ExecutionConfig,
     MarketRuleConfig,
+    PortfolioProfile,
+    SetupSpec,
     StopLossConfig,
     Strategy,
     StrategyCondition,
@@ -192,6 +194,13 @@ class StrategyParser:
         if entry_rule_count > 8:
             diagnostics.warnings.append("Strategy has > 8 entry rules — high overfitting risk")
 
+        if (
+            strategy.setup is not None
+            and strategy.setup.target_rr is not None
+            and strategy.setup.target_rr < strategy.setup.min_rr
+        ):
+            diagnostics.errors.append("setup.target_rr must be >= setup.min_rr")
+
         return diagnostics
 
     def assert_valid(
@@ -241,6 +250,14 @@ class StrategyParser:
         exit_ = self._build_exit(raw["exit"])
         params = self._build_params(raw.get("params", {}))
         market_rules = self._build_market_rules(raw.get("market_rules", {}))
+        setup = (
+            SetupSpec(**raw["setup"]) if "setup" in raw and isinstance(raw["setup"], dict) else None
+        )
+        portfolio_profile = (
+            PortfolioProfile(**raw["portfolio_profile"])
+            if "portfolio_profile" in raw and isinstance(raw["portfolio_profile"], dict)
+            else None
+        )
 
         return Strategy(
             meta=meta,
@@ -250,6 +267,8 @@ class StrategyParser:
             exit=exit_,
             params=params,
             market_rules=market_rules,
+            setup=setup,
+            portfolio_profile=portfolio_profile,
         )
 
     def _build_universe(self, raw: dict[str, Any]) -> UniverseConfig:

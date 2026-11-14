@@ -13,7 +13,7 @@ import random
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 from rich.panel import Panel
@@ -90,7 +90,7 @@ def _generate_synthetic_ohlcv(
                 }
             )
             day += 1
-    return pd.DataFrame(rows)
+    return cast("pd.DataFrame", pd.DataFrame(rows))
 
 
 def _find_builtin_strategy_dir() -> Path | None:

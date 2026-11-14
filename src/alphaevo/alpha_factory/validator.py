@@ -344,7 +344,7 @@ class FactorValidator:
             payload["date"] = pd.Series(pd.to_datetime(dates), index=factor.index)
         if symbols is not None:
             payload["symbol"] = pd.Series(symbols, index=factor.index)
-        return pd.DataFrame(payload)
+        return cast("pd.DataFrame", pd.DataFrame(payload))
 
     def _cross_sectional_ic_series(self, combined: pd.DataFrame) -> pd.Series:
         """Compute one rank IC per date from cross-sectional slices."""
@@ -364,7 +364,7 @@ class FactorValidator:
 
         if not ic_by_date:
             return pd.Series(dtype=float)
-        return pd.Series(ic_by_date).sort_index()
+        return cast("pd.Series", pd.Series(ic_by_date).sort_index())
 
     @staticmethod
     def _coerce_timestamp(value: object) -> pd.Timestamp | None:

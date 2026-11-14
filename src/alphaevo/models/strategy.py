@@ -141,6 +141,25 @@ class MarketRuleConfig(BaseModel):
     suspension: bool = False  # skip suspended days
 
 
+class SetupSpec(BaseModel):
+    """Explicit trade-setup contract linking signal triggers to execution and invalidation."""
+
+    trigger_rule: str = ""
+    planned_stop_pct: float | None = Field(default=None, gt=0.0, le=0.5)
+    structural_invalidation: str = ""
+    target_rr: float | None = Field(default=None, gt=0.0)
+    min_rr: float = Field(default=1.5, gt=0.0)
+
+
+class PortfolioProfile(BaseModel):
+    """Portfolio concentration and regime-capacity guardrails."""
+
+    mode: Literal["none", "hard_cap"] = "none"
+    max_per_sector: int = Field(default=2, ge=1)
+    max_positions: int = Field(default=10, ge=1)
+    market_temp_cap: bool = False
+
+
 class MarketHypothesisSummary(BaseModel):
     """Human-readable summary of the market belief behind a strategy."""
 
@@ -177,6 +196,8 @@ class Strategy(BaseModel):
     exit: StrategyExit
     params: StrategyParams = Field(default_factory=StrategyParams)
     market_rules: dict[str, MarketRuleConfig] = Field(default_factory=dict)
+    setup: SetupSpec | None = None
+    portfolio_profile: PortfolioProfile | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

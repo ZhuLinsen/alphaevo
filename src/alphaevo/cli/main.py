@@ -15,7 +15,7 @@ from rich.panel import Panel
 
 app = typer.Typer(
     name="alphaevo",
-    help="🧬 AlphaEvo — Self-Evolving Stock Strategy Research Agent",
+    help="🧬 AlphaEvo — Open-Source RSI (Recursive Self-Improvement) Engine for Stock Research",
     no_args_is_help=True,
 )
 console = Console()
@@ -39,11 +39,16 @@ from alphaevo.cli.commands.evolution import (  # noqa: E402
     run_command,
 )
 from alphaevo.cli.commands.factor import factor_app  # noqa: E402
+from alphaevo.cli.commands.rsi import rsi_app, shadow_app, truth_app  # noqa: E402
 from alphaevo.cli.commands.strategy import strategy_app  # noqa: E402
 
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(factor_app, name="factor")
 app.add_typer(config_app, name="config")
+app.add_typer(rsi_app, name="rsi")
+app.add_typer(rsi_app, name="autoresearch")
+app.add_typer(shadow_app, name="shadow")
+app.add_typer(truth_app, name="truth")
 
 # Top-level commands delegated to command modules
 app.command("run")(run_command)

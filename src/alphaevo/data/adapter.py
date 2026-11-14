@@ -72,7 +72,7 @@ class DataAdapter(ABC):
 
         Adapters that do not support indices return an empty DataFrame.
         """
-        return pd.DataFrame()
+        return cast("pd.DataFrame", pd.DataFrame())
 
     async def get_event_context(
         self,
@@ -266,7 +266,7 @@ class DataManager:
             except Exception as exc:
                 self._record_failure(adapter, str(exc))
                 continue
-        return pd.DataFrame()
+        return cast("pd.DataFrame", pd.DataFrame())
 
     async def get_sector_data(self, symbol: str) -> SectorInfo | None:
         """Fetch sector information with adapter fallback."""

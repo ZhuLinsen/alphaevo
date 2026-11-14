@@ -1,6 +1,14 @@
 """Core data models for AlphaEvo."""
 
-from alphaevo.models.enums import EvolutionMethod, MarketRegime, MarketType, StrategyCategory
+from alphaevo.models.enums import (
+    EvidenceLevel,
+    EvolutionMethod,
+    MarketRegime,
+    MarketType,
+    PromotionStage,
+    RSILevel,
+    StrategyCategory,
+)
 from alphaevo.models.execution import (
     AntiFitMetrics,
     BacktestResult,
@@ -44,6 +52,8 @@ from alphaevo.models.strategy import (
     MarketHypothesisAssessment,
     MarketHypothesisSummary,
     MarketRuleConfig,
+    PortfolioProfile,
+    SetupSpec,
     StopLossConfig,
     Strategy,
     StrategyCondition,
@@ -63,6 +73,9 @@ __all__ = [
     "StrategyCategory",
     "MarketRegime",
     "EvolutionMethod",
+    "PromotionStage",
+    "RSILevel",
+    "EvidenceLevel",
     # Market
     "PriceData",
     "VolumeData",
@@ -90,6 +103,8 @@ __all__ = [
     "TunableParam",
     "StrategyParams",
     "MarketRuleConfig",
+    "SetupSpec",
+    "PortfolioProfile",
     "MarketHypothesisSummary",
     "MarketHypothesisAssessment",
     "Strategy",

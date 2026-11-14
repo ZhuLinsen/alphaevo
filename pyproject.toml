@@ -5,14 +5,26 @@ build-backend = "hatchling.build"
 [project]
 name = "alphaevo"
 version = "0.1.0"
-description = "AlphaEvo — Build, Test, Reflect, and Evolve Stock Trading Strategies with LLMs"
+description = "AlphaEvo — Open-Source RSI (Recursive Self-Improvement) Engine for Stock Research"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
     {name = "ZhuLinsen"},
 ]
-keywords = ["stock", "trading", "strategy", "llm", "agent", "evolution", "backtest", "quant"]
+keywords = [
+    "rsi",
+    "recursive-self-improvement",
+    "autoresearch",
+    "alpha-evolution",
+    "shadow-ledger",
+    "stock",
+    "trading",
+    "strategy",
+    "llm",
+    "agent",
+    "quant",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -126,5 +138,5 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["yaml", "pandas", "yfinance", "akshare", "plotext"]
+module = ["yaml", "pandas", "yfinance", "akshare", "plotext", "litellm"]
 ignore_missing_imports = true

@@ -323,6 +323,30 @@ class Reporter:
         if af.is_overfit:
             lines.append("- **⚠️ Potential overfitting detected**")
 
+        if (
+            report.deflated_sharpe_prob is not None
+            or report.null_control_passed is not None
+            or report.family_trial_count > 0
+        ):
+            lines += [
+                "",
+                "## L0 Anti-Delusion Truth Kernel",
+                "",
+                f"- Lineage Trials Counted: {report.family_trial_count}",
+            ]
+            if report.deflated_sharpe_prob is not None:
+                lines.append(
+                    f"- Deflated Sharpe Probability (DSR): {report.deflated_sharpe_prob:.1%}"
+                )
+            if report.null_control_passed is not None:
+                nc_label = "PASS" if report.null_control_passed else "FAIL"
+                p_txt = (
+                    f" (worst p={report.null_p_value:.3f})"
+                    if report.null_p_value is not None
+                    else ""
+                )
+                lines.append(f"- Null-Signal Control: **{nc_label}**{p_txt}")
+
         if report.walk_forward:
             protocol = report.walk_forward_protocol
             pass_gap = protocol.pass_gap if protocol is not None else 0.10

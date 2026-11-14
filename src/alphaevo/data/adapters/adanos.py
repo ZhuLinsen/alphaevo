@@ -59,7 +59,7 @@ class AdanosSentimentAdapter(DataAdapter):
 
     async def get_daily_data(self, symbol: str, days: int = 120) -> pd.DataFrame:
         """Adanos does not provide OHLCV data."""
-        return pd.DataFrame()
+        return cast("pd.DataFrame", pd.DataFrame())
 
     async def get_stock_list(self, market: MarketType) -> list[StockInfo]:
         """Adanos is a context adapter and does not provide universe lists."""

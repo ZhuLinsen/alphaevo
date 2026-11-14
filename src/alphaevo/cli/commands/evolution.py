@@ -942,11 +942,10 @@ def optimize_command(
     if save_best and best is not None and best.passed_gate:
         pipeline.store.save(best.strategy)
         console.print(f"[green]✓[/green] Saved best strategy: {best.candidate_id}")
-    elif best is not None:
-        if save_best:
-            console.print(
-                "[yellow]No qualified candidate passed the configured gates; nothing saved.[/yellow]"
-            )
+    elif best is not None and save_best:
+        console.print(
+            "[yellow]No qualified candidate passed the configured gates; nothing saved.[/yellow]"
+        )
 
 
 def _print_best_optimization_candidate(candidate: Any, *, title: str) -> None:
