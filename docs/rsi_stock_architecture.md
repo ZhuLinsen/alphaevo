@@ -1,4 +1,4 @@
-# AlphaEvo Dual-Clock RSI (Evo) + Stock Architecture
+# AlphaEvo Dual-Clock Stock RSI Architecture
 
 > **Core Invariant**: *Historical backtests only VETO; Forward out-of-sample Shadow Ledgers PROMOTE.*
 

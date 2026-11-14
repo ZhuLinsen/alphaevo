@@ -8,7 +8,7 @@
 
 **AlphaEvo — Open-Source RSI (Recursive Self-Improvement / Evo) Engine for Stock Research** — 开源股票策略、因子与研究机制的三层递归自我进化引擎。
 
-核心叙事：**RSI (Evo) + Stock** — 用不可变 L0 真相核与双时态前瞻影子账本约束 AI 研究闭环：「历史回测只负责否决，前瞻样本外影子账本才决定晋升」。
+核心定位：**面向股票投研的递归自我进化（Stock RSI）引擎** — 用不可变 L0 真相核与双时态前瞻影子账本约束 AI 研究闭环：「历史回测只负责否决，前瞻样本外影子账本才决定晋升」。
 
 **不承诺收益神话，强调研究闭环。**
 

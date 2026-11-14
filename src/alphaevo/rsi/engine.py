@@ -580,9 +580,9 @@ class StockRSIEngine:
 
     @staticmethod
     def render_markdown(result: RSIRunResult) -> str:
-        """Render full verifiable RSI + Stock Markdown summary."""
+        """Render full verifiable Stock RSI Markdown summary."""
         lines = [
-            f"# AlphaEvo RSI (Evo) + Stock Report: {result.charter_name}",
+            f"# AlphaEvo Stock RSI Report: {result.charter_name}",
             "",
             f"- Seed Strategy: `{result.seed_strategy_id}`",
             f"- Champion Strategy: `{result.champion_id}`",

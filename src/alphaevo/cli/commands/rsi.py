@@ -1,4 +1,4 @@
-"""CLI commands for Dual-Clock RSI (Evo) + Stock, Shadow Ledger, and L0 Truth Kernel."""
+"""CLI commands for Dual-Clock Stock RSI, Shadow Ledger, and L0 Truth Kernel."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from alphaevo.core.config import AppConfig
 
 rsi_app = typer.Typer(
-    help="Dual-Clock RSI (Evo) + Stock — evolve strategies (L1), factors (L2), and harnesses (L3)"
+    help="Dual-Clock Stock RSI — evolve strategies (L1), factors (L2), and harnesses (L3)"
 )
 shadow_app = typer.Typer(
     help="Bitemporal Forward Shadow Ledger — hash-chained commitments, backfill & promotion gates"
@@ -179,7 +179,7 @@ def rsi_run(
         help="Directory for results.tsv, Markdown report, and champion YAML",
     ),
 ) -> None:
-    """Run the L0-grounded RSI (Evo) + Stock evolution ratchet loop."""
+    """Run the L0-grounded Stock RSI evolution ratchet loop."""
     config = _get_config()
     try:
         seed_strategy = _resolve_strategy(strategy_id, config)
@@ -220,7 +220,7 @@ def rsi_run(
     market_data = _load_market_data(live=live)
     console.print(
         Panel(
-            f"[bold cyan]AlphaEvo RSI (Evo) + Stock[/bold cyan]\n"
+            f"[bold cyan]AlphaEvo Dual-Clock Stock RSI[/bold cyan]\n"
             f"Charter: {charter.name} | Seed: {seed_strategy.meta.id} | "
             f"Levels: {','.join(lvl.value for lvl in charter.allowed_levels)} | Rounds: {charter.max_rounds}",
             style="green",

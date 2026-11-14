@@ -742,8 +742,9 @@ class YFinanceAdapter(DataAdapter):
     @staticmethod
     def _empty_df() -> pd.DataFrame:
         """Return an empty DataFrame with the standard column schema."""
-        return pd.DataFrame(
-            columns=["date", "open", "high", "low", "close", "volume", "prev_close"]
+        return cast(
+            "pd.DataFrame",
+            pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume", "prev_close"]),
         )
 
 

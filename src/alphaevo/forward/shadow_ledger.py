@@ -9,7 +9,7 @@ import uuid
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import pandas as pd  # type: ignore[import-untyped]
 
@@ -50,11 +50,11 @@ def _canonical_commit_hash(commit: ForecastCommit) -> str:
 def _truncate_pit(df: pd.DataFrame, as_of: date) -> pd.DataFrame:
     """Strictly truncate OHLCV DataFrame so no row after ``as_of`` is visible."""
     if df.empty or "date" not in df:
-        return df.iloc[0:0].copy()
+        return cast("pd.DataFrame", df.iloc[0:0].copy())
     dates = pd.to_datetime(df["date"]).dt.date
     mask = dates <= as_of
     out = df.loc[mask].copy().reset_index(drop=True)
-    return out
+    return cast("pd.DataFrame", out)
 
 
 class ShadowLedger:

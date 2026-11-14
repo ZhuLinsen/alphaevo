@@ -342,10 +342,19 @@ def _run_in_subprocess(
     try:
         # Set resource limits (Linux only)
         try:
+            import os
             import resource
 
-            # Memory limit
+            # Memory limit (add inherited VmSize on fork so parent OpenBLAS/thread
+            # arenas do not immediately exhaust RLIMIT_AS in the child)
             mem_bytes = max_memory_mb * 1024 * 1024
+            try:
+                with open("/proc/self/statm", encoding="utf-8") as statm_f:
+                    vm_pages = int(statm_f.read().split()[0])
+                current_vm = vm_pages * os.sysconf("SC_PAGE_SIZE")
+                mem_bytes = max(mem_bytes, current_vm + mem_bytes)
+            except (OSError, ValueError):
+                pass
             resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
         except (ImportError, ValueError) as e:
             import sys

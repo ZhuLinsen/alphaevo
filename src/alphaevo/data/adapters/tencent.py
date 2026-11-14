@@ -190,6 +190,9 @@ class TencentAshareAdapter(DataAdapter):
 
     @staticmethod
     def _empty_df() -> pd.DataFrame:
-        return pd.DataFrame(
-            columns=["date", "open", "high", "low", "close", "volume", "amount", "prev_close"]
+        return cast(
+            "pd.DataFrame",
+            pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume", "amount", "prev_close"]
+            ),
         )

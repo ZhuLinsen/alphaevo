@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import multiprocessing
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
@@ -31,7 +31,7 @@ class PITProbeResult(BaseModel):
 
 def _corrupt_future_rows(df: pd.DataFrame, idx: int) -> pd.DataFrame:
     """Create a deep copy of ``df`` identical on ``0..idx`` with corrupted future rows."""
-    mutated = df.copy(deep=True)
+    mutated = cast("pd.DataFrame", df.copy(deep=True))
     if idx + 1 >= len(mutated):
         return mutated
     future_slice = slice(idx + 1, len(mutated))

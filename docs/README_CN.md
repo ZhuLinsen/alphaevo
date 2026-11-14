@@ -1,184 +1,435 @@
 <div align="center">
 
-<img src="../sources/alphaevo_terminal_v1_agent_evolution.svg" alt="AlphaEvo Logo" width="660">
+<img src="../sources/alphaevo_terminal_v1_agent_evolution.svg" alt="AlphaEvo Logo" width="680">
 
 # 🧬 AlphaEvo
 
-**开源「RSI (Evo) + Stock」递归自我进化股票研究引擎**
+**一个面向股票投研的递归自我进化（RSI）策略研究引擎**
 
-*策略进化 (L1) × 因子发现 (L2) × 研究机制自举 (L3) —— 用反幻觉零假设控制与双时态前瞻影子账本，把 Autoresearch 安全落到股票投研*
+*让股票策略经历诊断、改写、防幻觉检验与前瞻影子验证，而不是只生成一份 YAML*
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/alphaevo?style=social)](https://github.com/ZhuLinsen/alphaevo/stargazers)
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://github.com/ZhuLinsen/alphaevo)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](../Dockerfile)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
 
-[English](../README.md) | [中文](README_CN.md) | [RSI + Stock 架构详述](rsi_stock_architecture.md) | [完整技术设计](technical_design.md)
+[**项目概览**](#-项目概览) · [**核心能力**](#-核心能力) · [**快速开始**](#-快速开始) · [**架构**](#-系统架构) · [**真实验证**](#-真实验证结果2026-年-4-月-10-日) · [**CLI 命令**](#-cli-命令一览)
+
+[English](../README.md) | [中文](README_CN.md)
 
 </div>
 
 ---
 
-## ⚡ 为什么「RSI (Evo) + Stock」需要双时钟架构
+## ✨ 项目概览
 
-> **核心不变量：历史回测只负责否决（Veto），样本外前瞻影子账本才决定晋升（Promote）。**
+AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的研究与递归自我进化（RSI）闭环：回测、失败归因、结构化改写或因子合成、再次验证并保留完整证据链。
 
-通用代码/ML 领域的 `autoresearch` 放在股票里极易崩溃，因为个股信号信噪比低、同日同板块聚类导致有效样本数 $N_{\text{eff}} \ll N$、多轮试错推高虚假 Sharpe，且自动生成因子容易混入未来信息。**AlphaEvo** 把递归自我进化做成可证伪的股票投研闭环：
+针对股票投研低信噪比、多重检验过拟合与隐式未来函数等痛点，AlphaEvo 将 **快时钟离线进化探索** 与 **慢时钟前瞻验证** 分离：**历史回测只负责否决，前瞻样本外影子账本才决定晋升**。每次探索都受不可变 L0 真相核（`TrialLedger` + Deflated Sharpe Ratio、零信号对照、运行时 Point-in-Time 泄露探针）和双时态前瞻影子账本约束。
 
-| 维度 | 通用 RSI (`autoresearch` / `OpenEvolve`) | 传统股票 LLM Agent | **AlphaEvo (`RSI (Evo) + Stock`)** |
-|---|---|---|---|
-| **自我改进闭环** | 针对低噪声代码/Loss 单层棘轮 | 单次提示词选股或静态回测 | **L1 策略 + L2 因子 + L3 研究机制三层进化** + **MAP-Elites** |
-| **多重检验防刷榜** | 通常单验证集 | 很少统计失败试次 | 只增不减 **`TrialLedger`** + **Deflated Sharpe Ratio (DSR)** |
-| **零边际反幻觉校验** | 无 | 无 | **双层 Null-Signal Control**（随机洗牌市场 **0 误晋升**） |
-| **未来函数防御** | 不涉及时序截断 | 依赖口头约束 | **运行时 PIT 未来噪声探针** + 严格 `<= as_of` 内存切片 |
-| **样本外晋升机制** | 直接提交代码 | 缺乏前瞻跟踪 | **SHA-256 哈希链影子账本**、$N_{\text{eff}}$ 去相关、瞬间熔断 `HALTED` |
+### 可复现无 API Showcase
 
----
+内置 frozen yfinance 快照，美股科技股篮子，2025-02-11 到 2026-04-10：
 
-## 🚀 30 秒快速开始（无需 API Key）
+| 策略 | 信号数 | 胜率 | 平均收益 | 最大回撤 | 评分 |
+|------|--------|------|----------|----------|------|
+| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 8.1% |
+| `rsi_reversion_v7` champion | 37 | 48.6% | 2.94% | 23.6% | 68.7% |
+
+过程：研究委员会先判断入场条件过度确认，然后依次解锁信号、放宽止损、延长持仓、提高止盈倍数、把支撑锚点切到 MA60、收紧放量确认。每次修改都必须复测后才接受。该 champion 在快照上的 train-val / val-test gap 为 7.1% / 7.1%。完整报告见：[showcase_rsi_reversion_real_snapshot.md](reports/showcase_rsi_reversion_real_snapshot.md)。
+
+### 实时数据 LLM 进化路径
+
+实时 yfinance 数据，配置外部 LLM provider 后运行 `alphaevo evolve rsi_reversion_v1 --method llm`，时间为 2026-04-10：
+
+| 策略 | 信号数 | 胜率 | 平均收益 | 评分 |
+|------|--------|------|----------|------|
+| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 8.1% |
+| `rsi_reversion_v3` LLM champion | 498 | 52.6% | 1.22% | 56.3% |
+
+不同数据窗口和协议不应该直接混排；快照 showcase 是稳定的无 API 首跑，LLM 路径展示的是实时市场数据上的研究闭环。
+
+## 🧠 核心能力
+
+- **回测与多维评估**：在真实股票数据上完成分层采样、多维评分与 Walk-Forward 防过拟合检验。
+- **股票策略递归自我进化（`alphaevo rsi`）**：基于 `program.md` 研究宪章驱动策略层（L1）、Co-STEER 因子层（L2）和评估机制（L3）的迭代演化，配合 `(regime × style × horizon)` MAP-Elites 档案库、可执行反思伤疤与异构提案/审讯评审，导出可核验的 `results.tsv` 账本。
+- **L0 真相核与前瞻影子账本（`truth` / `shadow`）**：通过只追加 `TrialLedger` + Deflated Sharpe Ratio 抑制沉默试错，借助零信号对照与子进程运行时 PIT 探针拦截未来函数，并用 SHA-256 哈希链记录 `T+5 / T+10 / T+20` 前瞻样本外承诺与兑现。
+- **可追踪的研究工作流**：每次迭代自动沉淀结构化研究结论、进化树以及用于后续训练的 trajectory 数据。
+
+## 🚀 快速开始
+
+### 从源码开始，30 秒体验（无需 API Key！）
 
 ```bash
-git clone https://github.com/ZhuLinsen/alphaevo.git && cd alphaevo
+git clone https://github.com/ZhuLinsen/alphaevo.git
+cd alphaevo
 pip install -e .
-alphaevo showcase                                      # 用内置真实行情快照跑一轮完整策略进化
-alphaevo rsi run --program examples/rsi_stock_program.md  # 运行 L0 守护的双时钟 RSI 棘轮与 results.tsv
+alphaevo showcase
 ```
 
 <p align="center">
-  <img src="demo.gif" alt="AlphaEvo Demo" width="700">
+  <img src="demo.gif" alt="AlphaEvo Demo" width="720">
 </p>
 
-### 按场景选入口
-
-| 目标场景 | 命令 | 数据源 / LLM 需求 |
-|---|---|---|
-| **30 秒真实快照 Showcase** | `alphaevo showcase` | 内置 yfinance 快照 / 无需 Key |
-| **RSI (Evo) + Stock 自主进化 (`program.md`)** | `alphaevo rsi run --program examples/rsi_stock_program.md` | 快照或 `--live` / LLM 可选 |
-| **Tier-2 洗牌行情零晋升审计** | `alphaevo rsi null-audit --worlds 3 --rounds 3` | 块洗牌零信号世界 / 否 |
-| **前瞻影子账本全链路** | `alphaevo shadow register\|emit\|backfill\|status\|verify` | 严格 PIT 行情 / 否 |
-| **异构多模型对抗议会（强制跨家族）** | `alphaevo rsi run --method llm --council-proposer codex:... --council-prosecutor agy:...` | 任意 / `proposer != prosecutor` |
-| **美股 / A 股实盘 LLM 与参数进化** | `pip install -e ".[llm,data-full]"` → `alphaevo evolve rsi_reversion_v1 --method llm` | `yfinance` / `akshare` / 是 |
-
-*美股场景可选配置 `ADANOS_API_KEY` 接入 Reddit/X 情绪事件增强；未配置时自动降级为价量事件代理指标。*
-
----
-
-## 🏗️ 双时钟系统架构与股票 DSL
+观看真实历史数据上的策略自我进化：
 
 ```
-快时钟（离线假设搜索 —— L1 / L2 / L3 RSI）
-  program.md (RSICharter) ─▶ BlindSpotMiner（诊断 L1 策略 vs L2 因子 + 运行时 PIT 探针）
-           ▲                          │
-           │ Keep / Revert            ▼
-  MAP-Elites 档案库 ◀── HeterogeneousCouncil（提案家族 != 审计家族 + Executable Pinned Scars）
-  (市场环境×风格×周期)                │
-                                      ▼
-                    L0 不可变反幻觉真相核 (`alphaevo/truth`):
-                    TrialLedger · Deflated Sharpe (DSR) · NullSignalController
-                                      │ 仅放行通过否决门限的候选
-                                      ▼
-慢时钟（样本外前瞻问责 —— `alphaevo/forward`）
-  CandidateSpec ─▶ commit_signals(as_of <= t) ─▶ 回填 T+5/10/20 扣费收益 ─▶ N_eff + 非对称状态机
-                   [SHA-256 哈希链 + 行业硬上限]                            (DRAFT→SHADOW→CANARY→ACTIVE|HALTED)
+Showcase Chain: baseline + up to 6 validated mutations
+
+Round 1 │ rsi_reversion_v1 │ 信号: 0  │ 评分: 8.1%
+  研究委员会：入场条件过严
+  修改：entry.logic and -> or
+
+Round 2 │ rsi_reversion_v2 │ 信号: 79 │ 评分: 17.8%
+  修改：exit.stop_loss.value 0.05 -> 0.08
+
+Round 7 │ rsi_reversion_v7 │ 信号: 37 │ 评分: 68.7% 🏆
 ```
 
-策略与交易剧本（`SetupSpec`）均以可读 YAML DSL 声明（完整规范见 [RSI+Stock 架构文档](rsi_stock_architecture.md) 与 [AGENTS.md](../AGENTS.md)）：
+### 选择合适的入口
+
+| 目标 | 命令 | 数据 | 是否需要 LLM |
+|------|------|------|---------------|
+| 真实数据 Showcase（30 秒首跑） | `alphaevo showcase` | 内置 yfinance 快照 | 否 |
+| 合成数据开发烟测 | `alphaevo demo --synthetic` | 合成数据 | 否 |
+| 一句话策略起草、回测并优化 | `alphaevo strategy research "<idea>"` | 真实数据 | 否 |
+| 完整真实数据回测 | `alphaevo run ma_crossover_v1` | yfinance | 否 |
+| 测试突破/波动收缩模板 | `alphaevo run volatility_compression_breakout_v1` | yfinance | 否 |
+| 联合优化买卖点与防过拟合门控 | `alphaevo optimize <id> --objective robust_profit_quality --reject-overfit` | 真实数据 | 否 |
+| 旗舰 LLM 研究智能体进化 | `alphaevo evolve <id> --method llm --output reports/` | 真实数据 | 是 |
+| 按研究宪章运行 Stock RSI 进化闭环 | `alphaevo rsi run rsi_reversion_v1 --program examples/rsi_stock_program.md` | 快照或 `--live` | 可选 |
+| 洗牌噪声零假晋升审讯 | `alphaevo rsi null-audit rsi_reversion_v1` | 快照或 `--live` | 否 |
+| 前瞻双时态影子账本跟踪 | `alphaevo shadow register <id> && alphaevo shadow status` | 快照或实时 | 否 |
+
+真实数据命令需要安装对应数据源扩展：美股 `pip install -e ".[data-yfinance]"`，A 股 `pip install -e ".[data-akshare]"`，全量 `pip install -e ".[data-full]"`。`alphaevo showcase --live` 会优先尝试实时 yfinance，失败时自动回退到本地快照；`optimize` 的完整稳健门槛参数请运行 `alphaevo optimize --help`。
+
+### 当前上线范围
+
+- **最成熟的路径**：`rsi_reversion_v1` 和 `ma_crossover_v1` 用真实数据跑进化
+- **最稳的策略类型**：trend + reversal，核心信号来自 OHLCV 和 benchmark
+- **偏收益弹性的趋势模板**：`volatility_compression_breakout_v1` 使用前高突破触发、区间位置过滤、波动收缩过滤和 trailing 止盈
+- **实验性的**：event + rotation 策略依赖 proxy 做新闻/板块语义，当研究预览看就好
+
+### 完整安装（含 LLM 进化功能）
+
+```bash
+# 在仓库根目录补齐 LLM + 默认真实数据能力
+pip install -e ".[llm,data-yfinance]"
+
+# 设置 LLM API Key
+export ALPHAEVO_API_KEY=your_api_key
+export ALPHAEVO_LLM_MODEL=gemini/gemini-2.0-flash  # 或 openai/gpt-4o 等
+
+# 跑旗舰 LLM 研究路径
+alphaevo evolve rsi_reversion_v1 --method llm --rounds 3 --output reports/rsi_evolve/
+
+# 或按 program.md 宪章运行 L0 真相核约束下的 Stock RSI 闭环
+alphaevo rsi run rsi_reversion_v1 --program examples/rsi_stock_program.md --output reports/rsi/
+```
+
+如果要跑内置 A 股策略，安装 `pip install -e ".[llm,data-full]"` 后运行 `alphaevo run trend_pullback_rebound_v1 --adapter akshare`。
+
+## 🏗️ 系统架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    CLI (Typer + Rich)                     │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│            编排层 Orchestrator & Stock RSI 闭环           │
+│   宪章 → 采样 → 回测 → 评估 (L0 真相核)                  │
+│        → 反思 / Co-STEER → 进化 → 前瞻影子账本           │
+└──┬────────┬────────┬────────┬────────┬────────┬─────────┘
+   │        │        │        │        │        │
+┌──▼──┐ ┌──▼──┐ ┌───▼──┐ ┌──▼──┐ ┌───▼──┐ ┌──▼────────┐
+│数据 │ │策略 │ │采样  │ │回测 │ │真相/ │ │反思与      │
+│层   │ │层   │ │层    │ │引擎 │ │评估  │ │RSI 进化   │
+└─────┘ └─────┘ └──────┘ └─────┘ └──────┘ └───────────┘
+```
+
+### 六层架构与进化治理
+
+| 层级 | 职责 |
+|------|------|
+| **数据层 (`data`)** | 多数据源接入（`yfinance`、`akshare` 或 `daily_stock_analysis` 插件） |
+| **策略层 (`strategy`)** | 双重表示：人类可读描述 + 可执行 YAML DSL（含 `SetupSpec`、`PortfolioProfile`） |
+| **采样层 (`sampler`)** | 按市场环境、风格、策略适用范围分层采样 |
+| **回测引擎 (`backtest`)** | 信号级模拟，支持滑点、手续费与 Point-in-Time 截断 |
+| **评估与 L0 真相核 (`evaluator` / `truth`)** | 多维指标 + 只追加 `TrialLedger`、DSR 多重检验修正、零信号对照与运行时 PIT 泄露探针 |
+| **反思与 RSI 引擎 (`reflection` / `rsi`)** | 失败归因、Co-STEER L1/L2 分流、MAP-Elites 多样性档案库、异构提案/审讯评审与 `results.tsv` |
+| **前瞻影子账本 (`forward`)** | 双时态（`as_of` vs `available_at`）SHA-256 哈希链预测承诺、聚类有效样本 $N_{\text{eff}}$ 与慢升快停晋升门控 |
+
+架构详情见 [Dual-Clock Stock RSI Architecture](rsi_stock_architecture.md) 与宪章示例 [examples/rsi_stock_program.md](../examples/rsi_stock_program.md)。
+
+## 🧬 进化流程示例
+
+拿 **2026年4月10日** yfinance 实盘数据 + `--method llm` 的真实结果举例：
+
+```
+第 1 轮: rsi_reversion_v1
+         0 个信号，置信度 8.1% — 策略基本废了
+
+         LLM 看完回测结果说："入场条件互相冲突，太严。"
+         改了: entry.logic and→or，RSI 30→35
+
+第 2 轮: rsi_reversion_v2 — 能出信号了
+         522 个信号，胜率 52.7%，平均 +0.96%
+         置信度 39.2%
+
+         LLM 又说："OR 逻辑虽然修好了，但噪声信号太多。"
+         改了: RSI 35→32，量比 1.3→1.15，止损 pct→atr
+
+第 3 轮: rsi_reversion_v3 — 最终冠军
+         498 个信号，胜率 52.6%，平均 +1.22%
+         置信度 56.3%（从 8.1% 到这，涨了 48 个百分点）
+```
+
+> 以上是真实运行结果，不是合成数据，不是启发式 fallback。完整报告建议在本地用 `alphaevo evolve <strategy_id> --output ...` 生成。
+
+## 📋 策略 DSL 示例
+
+AlphaEvo 使用 YAML DSL 定义策略，兼具可读性和可执行性：
 
 ```yaml
 meta:
-  id: trend_pullback_rsi_v1
+  id: trend_pullback_rebound_v3
+  name: 强趋势回踩放量反包
+  version: 3
+  parent_id: trend_pullback_rebound_v2
   market: a_share
-  category: reversal
-setup:
-  trigger_bar: "rsi_14 < 30 and volume_ratio_1d_5d >= 1.5"
-  invalidation_rule: "close < ma60 * 0.96"
-  target_rr: 3.0
-  min_rr: 2.0
+  category: trend
+  tags: [趋势, 回踩, 放量]
+
+description: |
+  适用于趋势市。个股近20日相对强于行业指数，
+  5日线在10日线上方，回踩10日线附近但未破20日线，
+  当日放量1.5倍以上。
+
 entry:
-  logic: or
-  conditions:
-    - { indicator: rsi_14, op: "<", value: 30 }
-    - { indicator: close_to_ma60_pct, op: "<=", value: 0.06 }
+  logic: and
+  triggers:
+    - indicator: relative_strength_20d
+      op: ">"
+      value: 0.12
+  guards:
+    - indicator: ma5_above_ma10
+      op: "=="
+      value: true
+    - indicator: volume_ratio_1d_5d
+      op: ">"
+      value: 1.5
+
 exit:
-  stop_loss: { type: pct, value: 0.08 }
-  take_profit: { type: rr, value: 4.0 }
-  max_holding_days: 14
+  triggers:
+    - indicator: close_below_ma10
+      op: "=="
+      value: true
+  stop_loss:
+    type: atr
+    atr_period: 21
+    multiplier: 2.0
+  take_profit:
+    type: rr
+    value: 2.0
+  max_holding_days: 10
+
 params:
   tunable:
-    - { target: entry.conditions[indicator=rsi_14].value, range: [22, 36], step: 2 }
+    - target: entry.triggers[indicator=relative_strength_20d].value
+      range: [0.05, 0.20]
+      step: 0.01
 ```
 
----
+完整的 DSL 规范请参考 [AGENTS.md](../AGENTS.md)。
 
-## 🔬 真实验证与诚实熔断
-
-AlphaEvo 同时公开有效进化案例与「被防过拟合/零对照诚实拦下」的案例：
-
-| 验证场景 | 数据与协议 | 实测结果 | 详细报告 |
-|---|---|---|---|
-| **零 Key 真实快照 Showcase** | `rsi_reversion_v1 -> v7`，美股科技股历史快照 | `0 -> 37` 信号，胜率 `48.6%`，均益 `+2.94%`，最大回撤 `23.6%`，`8.1% -> 68.7%` | [快照报告](reports/showcase_rsi_reversion_real_snapshot.md) |
-| **实时行情 LLM 进化** | `rsi_reversion_v1 -> v3`，实时 `yfinance` + `--method llm` | `0 -> 498` 信号，胜率 `52.6%`，均益 `+1.22%`，`8.1% -> 56.3%` | [LLM 验证报告](reports/2026-04-10-real-llm-validation_CN.md) |
-| **防过拟合诚实拦截** | `ma_crossover_v1` / `sector_rotation_leader_v1` | 候选虽有局部提升，因 `train_val_gap=18.9%` 等未过泛化检验而拒绝晋升 | [LLM 验证报告](reports/2026-04-10-real-llm-validation_CN.md) |
-| **L0 Tier-2 零对照审计** | `alphaevo rsi null-audit`，块洗牌纯噪声收益率世界 | **误晋升数 = 0** | [架构详述](rsi_stock_architecture.md) |
-| **L2 因子发现沙盒** | `alphaevo factor discover AAPL` | 提出 `3` 个因子 → 沙盒通过 `3` 个 → 验证并注册 `2` 个（IR `1.76` / `1.50`） | [因子实践文档](cookbook/07_factor_discovery_walkthrough.md) |
-
----
-
-## 📊 CLI 核心命令
+## 📊 CLI 命令一览
 
 ```bash
-# 双时钟 RSI (Evo) + Stock
-alphaevo rsi run --program examples/rsi_stock_program.md   # L1/L2 演化棘轮并导出 results.tsv
-alphaevo rsi null-audit --worlds 3                         # 验证随机洗牌行情下 0 误晋升
-alphaevo rsi mechanism-ab --rounds 3                       # L3 元机制样本外校准 AB 对比
-alphaevo shadow register <id> && alphaevo shadow emit <id> # 前瞻影子账本 SHA-256 哈希链提交
-alphaevo shadow backfill && alphaevo shadow status         # T+5/10/20 收益衰减与 N_eff 诊断
-alphaevo truth trials && alphaevo truth pit-probe f.py     # L0 试验账本 DSR 与未来噪声探针
+# 体验与初始化
+alphaevo showcase                         # 内置真实快照 30 秒完整进化演示（无需 Key）
+alphaevo demo --real                      # 无需 LLM 的真实数据 demo
+alphaevo init                             # 交互式初始化配置
 
-# 策略研究、参数优化与经典 LLM 进化
-alphaevo run <id> && alphaevo evolve <id> --method llm     # 单策略全回测 / LLM 自我进化
-alphaevo optimize <id> --objective robust_profit_quality   # 买卖点联合优化与过拟合门控
-alphaevo factor discover <symbol> && alphaevo leaderboard  # LLM 因子发现与策略排行榜
+# 策略管理
+alphaevo strategy draft "<idea>"          # 一句话策略生成可执行 YAML（无需 LLM）
+alphaevo strategy research "<idea>"       # 一句话策略→保存→回测→优化（无需 LLM）
+alphaevo strategy improve <id> "<改法>"   # 修订已有策略→保存→复测（无需 LLM）
+alphaevo strategy list / show <id>        # 查看策略列表与详情
+
+# 回测、优化与经典进化
+alphaevo run <strategy_id>                # 运行完整研究闭环（采样→回测→评估→报告）
+alphaevo optimize <strategy_id> --objective robust_profit_quality --reject-overfit
+                                          # 参数与风控搜索（完整选项见 alphaevo optimize --help）
+alphaevo evolve <strategy_id> --method llm --rounds 3 --output reports/
+                                          # LLM 引导多轮进化
+
+# 股票递归进化（RSI）、L0 真相核与前瞻影子账本
+alphaevo rsi run <id> --program examples/rsi_stock_program.md
+                                          # 按研究宪章运行 L1/L2 Stock RSI 闭环并输出 results.tsv
+alphaevo rsi null-audit <id>              # 洗牌噪声零假晋升审讯
+alphaevo rsi mechanism-ab <id>            # L3 机制与评审框架配对 AB 评测
+alphaevo shadow register/emit/verify/status  # 前瞻影子账本注册、承诺、兑现与晋升门控
+alphaevo truth trials / pit-probe <file>  # 查看 TrialLedger 记录与因子 PIT 泄露探针
+
+# 排行、因子与进化树
+alphaevo leaderboard                      # 策略排行榜
+alphaevo tree <strategy_id>               # 查看策略进化树
+alphaevo factor discover <symbol>         # LLM 驱动因子发现
 ```
 
-完整子命令与参数说明请运行 `alphaevo --help` 或 `alphaevo <cmd> --help`。
+完整命令列表请运行 `alphaevo --help`。
 
-- **多数据源与 DSA 插件**：原生支持 `yfinance`（美股/港股）与 `akshare`（A 股），也可通过 `DSAAdapter` 对接关联项目 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)。
-- **Trajectory 数据飞轮**：每次进化均可导出 `trajectory.jsonl`、`sharegpt.jsonl`（SFT）与 `preference.jsonl`（DPO）——见 [Trajectory Data Flywheel](trajectory_data_flywheel.md)。
-- **多维防过拟合**：训练/验证/测试时间严格隔离、滚动 Walk-Forward、CPCV、DSR 多重检验惩罚与参数 ±10% 敏感度检验。
+## 📚 参考
 
----
+- **FunSearch (Nature 2024)** — Island 并行搜索与分支竞争
+- **OPRO (DeepMind 2023)** — 以轨迹历史驱动 LLM 优化
+- **Voyager (2023)** — 技能库 + 长期记忆
+- **autoresearch (Karpathy)** — 基于 `program.md` 宪章的自主假设搜索与 `results.tsv` 棘轮机制
+- **RD-Agent / Co-STEER** — 策略与因子协同进化及经验疤痕复用
+
+AlphaEvo 把这些思路落到了可证伪的股票量化策略研究场景。
+
+## 🔬 真实验证结果（2026 年 4 月 10 日）
+
+故意同时放成功和失败的案例——靠谱的研究系统应该在证据不够时老实停下来：
+
+| 策略案例 | 起点 | 最优结果 | 发生了什么 |
+|----------|------|----------|------------|
+| `rsi_reversion_v1` | `8.1%` | `56.3%` champion | 3 轮内从零信号修成可交易策略（498 信号，胜率 52.6%） |
+| `ma_crossover_v1` | `24.2%` | `24.2%` champion | LLM 提出修改，但未通过防过拟合检验，保留基线 |
+| `sector_rotation_leader_v1` smoke | `11.3%` | `12.3%` tested | 样本内提升但 `train_val_gap=18.9%`，拒绝晋升 |
+
+- **因子发现**：`alphaevo factor discover AAPL` 提出 3 个候选，2 个通过沙箱与 IC 验证并注册（`volatility_compressed_breakout_quality` IC Mean `0.306` / IR `1.76`；`volume_confirmed_reversal` IC Mean `0.248` / IR `1.50`），详见 [Factor Discovery Walkthrough](cookbook/07_factor_discovery_walkthrough.md)。
+- **导出产物**：每次运行自动保存研究报告、LLM 证据日志、research log 与 trajectory 数据。
+
+### 可复跑 Benchmark
+
+```bash
+python scripts/experiments/run_repro_benchmark.py \
+  --adapter yfinance --method llm --rounds 3 \
+  --output results/repro-benchmark/
+```
+
+详细记录：[2026-04-10 真实 LLM 验证报告](reports/2026-04-10-real-llm-validation_CN.md)。
+
+### 已知边界
+
+- 外部 LLM 服务可能有延迟和 timeout，重复跑结果不会完全一致
+- LLM 诊断合理不代表能通过防过拟合或 DSR / 零信号检验（`ma_crossover_v1` 就是例子）
+- 自动发现的因子和影子账本记录仅作研究参考，正式使用前需独立复核
+
+## 🧠 Trajectory 数据飞轮
+
+每次进化不光改策略，还自动生成训练数据：
+
+- `trajectory.jsonl`：每轮（状态 → 诊断 → 改动 → 结果）的结构化记录
+- `sharegpt.jsonl`：对话格式，可直接拿去做 SFT
+- `preference.jsonl`：优劣对比，适合 DPO 训练
+
+详见：[Trajectory Data Flywheel](trajectory_data_flywheel.md)
+
+## 🛡️ 防过拟合
+
+AlphaEvo 内置多重防过拟合与防幻觉机制：
+
+- **时间分离 & Walk-Forward**：训练 / 验证 / 测试严格分离，配合滚动 12 个月训练 → 1 个月测试窗口
+- **复杂度与稳定性惩罚**：条件数惩罚、最小信号数门槛（< 30 降权）、跨市场状态一致性及参数 ±10% 扰动敏感度检查
+- **多重检验修正（`TrialLedger` + DSR）**：只追加账本统计同一研究家族试错总次数，对历史 Sharpe 施加 Deflated Sharpe Ratio 惩罚
+- **零信号对照与运行时 PIT 探针**：对照 `block_shuffle` / `time_shift` / `random_entry` 的 95 分位门槛，并用未来行噪声扰动检测隔离检测隐式未来函数
+- **前瞻影子账本晋升门控**：历史回测只能否决，晋升需满足双时态样本外追踪、聚类有效样本数 $N_{\text{eff}}$ 与回撤红线熔断
+
+## 🔌 兼容性
+
+### 独立模式
+
+开箱即用，内置 `yfinance`（美股/港股）和 `akshare`（A 股）数据源。
+
+### 插件模式
+
+可对接 [daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis)，复用其多数据源自动 fallback 能力。
+
+```python
+from alphaevo.data.adapters.yfinance import YFinanceAdapter
+data_manager = DataManager([YFinanceAdapter()])
+
+from alphaevo.data.adapters.dsa import DSAAdapter
+data_manager = DataManager([DSAAdapter(dsa_path="/path/to/dsa")])
+```
+
+## 📦 安装选项
+
+```bash
+pip install -e .                  # 核心安装（仅回测与离线 RSI 闭环）
+pip install -e ".[llm]"           # 带 LLM 支持（策略生成与进化）
+pip install -e ".[data-yfinance]" # 默认美股 / 港股数据源
+pip install -e ".[data-akshare]"  # A 股数据源
+pip install -e ".[data-full]"     # 全部数据源
+pip install -e ".[dev]"           # 开发环境
+```
 
 ## 🗺️ 路线图
 
-- [x] **研究底座与 DSL**：YAML DSL + `SetupSpec`、信号级回测器、多维评估器与成熟度检查
-- [x] **双时钟 RSI (Evo) + Stock**：`TrialLedger` + DSR、Null Control、运行时 PIT 探针、Co-STEER L2、可执行伤疤、异构对抗议会与双时态影子账本
-- [ ] **组合级多策略资金分配**：跨策略协同组合回测与组合风险预算控制
-- [ ] **Web Evolution Lab 工作台**：可视化进化树、影子账本监控面板与 MAP-Elites 热力图
+- [x] Phase 1: 策略研究闭环 (MVP) — 回测引擎、指标、评估器
+- [x] Phase 2: 自我进化流水线 — LLM 反思、变异、多轮改进
+- [x] Phase 3: CLI & 编排 — 完整命令行、策略存储、排行榜
+- [x] Phase 4: 开源打磨 — CI/CD、文档、英文模板、CHANGELOG
+- [x] Phase 5: 真实验证 — 实盘数据回测 + 真实 LLM 进化验证
+- [x] Phase 6: 股票递归自我进化（RSI）与前瞻影子账本 — `TrialLedger` + DSR、零信号对照、PIT 探针、MAP-Elites、异构评审与双时态承诺追踪
+- [ ] Phase 7: 市场环境自适应与组合风控（见 Issue `#20`）
+- [ ] Phase 8: Web UI 仪表盘
 
----
+## 🤝 参与贡献
 
-## 🤝 参与贡献、免责声明与许可证
+欢迎贡献！请查看 [CONTRIBUTING.md](../CONTRIBUTING.md) 了解详细指南。
 
-欢迎提 PR / Issue，详见 [CONTRIBUTING.md](../CONTRIBUTING.md)；采用 **Apache-2.0** 协议开源（[LICENSE](../LICENSE)）。
+**特别欢迎以下贡献：**
+- 新的策略模板
+- 数据源适配器
+- 评估指标与机制实验
+- UI / 可视化改进
 
-> **免责声明**：**本项目仅供科研与学习使用，不构成任何投资建议。** 回测与前瞻模拟结果不代表未来实盘收益，使用本软件造成的任何盈亏均由使用者自行承担。
+## ☕ 支持与联系
+
+觉得有用的话给个 ⭐ 吧！
 
 <table>
   <tr>
-    <td align="center" width="180">
+    <td align="center" width="220">
       <a href="https://www.xiaohongshu.com/user/profile/61594417000000000201fa68" target="_blank">
-        <img src="../sources/xiaohongshu.png" width="130" alt="小红书"><br>
+        <img src="../sources/xiaohongshu.png" width="160" alt="小红书"><br>
         <b>小红书 📱</b>
-      </a>
+      </a><br>
+      <sub>关注获取量化策略研究动态</sub>
     </td>
-    <td valign="top" style="padding-left: 20px">
-      <b>📬 联系与关联项目</b><br><br>
-      🐛 <a href="https://github.com/ZhuLinsen/alphaevo/issues">提交 GitHub Issue</a> — Bug 反馈 / 功能建议<br>
-      📧 <a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a> — 商务与学术交流<br>
-      🔗 <a href="https://github.com/ZhuLinsen/daily_stock_analysis">daily_stock_analysis</a> — AI 驱动每日股票智能分析系统
+    <td valign="top" style="padding-left: 24px">
+      <b>📬 联系与合作</b><br><br>
+      🐛 &nbsp;<a href="https://github.com/ZhuLinsen/alphaevo/issues">提交 Issue</a> — Bug 反馈 / 功能建议<br>
+      📧 &nbsp;<a href="mailto:zhuls345@gmail.com">zhuls345@gmail.com</a> — 商务合作<br>
+      🔗 &nbsp;<a href="https://github.com/ZhuLinsen/daily_stock_analysis">daily_stock_analysis</a> — 关联项目，AI 驱动的每日股票智能分析系统
     </td>
   </tr>
 </table>
+
+## ⚠️ 免责声明
+
+**本项目仅供研究和学习，不是投资建议。**
+
+作者不对使用本软件导致的任何经济损失负责。投资决策前请自行研究并咨询专业人士。
+
+回测结果与影子账本记录仅作研究模拟，不代表未来表现。
+
+## 📄 许可证
+
+Apache-2.0 License — 详见 [LICENSE](../LICENSE)。
+
+如果你在项目中用到或基于它做二次开发，欢迎注明来源。
+
+---
+
+<div align="center">
+
+
+</div>
