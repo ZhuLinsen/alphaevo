@@ -69,6 +69,21 @@ class EvolutionConfig(BaseModel):
     sample_expansion_symbol_step: int = 20
 
 
+class RSIConfig(BaseModel):
+    """Dual-Clock RSI (Recursive Self-Improvement) & Shadow Ledger configuration."""
+
+    shadow_ledger_dir: Path = Field(
+        default_factory=lambda: Path.home() / ".alphaevo" / "shadow_ledger"
+    )
+    min_shadow_trading_days: int = Field(default=30, ge=1)
+    min_shadow_signals: int = Field(default=100, ge=1)
+    min_effective_signals: int = Field(default=30, ge=1)
+    null_permutations: int = Field(default=100, ge=10)
+    null_percentile: float = Field(default=0.95, gt=0.5, lt=1.0)
+    proposer_model: str | None = None
+    prosecutor_model: str | None = None
+
+
 class AppConfig(BaseModel):
     """Root configuration for AlphaEvo.
 
@@ -79,6 +94,7 @@ class AppConfig(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
+    rsi: RSIConfig = Field(default_factory=RSIConfig)
     db_path: Path = Field(default_factory=lambda: Path.home() / ".alphaevo" / "alphaevo.db")
     strategies_dir: Path = Field(default_factory=lambda: Path.home() / ".alphaevo" / "strategies")
 
@@ -110,6 +126,10 @@ _ENV_MAP: dict[str, str] = {
     "ALPHAEVO_EVOLUTION_MAX_SAMPLE_EXPANSIONS": "evolution.max_sample_expansions",
     "ALPHAEVO_EVOLUTION_SAMPLE_EXPANSION_WINDOW_DAYS": "evolution.sample_expansion_window_days",
     "ALPHAEVO_EVOLUTION_SAMPLE_EXPANSION_SYMBOL_STEP": "evolution.sample_expansion_symbol_step",
+    "ALPHAEVO_SHADOW_LEDGER_DIR": "rsi.shadow_ledger_dir",
+    "ALPHAEVO_RSI_PROPOSER_MODEL": "rsi.proposer_model",
+    "ALPHAEVO_RSI_PROSECUTOR_MODEL": "rsi.prosecutor_model",
+    "ALPHAEVO_RSI_NULL_PERMUTATIONS": "rsi.null_permutations",
 }
 
 

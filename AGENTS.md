@@ -6,9 +6,9 @@
 
 ## 1. 项目定位
 
-**AlphaEvo — Self-Evolving Stock Strategy Research Agent** — 自我进化股票策略研究Agent。
+**AlphaEvo — Open-Source RSI (Recursive Self-Improvement / Evo) Engine for Stock Research** — 开源股票策略、因子与研究机制的三层递归自我进化引擎。
 
-核心叙事：AI 像研究员一样，自己提出策略、验证策略、分析失败、持续改进策略。
+核心叙事：**RSI (Evo) + Stock** — 用不可变 L0 真相核与双时态前瞻影子账本约束 AI 研究闭环：「历史回测只负责否决，前瞻样本外影子账本才决定晋升」。
 
 **不承诺收益神话，强调研究闭环。**
 
@@ -50,6 +50,9 @@
 | **Self-Critic** | `src/alphaevo/reflection/critic.py` | 变更质量门控 + 多候选排名 |
 | **Meta-Learner** | `src/alphaevo/reflection/meta_learner.py` | 数据驱动的进化策略自适应 |
 | **Pattern Library** | `src/alphaevo/strategy/library/` | 跨策略可复用模式提取与注入 |
+| **L0 Truth Kernel** | `src/alphaevo/truth/` | TrialLedger、Deflated Sharpe、两层 Null Control、运行时 PIT 未来噪声探针 |
+| **Forward Shadow Ledger** | `src/alphaevo/forward/` | 双时态 `as_of` 提交、SHA-256 哈希链、T+5/10/20 归因与非对称晋升/熔断状态机 |
+| **RSI Engine (L1/L2/L3)** | `src/alphaevo/rsi/` | `program.md` 驱动棘轮、MAP-Elites、Co-STEER 盲区路由、异构模型议会、机制 AB 进化 |
 
 ### 关键入口
 

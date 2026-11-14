@@ -17,6 +17,14 @@ import numpy as np
 import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
+if TYPE_CHECKING_IMPORT := False:
+    pass
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from alphaevo.truth.pit_probe import PITProbeResult
+
 logger = logging.getLogger(__name__)
 
 # Modules allowed inside factor code
@@ -172,10 +180,27 @@ class FactorSandbox:
 
         return True, ""
 
-    def execute(self, code: str, df: pd.DataFrame) -> SandboxResult:
+    def probe_pit(self, code: str, df: pd.DataFrame) -> PITProbeResult:
+        """Run runtime future-noise and truncation probes to catch hidden lookahead."""
+        from alphaevo.truth.pit_probe import probe_point_in_time_invariance
+
+        return probe_point_in_time_invariance(
+            code,
+            df,
+            timeout_seconds=self.timeout,
+        )
+
+    def execute(
+        self,
+        code: str,
+        df: pd.DataFrame,
+        *,
+        verify_pit: bool = False,
+    ) -> SandboxResult:
         """Execute factor code and compute values for all valid indices.
 
-        The code is run in a child process for isolation.
+        The code is run in a child process for isolation. When ``verify_pit`` is True,
+        also verifies runtime point-in-time invariance against future noise/truncation.
         """
         import time
 
@@ -183,6 +208,17 @@ class FactorSandbox:
         is_safe, err_msg = self.validate_code(code)
         if not is_safe:
             return SandboxResult(success=False, error=f"Security: {err_msg}")
+
+        # Step 1b: Optional runtime PIT future-noise probe
+        if verify_pit and len(df) >= 10:
+            pit = self.probe_pit(code, df)
+            if not pit.passed:
+                detail = pit.error or (
+                    f"{pit.violations[0].probe_type} leakage at idx={pit.violations[0].probe_index}"
+                    if pit.violations
+                    else "point-in-time check failed"
+                )
+                return SandboxResult(success=False, error=f"PIT violation: {detail}")
 
         # Step 2: Execute in subprocess
         start = time.monotonic()

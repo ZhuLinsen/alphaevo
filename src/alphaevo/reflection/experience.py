@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from alphaevo.models.enums import ChangeType
+from alphaevo.models.enums import ChangeType, EvidenceLevel
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ class ExperienceRecord(BaseModel):
     action_type: str = ""  # llm | heuristic | param_search | pattern | factor_discovery
     regime: str = ""  # market regime when this change was tested
     source: str = ""  # which component produced this change
+    evidence_level: EvidenceLevel = EvidenceLevel.BACKTEST
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -78,7 +79,8 @@ CREATE TABLE IF NOT EXISTS evolution_experience (
     hypothesis TEXT DEFAULT '',
     action_type TEXT DEFAULT '',
     regime TEXT DEFAULT '',
-    source TEXT DEFAULT ''
+    source TEXT DEFAULT '',
+    evidence_level TEXT DEFAULT 'backtest'
 );
 
 CREATE INDEX IF NOT EXISTS idx_exp_family ON evolution_experience(strategy_family);
@@ -129,6 +131,10 @@ class ExperienceStore:
                         conn.execute(
                             f"ALTER TABLE evolution_experience ADD COLUMN {col} TEXT DEFAULT ''"
                         )
+                if "evidence_level" not in cols:
+                    conn.execute(
+                        "ALTER TABLE evolution_experience ADD COLUMN evidence_level TEXT DEFAULT 'backtest'"
+                    )
             except Exception:
                 pass
 
@@ -142,8 +148,8 @@ class ExperienceStore:
                      target, from_value, to_value, reason,
                      score_before, score_after, score_delta, worked,
                      failure_patterns, lesson, created_at,
-                     hypothesis, action_type, regime, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hypothesis, action_type, regime, source, evidence_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     exp.strategy_family,
@@ -165,6 +171,7 @@ class ExperienceStore:
                     exp.action_type,
                     exp.regime,
                     exp.source,
+                    exp.evidence_level.value,
                 ),
             )
 
@@ -194,6 +201,7 @@ class ExperienceStore:
                 rec.action_type,
                 rec.regime,
                 rec.source,
+                rec.evidence_level.value,
             )
             for rec in records
         ]
@@ -206,8 +214,8 @@ class ExperienceStore:
                      target, from_value, to_value, reason,
                      score_before, score_after, score_delta, worked,
                      failure_patterns, lesson, created_at,
-                     hypothesis, action_type, regime, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hypothesis, action_type, regime, source, evidence_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -470,6 +478,11 @@ class ExperienceStore:
             action_type=row[17] if len(row) > 17 else "",
             regime=row[18] if len(row) > 18 else "",
             source=row[19] if len(row) > 19 else "",
+            evidence_level=(
+                EvidenceLevel(row[20])
+                if len(row) > 20 and row[20] in {e.value for e in EvidenceLevel}
+                else EvidenceLevel.BACKTEST
+            ),
         )
 
     def _connect(self) -> sqlite3.Connection:

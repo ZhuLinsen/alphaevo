@@ -99,6 +99,8 @@ class Evaluator:
         market_data: dict[str, Any] | None = None,
         contexts: dict[str, Any] | None = None,
         backtest_config: Any = None,
+        trial_ledger: Any = None,
+        run_null_control: bool = False,
     ) -> EvaluationReport:
         """Full evaluation: metrics + confidence score + failure cases."""
         executed = [s for s in result.signals if s.exit_price is not None]
@@ -180,6 +182,32 @@ class Evaluator:
             anti_fit=anti_fit,
         )
 
+        deflated_sharpe_prob: float | None = None
+        family_trial_count = 0
+        if trial_ledger is not None:
+            family_id = trial_ledger.resolve_trial_family_id(strategy)
+            family_trial_count = max(1, trial_ledger.count_family_trials(family_id))
+            dsr_res = trial_ledger.compute_dsr_for_trials(
+                family_id=family_id,
+                n_trials=family_trial_count,
+                returns=[s.return_pct for s in executed],
+                observed_sharpe=overall.sharpe_ratio,
+                signal_count=overall.signal_count,
+            )
+            deflated_sharpe_prob = dsr_res.dsr_probability
+
+        null_control_passed: bool | None = None
+        null_p_value: float | None = None
+        if run_null_control and executed:
+            from alphaevo.truth.null_control import NullSignalController
+
+            null_res = NullSignalController().evaluate_candidate_against_nulls(
+                executed,
+                market_data=market_data,
+            )
+            null_control_passed = null_res.passed
+            null_p_value = null_res.worst_p_value
+
         return EvaluationReport(
             strategy_id=result.strategy_id,
             batch_id=result.batch_id,
@@ -197,6 +225,10 @@ class Evaluator:
             regime_holdout=regime_holdout,
             stress_windows=stress_windows,
             cpcv=cpcv,
+            deflated_sharpe_prob=deflated_sharpe_prob,
+            family_trial_count=family_trial_count,
+            null_control_passed=null_control_passed,
+            null_p_value=null_p_value,
         )
 
     def compute_metrics(self, signals: list[TradeSignal]) -> OverallMetrics:

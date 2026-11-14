@@ -86,3 +86,31 @@ class ChangeType(str, Enum):
     CHANGE_UNIVERSE = "change_universe"
     CHANGE_LOGIC = "change_logic"
     DISCOVER_FACTOR = "discover_factor"
+
+
+class PromotionStage(str, Enum):
+    """Asymmetric strategy promotion lifecycle in Dual-Clock RSI."""
+
+    DRAFT = "draft"
+    VALIDATED = "validated"
+    SHADOW = "shadow"
+    CANARY = "canary"
+    ACTIVE = "active"
+    HALTED = "halted"
+    RETIRED = "retired"
+
+
+class RSILevel(str, Enum):
+    """Recursive Self-Improvement hierarchy level."""
+
+    L1_STRATEGY = "L1"
+    L2_FACTOR = "L2"
+    L3_HARNESS = "L3"
+
+
+class EvidenceLevel(str, Enum):
+    """Strength of empirical backing attached to an experience or scar."""
+
+    BACKTEST = "backtest"
+    NULL_PASSED = "null_passed"
+    SHADOW_FORWARD = "shadow_forward"
