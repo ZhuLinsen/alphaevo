@@ -272,7 +272,7 @@ class _PrecomputeState:
     def _true_range(self) -> np.ndarray:
         if self._tr is not None:
             return self._tr
-        tr = self.high - self.low
+        tr: np.ndarray = cast("np.ndarray", np.asarray(self.high - self.low, dtype=float))
         if self.n > 1:
             tr[1:] = np.maximum(
                 self.high[1:] - self.low[1:],

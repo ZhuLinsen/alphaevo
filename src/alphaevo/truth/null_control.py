@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
@@ -178,7 +178,7 @@ def _reconstruct_shuffled_frame(
             }
         )
         prev_close = new_close
-    return pd.DataFrame(new_rows)
+    return cast("pd.DataFrame", pd.DataFrame(new_rows))
 
 
 def generate_block_shuffled_market(
