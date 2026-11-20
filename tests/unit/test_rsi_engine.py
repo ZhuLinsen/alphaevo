@@ -169,8 +169,13 @@ def test_stock_rsi_engine_end_to_end_and_mechanism_ab(tmp_path: Path) -> None:
     assert res.tsv_path is not None and res.tsv_path.is_file()
     assert res.report_path is not None and res.report_path.is_file()
     assert res.champion_yaml_path is not None and res.champion_yaml_path.is_file()
-    assert res.champion_evaluation.overall.signal_count > 0
-    assert res.champion_evaluation.overall.avg_return > 0.0
+    best_eval = (
+        res.champion_evaluation
+        if res.champion_promoted
+        else (res.working_evaluation or res.champion_evaluation)
+    )
+    assert best_eval.overall.signal_count > 0
+    assert best_eval.overall.avg_return > 0.0
 
     mech = MechanismEvaluator().evaluate_ab(
         strat,

@@ -76,6 +76,23 @@ class TencentAshareAdapter(DataAdapter):
             logger.exception("Tencent daily fetch failed for %s", code)
             return self._empty_df()
 
+    async def get_history_range(self, symbol: str, start: date, end: date) -> pd.DataFrame | None:
+        """Fetch daily OHLCV for an explicit calendar range [start, end]."""
+        code = normalize_tencent_symbol(symbol)
+        count = max(1, (end - start).days + 30)
+        try:
+            payload = await asyncio.to_thread(
+                self._fetch_daily_payload,
+                code,
+                count,
+                start,
+                end,
+            )
+            return self._normalize_daily_payload(payload, code)
+        except Exception:
+            logger.exception("Tencent range fetch failed for %s", code)
+            return self._empty_df()
+
     async def get_stock_list(self, market: MarketType) -> list[StockInfo]:
         """Tencent direct K-line endpoint does not provide a full stock universe."""
         return []
@@ -92,19 +109,23 @@ class TencentAshareAdapter(DataAdapter):
 
     async def get_index_data(self, index_symbol: str, start: date, end: date) -> pd.DataFrame:
         code = normalize_tencent_symbol(index_symbol)
-        if code == "sh000300":
-            code = "sh000300"
-        days = max(30, (end - start).days + 30)
-        df = await self.get_daily_data(code, days=days)
-        if df.empty:
-            return df
+        df = await self.get_history_range(code, start, end)
+        if df is None or df.empty:
+            return self._empty_df()
         mask = (df["date"] >= start) & (df["date"] <= end)
         return cast("pd.DataFrame", df.loc[mask].reset_index(drop=True))
 
     @staticmethod
-    def _fetch_daily_payload(code: str, days: int) -> dict[str, Any]:
+    def _fetch_daily_payload(
+        code: str,
+        days: int,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> dict[str, Any]:
         count = max(1, int(days))
-        params = urlencode({"param": f"{code},day,,,{count},qfq"})
+        start_s = start.isoformat() if start is not None else ""
+        end_s = end.isoformat() if end is not None else ""
+        params = urlencode({"param": f"{code},day,{start_s},{end_s},{count},qfq"})
         request = Request(f"{_TENCENT_DAY_URL}?{params}", headers=_HEADERS)
         with urlopen(request, timeout=10) as response:  # noqa: S310 - fixed HTTPS endpoint.
             data = response.read().decode("utf-8")

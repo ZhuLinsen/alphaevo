@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from alphaevo.backtest.engine import BacktestEngine
 from alphaevo.evaluator.metrics import Evaluator
 from alphaevo.models.enums import RSILevel, SamplingMethod
-from alphaevo.models.execution import SampleBatch
+from alphaevo.models.execution import BacktestResult, SampleBatch
 from alphaevo.models.strategy import Strategy
 from alphaevo.rsi.program import RSICharter
 from alphaevo.truth.null_control import NullSignalController
@@ -75,6 +77,34 @@ def _temporal_split_market(
     return train_data, fwd_data
 
 
+def _temporal_split_with_warmup(
+    market_data: dict[str, pd.DataFrame],
+    train_ratio: float = 0.65,
+    warmup_bars: int = 60,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], dict[str, date]]:
+    """Split each symbol into train and warmup-padded forward slices + OOS cutoff dates."""
+    train_data: dict[str, pd.DataFrame] = {}
+    fwd_data: dict[str, pd.DataFrame] = {}
+    fwd_cutoffs: dict[str, date] = {}
+    for sym, df in market_data.items():
+        if df.empty or len(df) < 35:
+            continue
+        ordered = (
+            df.sort_values("date").reset_index(drop=True)
+            if "date" in df
+            else df.reset_index(drop=True)
+        )
+        split_idx = max(20, int(len(ordered) * train_ratio))
+        if len(ordered) - split_idx < 20:
+            split_idx = max(20, len(ordered) - 20)
+        train_data[sym] = ordered.iloc[:split_idx].copy().reset_index(drop=True)
+        fwd_start = max(0, split_idx - warmup_bars)
+        fwd_data[sym] = ordered.iloc[fwd_start:].copy().reset_index(drop=True)
+        if "date" in ordered.columns:
+            fwd_cutoffs[sym] = pd.to_datetime(ordered["date"].iloc[split_idx]).date()
+    return train_data, fwd_data, fwd_cutoffs
+
+
 class MechanismEvaluator:
     """Runs frozen equal-budget paired AB/BA comparisons across L3 HarnessVariants."""
 
@@ -90,7 +120,10 @@ class MechanismEvaluator:
         seed: int = 42,
     ) -> MechanismExperimentResult:
         """Compare two harness variants strictly on unseen forward calibration."""
-        train_data, fwd_data = _temporal_split_market(market_data, train_ratio=train_ratio)
+        train_data, fwd_data, fwd_cutoffs = _temporal_split_with_warmup(
+            market_data,
+            train_ratio=train_ratio,
+        )
         if not train_data or not fwd_data:
             raise ValueError("Market dataset too short to form chronological train/forward split")
 
@@ -98,6 +131,7 @@ class MechanismEvaluator:
             seed_strategy=seed_strategy,
             train_data=train_data,
             fwd_data=fwd_data,
+            fwd_cutoffs=fwd_cutoffs,
             variant=baseline_variant,
             max_rounds=max_rounds,
             seed=seed,
@@ -106,6 +140,7 @@ class MechanismEvaluator:
             seed_strategy=seed_strategy,
             train_data=train_data,
             fwd_data=fwd_data,
+            fwd_cutoffs=fwd_cutoffs,
             variant=candidate_variant,
             max_rounds=max_rounds,
             seed=seed,
@@ -138,6 +173,7 @@ class MechanismEvaluator:
         seed_strategy: Strategy,
         train_data: dict[str, pd.DataFrame],
         fwd_data: dict[str, pd.DataFrame],
+        fwd_cutoffs: dict[str, date],
         variant: HarnessVariant,
         max_rounds: int,
         seed: int,
@@ -172,8 +208,8 @@ class MechanismEvaluator:
         evaluator = Evaluator()
         fwd_symbols = sorted(fwd_data.keys())
         dates = [
-            pd.to_datetime(df["date"]).dt.date.min()
-            for df in fwd_data.values()
+            fwd_cutoffs[sym] if sym in fwd_cutoffs else pd.to_datetime(df["date"]).dt.date.min()
+            for sym, df in fwd_data.items()
             if "date" in df and not df.empty
         ]
         end_dates = [
@@ -188,8 +224,22 @@ class MechanismEvaluator:
             date_range=(min(dates), max(end_dates)),
             sampling_method=SamplingMethod.REPRESENTATIVE,
         )
-        fwd_bt = bt_engine.run(champ, fwd_data, batch)
-        fwd_eval = evaluator.evaluate_fast(fwd_bt, champ)
+        fwd_bt_raw = bt_engine.run(champ, fwd_data, batch)
+        oos_signals = [
+            sig
+            for sig in fwd_bt_raw.signals
+            if sig.symbol not in fwd_cutoffs or sig.signal_date >= fwd_cutoffs[sig.symbol]
+        ]
+        fwd_bt = BacktestResult(
+            strategy_id=fwd_bt_raw.strategy_id,
+            batch_id=fwd_bt_raw.batch_id,
+            signals=oos_signals,
+            total_signals=len(oos_signals),
+            executed_signals=len([s for s in oos_signals if s.exit_price is not None]),
+            skipped_signals=len([s for s in oos_signals if s.exit_price is None]),
+            date_range=fwd_bt_raw.date_range,
+        )
+        fwd_eval = evaluator.evaluate_fast(fwd_bt, champ, market_data=fwd_data)
 
         train_avg = res.champion_evaluation.overall.avg_return
         fwd_avg = fwd_eval.overall.avg_return

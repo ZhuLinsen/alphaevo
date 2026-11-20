@@ -348,6 +348,15 @@ class TrialLedger:
             ).fetchone()
         return int(row[0]) if row else 0
 
+    def mark_trial_accepted(self, trial_id: str, accepted: bool = True) -> None:
+        """Update the acceptance outcome flag of a recorded trial."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE rsi_trial_ledger SET accepted = ? WHERE trial_id = ?",
+                (1 if accepted else 0, trial_id),
+            )
+            conn.commit()
+
     def count_total_trials(self) -> int:
         """Count total recorded trials across all families."""
         with self._connect() as conn:
@@ -462,21 +471,15 @@ class TrialLedger:
 
 
 def _normalize_db_path(db_path: str | Path) -> tuple[str, bool]:
-    """Return writable SQLite path or fall back to in-memory storage."""
+    """Return writable SQLite path, or explicit in-memory mode for ``':memory:'``."""
     if str(db_path) == ":memory:":
         return ":memory:", True
-    try:
-        resolved = Path(db_path).expanduser().resolve()
-    except OSError:
-        resolved = Path(db_path).expanduser()
+    resolved = Path(db_path).expanduser().resolve()
     probe = resolved.parent / f".{resolved.stem}.trial_probe"
-    try:
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        probe.touch(exist_ok=True)
-        probe.unlink(missing_ok=True)
-        return str(resolved), False
-    except OSError:
-        return ":memory:", True
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    probe.touch(exist_ok=True)
+    probe.unlink(missing_ok=True)
+    return str(resolved), False
 
 
 __all__ = [

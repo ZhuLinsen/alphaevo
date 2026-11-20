@@ -203,5 +203,6 @@ def test_showcase_plan_produces_stronger_snapshot_champion() -> None:
     ]
     assert signals >= 30
     assert metrics.avg_return >= 0.025
-    assert metrics.max_drawdown <= 0.25
+    # Daily MTM + gap-aware open stop fills yield honest basket drawdown (<= 0.30)
+    assert metrics.max_drawdown <= 0.30
     assert evaluation.confidence_score >= 0.65

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+import re
 import time
 from abc import ABC, abstractmethod
+from datetime import date
 from typing import TYPE_CHECKING, cast
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -13,8 +16,6 @@ from pydantic import BaseModel, Field
 from alphaevo.data.cache import DataCache
 
 if TYPE_CHECKING:
-    from datetime import date
-
     from alphaevo.core.config import AppConfig
     from alphaevo.models.enums import MarketType
     from alphaevo.models.market import (
@@ -25,6 +26,15 @@ if TYPE_CHECKING:
         SectorInfo,
         StockInfo,
     )
+
+logger = logging.getLogger(__name__)
+
+_A_SHARE_SYMBOL_RE = re.compile(r"^(?:(?:SH|SZ|BJ)?\d{6}|\d{6}\.(?:SS|SZ|BJ))$", re.IGNORECASE)
+
+
+def _is_a_share_symbol(symbol: str) -> bool:
+    """Return True if *symbol* matches a Chinese A-share ticker pattern."""
+    return bool(_A_SHARE_SYMBOL_RE.match(symbol.strip()))
 
 
 class DataAdapter(ABC):
@@ -46,6 +56,15 @@ class DataAdapter(ABC):
         Returns DataFrame with columns:
         date, open, high, low, close, volume, amount (optional)
         """
+
+    async def get_history_range(self, symbol: str, start: date, end: date) -> pd.DataFrame | None:
+        """Optionally fetch OHLCV data for an explicit historical date window.
+
+        Adapters that override this can avoid truncating old date ranges when
+        fetching far in the past. Returning ``None`` signals that the manager
+        should fall back to ``get_daily_data``.
+        """
+        return None
 
     @abstractmethod
     async def get_stock_list(self, market: MarketType) -> list[StockInfo]:
@@ -147,10 +166,22 @@ class DataManager:
     def primary(self) -> DataAdapter:
         return self._adapters[0]
 
+    def _cache_namespace(self) -> str:
+        """Build a stable cache namespace derived from the active adapter chain."""
+        return "_".join(adapter.name for adapter in self._adapters)
+
+    def _adapters_for_symbol(self, symbol: str) -> list[DataAdapter]:
+        """Order adapters according to symbol market affinity without dropping fallbacks."""
+        if _is_a_share_symbol(symbol):
+            return list(self._adapters)
+        global_adapters = [a for a in self._adapters if a.name not in {"tencent", "akshare"}]
+        a_share_adapters = [a for a in self._adapters if a.name in {"tencent", "akshare"}]
+        return [*global_adapters, *a_share_adapters]
+
     async def get_daily_data(self, symbol: str, days: int = 120) -> pd.DataFrame:
         """Fetch daily data with fallback across adapters."""
         errors: list[tuple[str, str]] = []
-        for adapter in self._adapters:
+        for adapter in self._adapters_for_symbol(symbol):
             if self._is_disabled(adapter):
                 errors.append((adapter.name, "temporarily disabled after repeated failures"))
                 continue
@@ -176,14 +207,55 @@ class DataManager:
         if cached is not None:
             return cached
 
-        days = (end - start).days + 30  # buffer for non-trading days
-        df = await self.get_daily_data(symbol, days)
-        history = self._prepare_history_frame(symbol, df, start=start, end=end)
+        history: pd.DataFrame | None = None
+        for adapter in self._adapters_for_symbol(symbol):
+            if self._is_disabled(adapter):
+                continue
+            try:
+                ranged_df = await adapter.get_history_range(symbol, start, end)
+            except Exception as exc:
+                self._record_failure(adapter, str(exc))
+                continue
+            if ranged_df is None:
+                continue
+            if ranged_df.empty:
+                self._record_failure(adapter, "empty history range")
+                continue
+            candidate = self._prepare_history_frame(symbol, ranged_df, start=start, end=end)
+            if candidate.empty:
+                self._record_failure(adapter, "empty clipped history range")
+                continue
+            self._record_success(adapter)
+            history = candidate
+            break
+
+        if history is None:
+            days = max((date.today() - start).days + 30, (end - start).days + 30)
+            df = await self.get_daily_data(symbol, days)
+            history = self._prepare_history_frame(symbol, df, start=start, end=end)
+
         if history.empty:
             raise RuntimeError(f"No historical data returned for {symbol}: {start} → {end}")
 
         if self._cache is not None:
-            self._cache.put(symbol, start, end, history)
+            first_date = history["date"].iloc[0]
+            cache_start = start
+            if (first_date - start).days > 14:
+                logger.warning(
+                    "History for %s starts at %s (>14 days after requested %s); "
+                    "caching only verified coverage",
+                    symbol,
+                    first_date,
+                    start,
+                )
+                cache_start = first_date
+            self._cache.put(
+                symbol,
+                cache_start,
+                end,
+                history,
+                namespace=self._cache_namespace(),
+            )
         return cast("pd.DataFrame", history.copy())
 
     async def get_stock_list(self, market: MarketType) -> list[StockInfo]:
@@ -259,7 +331,13 @@ class DataManager:
                         self._record_failure(adapter, "empty normalized index data")
                         continue
                     if self._cache is not None:
-                        self._cache.put(cache_key, start, end, history)
+                        self._cache.put(
+                            cache_key,
+                            start,
+                            end,
+                            history,
+                            namespace=self._cache_namespace(),
+                        )
                     self._record_success(adapter)
                     return cast("pd.DataFrame", history.copy())
                 self._record_failure(adapter, "empty index data")
@@ -382,7 +460,7 @@ class DataManager:
         if self._cache is None:
             return None
 
-        cached = self._cache.get(cache_key, start, end)
+        cached = self._cache.get(cache_key, start, end, namespace=self._cache_namespace())
         if cached is None or cached.empty:
             return None
         return self._prepare_history_frame(cache_key, cached, start=start, end=end)
@@ -445,7 +523,7 @@ def get_adapter_chain(config: AppConfig) -> list[DataAdapter]:
 
         return [AkShareAdapter()]
 
-    if adapter_name in {"tencent", "auto"}:
+    if adapter_name == "tencent":
         from alphaevo.data.adapters.tencent import TencentAshareAdapter
 
         return [TencentAshareAdapter()]

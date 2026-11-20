@@ -6,26 +6,26 @@
 
 | Item | Value |
 |------|-------|
-| Run ID | `20260430T054959Z_rsi_reversion_1181fd2d` |
-| Generated At | `2026-04-30T05:49:59+00:00` |
+| Run ID | `20261120T151813Z_rsi_reversion_1181fd2d` |
+| Generated At | `2026-11-20T15:18:13+00:00` |
 | Data Source | bundled frozen yfinance snapshot |
 | Snapshot | `us_tech_showcase_2025_2026` |
 | Date Range | 2025-02-11 to 2026-04-10 |
 | Symbols | AAPL, AMD, MSFT, NVDA, TSLA |
-| Baseline | `rsi_reversion_v1` score 8.1% |
-| Champion | `rsi_reversion_v7` score 68.7% |
+| Baseline | `rsi_reversion_v1` score 6.6% |
+| Champion | `rsi_reversion_v7` score 65.9% |
 
 ## Evolution Results
 
 | Round | Strategy | Change | Signals | Win Rate | Avg Return | Max DD | Score |
 |-------|----------|--------|---------|----------|------------|--------|-------|
-| 1 | `rsi_reversion_v1` | baseline | 0 | 0.0% | 0.00% | 0.0% | 8.1% |
-| 2 | `rsi_reversion_v2` | `entry.logic`: `and` -> `or` | 79 | 40.5% | -0.01% | 54.1% | 17.8% |
-| 3 | `rsi_reversion_v3` | `exit.stop_loss.value`: `0.05` -> `0.08` | 65 | 52.3% | 1.20% | 38.7% | 22.8% |
-| 4 | `rsi_reversion_v4` | `exit.max_holding_days`: `10` -> `14` | 57 | 47.4% | 1.50% | 36.8% | 37.7% |
-| 5 | `rsi_reversion_v5` | `exit.take_profit.value`: `2.0` -> `6.0` | 56 | 48.2% | 2.76% | 36.8% | 46.8% |
-| 6 | `rsi_reversion_v6` | `entry.conditions[indicator=close_to_ma20_pct].indicator`: `close_to_ma20_pct` -> `close_to_ma60_pct` | 38 | 47.4% | 2.59% | 26.4% | 54.6% |
-| 7 | `rsi_reversion_v7` | `entry.conditions[indicator=volume_ratio_1d_5d].value`: `1.3` -> `2.0` | 37 | 48.6% | 2.94% | 23.6% | 68.7% |
+| 1 | `rsi_reversion_v1` | baseline | 0 | 0.0% | 0.00% | 0.0% | 6.6% |
+| 2 | `rsi_reversion_v2` | `entry.logic`: `and` -> `or` | 79 | 40.5% | 0.35% | 37.0% | 22.1% |
+| 3 | `rsi_reversion_v3` | `exit.stop_loss.value`: `0.05` -> `0.08` | 65 | 52.3% | 1.17% | 34.7% | 20.9% |
+| 4 | `rsi_reversion_v4` | `exit.max_holding_days`: `10` -> `14` | 57 | 47.4% | 1.93% | 28.2% | 38.0% |
+| 5 | `rsi_reversion_v5` | `exit.take_profit.value`: `2.0` -> `6.0` | 56 | 48.2% | 2.74% | 27.4% | 44.9% |
+| 6 | `rsi_reversion_v6` | `entry.conditions[indicator=close_to_ma20_pct].indicator`: `close_to_ma20_pct` -> `close_to_ma60_pct` | 38 | 47.4% | 2.59% | 27.5% | 51.8% |
+| 7 | `rsi_reversion_v7` | `entry.conditions[indicator=volume_ratio_1d_5d].value`: `1.3` -> `2.0` | 37 | 48.6% | 2.94% | 26.7% | 65.9% |
 
 ## Champion Diagnostics
 
@@ -34,9 +34,9 @@
 | Signals | 37 |
 | Win Rate | 48.6% |
 | Average Return | 2.94% |
-| Sequential Total Return | 140.56% |
+| Sequential Total Return | 31.78% |
 | Profit/Loss Ratio | 2.46 |
-| Max Drawdown | 23.6% |
+| Max Drawdown | 26.7% |
 | Train-Val Gap | 7.1% |
 | Val-Test Gap | 7.1% |
 | Yearly Consistency | 97.1% |
@@ -53,8 +53,8 @@ The champion remains a showcase result, not an official benchmark: it uses a fix
 | 1 | Overfit Critic | fail | Sample is too small to trust improvement claims. |
 | 1 | Data Quality Auditor | pass | Data source and symbol basket are explicit enough for a showcase. |
 | 1 | Mutation Planner | pass | Plan starts by unlocking enough signals for a valid retest. |
-| 2 | Technical Analyst | fail | Signals are tradable but expected return is not yet positive. |
-| 2 | Risk Analyst | fail | Drawdown is too high for promotion. |
+| 2 | Technical Analyst | pass | Technical signal has enough trades and positive payoff shape. |
+| 2 | Risk Analyst | watch | Risk is usable for research but still needs exit discipline. |
 | 2 | Overfit Critic | fail | Anti-overfit checks reject promotion. |
 | 2 | Data Quality Auditor | pass | Data source and symbol basket are explicit enough for a showcase. |
 | 2 | Mutation Planner | pass | Plan changes one controlled lever at a time. |
@@ -64,12 +64,12 @@ The champion remains a showcase result, not an official benchmark: it uses a fix
 | 3 | Data Quality Auditor | pass | Data source and symbol basket are explicit enough for a showcase. |
 | 3 | Mutation Planner | pass | Plan changes one controlled lever at a time. |
 | 4 | Technical Analyst | pass | Technical signal has enough trades and positive payoff shape. |
-| 4 | Risk Analyst | watch | Risk is usable for research but still needs exit discipline. |
+| 4 | Risk Analyst | pass | Drawdown and loss clustering are within the research tolerance band. |
 | 4 | Overfit Critic | fail | Anti-overfit checks reject promotion. |
 | 4 | Data Quality Auditor | pass | Data source and symbol basket are explicit enough for a showcase. |
 | 4 | Mutation Planner | pass | Plan changes one controlled lever at a time. |
 | 5 | Technical Analyst | pass | Technical signal has enough trades and positive payoff shape. |
-| 5 | Risk Analyst | watch | Risk is usable for research but still needs exit discipline. |
+| 5 | Risk Analyst | pass | Drawdown and loss clustering are within the research tolerance band. |
 | 5 | Overfit Critic | fail | Anti-overfit checks reject promotion. |
 | 5 | Data Quality Auditor | pass | Data source and symbol basket are explicit enough for a showcase. |
 | 5 | Mutation Planner | pass | Plan changes one controlled lever at a time. |
@@ -114,7 +114,7 @@ The champion remains a showcase result, not an official benchmark: it uses a fix
 
 | Field | Value |
 |-------|-------|
-| Strategy Hash | `41beb2349b71` |
+| Strategy Hash | `37ed9aac9f73` |
 | Data Fingerprint | `1181fd2d09f0` |
 | Data Reproducibility | `replayable_snapshot` |
 | Adapter | `yfinance` |

@@ -25,6 +25,8 @@ class RSICharter(BaseModel):
     max_trials_budget: int = Field(default=50, ge=1)
     min_signals: int = Field(default=20, ge=1)
     max_drawdown: float = Field(default=0.30, gt=0.0, le=0.80)
+    min_dsr_prob: float = Field(default=0.20, ge=0.0, le=1.0)
+    max_complexity: int = Field(default=8, ge=1, le=20)
     require_null_control: bool = True
     null_permutations: int = Field(default=60, ge=10)
     mission_notes: str = ""

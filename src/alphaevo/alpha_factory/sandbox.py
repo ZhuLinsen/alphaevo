@@ -332,6 +332,96 @@ def _check_future_data_access(tree: ast.AST) -> str | None:
     return None
 
 
+def build_restricted_namespace() -> dict[str, Any]:
+    """Build an isolated execution namespace with safe non-I/O builtins."""
+    safe_builtins: dict[str, Any] = {
+        k: v
+        for k, v in (
+            (
+                k,
+                __builtins__[k]
+                if isinstance(__builtins__, dict)
+                else getattr(__builtins__, k, None),
+            )
+            for k in (
+                "True",
+                "False",
+                "None",
+                "int",
+                "float",
+                "str",
+                "bool",
+                "list",
+                "tuple",
+                "dict",
+                "set",
+                "frozenset",
+                "bytes",
+                "bytearray",
+                "complex",
+                "len",
+                "range",
+                "enumerate",
+                "zip",
+                "map",
+                "filter",
+                "sorted",
+                "reversed",
+                "min",
+                "max",
+                "sum",
+                "abs",
+                "round",
+                "any",
+                "all",
+                "isinstance",
+                "issubclass",
+                "type",
+                "hasattr",
+                "id",
+                "hash",
+                "repr",
+                "ValueError",
+                "TypeError",
+                "KeyError",
+                "IndexError",
+                "RuntimeError",
+                "StopIteration",
+                "ZeroDivisionError",
+                "ArithmeticError",
+                "Exception",
+                "AttributeError",
+            )
+        )
+        if v is not None
+    }
+    import math as _math
+
+    allowed_modules = {
+        "numpy": np,
+        "pandas": pd,
+        "math": _math,
+        "np": np,
+        "pd": pd,
+    }
+
+    def _safe_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        if name in allowed_modules:
+            return allowed_modules[name]
+        raise ImportError(f"Import of '{name}' is not allowed in factor code")
+
+    safe_builtins["__import__"] = _safe_import
+    return {
+        "__builtins__": safe_builtins,
+        "np": np,
+        "pd": pd,
+        "math": _math,
+        "numpy": np,
+        "pandas": pd,
+    }
+
+
 def _run_in_subprocess(
     code: str,
     df: pd.DataFrame,
@@ -365,93 +455,7 @@ def _run_in_subprocess(
                 file=sys.stderr,
             )
 
-        # Build execution namespace with restricted builtins.
-        # Only safe, non-IO builtins are exposed to prevent sandbox escapes
-        # even if a dunder chain slips past the AST validator.
-        _SAFE_BUILTINS = {  # noqa: N806
-            k: v
-            for k, v in (
-                (
-                    k,
-                    __builtins__[k]
-                    if isinstance(__builtins__, dict)
-                    else getattr(__builtins__, k, None),
-                )
-                for k in (
-                    "True",
-                    "False",
-                    "None",
-                    "int",
-                    "float",
-                    "str",
-                    "bool",
-                    "list",
-                    "tuple",
-                    "dict",
-                    "set",
-                    "frozenset",
-                    "bytes",
-                    "bytearray",
-                    "complex",
-                    "len",
-                    "range",
-                    "enumerate",
-                    "zip",
-                    "map",
-                    "filter",
-                    "sorted",
-                    "reversed",
-                    "min",
-                    "max",
-                    "sum",
-                    "abs",
-                    "round",
-                    "any",
-                    "all",
-                    "isinstance",
-                    "issubclass",
-                    "type",
-                    "hasattr",
-                    "id",
-                    "hash",
-                    "repr",
-                    "ValueError",
-                    "TypeError",
-                    "KeyError",
-                    "IndexError",
-                    "RuntimeError",
-                    "StopIteration",
-                    "ZeroDivisionError",
-                    "ArithmeticError",
-                    "Exception",
-                    "AttributeError",
-                )
-            )
-            if v is not None
-        }
-        # Controlled __import__ that only allows whitelisted modules
-        _allowed_modules = {
-            "numpy": np,
-            "pandas": pd,
-            "math": __import__("math"),
-            "np": np,
-            "pd": pd,
-        }
-
-        def _safe_import(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name in _allowed_modules:
-                return _allowed_modules[name]
-            raise ImportError(f"Import of '{name}' is not allowed in factor code")
-
-        _SAFE_BUILTINS["__import__"] = _safe_import
-        namespace: dict[str, Any] = {
-            "__builtins__": _SAFE_BUILTINS,
-            "np": np,
-            "pd": pd,
-            "math": __import__("math"),
-            "numpy": np,
-            "pandas": pd,
-        }
+        namespace = build_restricted_namespace()
 
         # Execute the code to define the compute function
         exec(code, namespace)  # noqa: S102 — code has passed AST validation

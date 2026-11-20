@@ -10,12 +10,17 @@ Adds:
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from alphaevo.models.execution import BacktestResult, TradeSignal
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 class PortfolioConfig(BaseModel):
@@ -82,21 +87,26 @@ class PortfolioBacktester:
     def __init__(self, config: PortfolioConfig | None = None) -> None:
         self.config = config or PortfolioConfig()
 
-    def simulate(self, backtest_result: BacktestResult) -> PortfolioResult:
+    def simulate(
+        self,
+        backtest_result: BacktestResult,
+        market_data: dict[str, pd.DataFrame] | None = None,
+    ) -> PortfolioResult:
         """Run portfolio simulation on signal-level backtest results.
 
         Processes signals chronologically, applying position sizing and
         capital constraints. Signals that exceed the max_positions limit
-        or available capital are skipped.
+        or available capital are skipped. When *market_data* is provided,
+        positions are marked to market on real daily closes.
         """
         cfg = self.config
         cash = cfg.initial_capital
         equity = cfg.initial_capital
 
-        # Sort signals by entry date
+        # Sort signals chronologically by entry date
         signals = sorted(
             [s for s in backtest_result.signals if s.exit_price is not None],
-            key=lambda s: s.signal_date,
+            key=lambda s: (s.signal_date, s.symbol),
         )
 
         if not signals:
@@ -112,19 +122,31 @@ class PortfolioBacktester:
         total_capital_days = 0.0
         total_days = 0
 
-        # Group signals by date for processing
-        all_dates = sorted(set(s.signal_date for s in signals))
+        close_map = _build_close_map(market_data)
+        event_dates: set[date] = {s.signal_date for s in signals}
+        for s in signals:
+            ex = _resolve_exit_date(s)
+            if ex is not None:
+                event_dates.add(ex)
+        min_d = min(event_dates)
+        max_d = max(event_dates)
+        if close_map:
+            for sym_dates, _ in close_map.values():
+                for d in sym_dates:
+                    if min_d <= d <= max_d:
+                        event_dates.add(d)
+
+        all_dates = sorted(event_dates)
         signal_idx = 0
 
         for current_date in all_dates:
-            # Close positions that have exited
+            # Close positions that have reached or passed their exit date
             still_open: list[tuple[TradeSignal, float, float]] = []
             for sig, shares, allocated in open_positions:
-                exit_date = _estimate_exit_date(sig)
+                exit_date = _resolve_exit_date(sig)
                 if exit_date is not None and exit_date <= current_date:
-                    # Close this position
-                    pnl = shares * (sig.exit_price - sig.entry_price) if sig.exit_price else 0.0
                     pnl_pct = sig.return_pct
+                    pnl = allocated * pnl_pct
                     cash += allocated + pnl
                     portfolio_trades.append(
                         PortfolioTrade(
@@ -139,6 +161,12 @@ class PortfolioBacktester:
                     still_open.append((sig, shares, allocated))
             open_positions = still_open
 
+            # Recompute current mark-to-market equity before sizing new entries
+            equity = cash + sum(
+                _mark_to_market(sig, shares, current_date, close_map=close_map)
+                for sig, shares, _alloc in open_positions
+            )
+
             # Open new positions from today's signals
             while signal_idx < len(signals) and signals[signal_idx].signal_date == current_date:
                 sig = signals[signal_idx]
@@ -151,7 +179,7 @@ class PortfolioBacktester:
                     cash * cfg.position_size_pct,
                     equity * cfg.position_size_pct,
                 )
-                if allocation < sig.entry_price:
+                if allocation < sig.entry_price or sig.entry_price <= 0:
                     continue  # Not enough capital
 
                 shares = allocation / sig.entry_price
@@ -160,16 +188,13 @@ class PortfolioBacktester:
 
             max_concurrent = max(max_concurrent, len(open_positions))
 
-            # Calculate current equity using mark-to-market estimates.
-            # Since we only have entry/exit prices (not daily closes), we
-            # linearly interpolate each position's value between entry and
-            # exit price over the holding period.
             invested_mtm = 0.0
             for sig, shares, _alloc in open_positions:
-                invested_mtm += _mark_to_market(sig, shares, current_date)
+                invested_mtm += _mark_to_market(sig, shares, current_date, close_map=close_map)
             current_equity = cash + invested_mtm
             prev_equity = equity_curve[-1].equity if equity_curve else cfg.initial_capital
             daily_ret = (current_equity / prev_equity - 1) if prev_equity > 0 else 0.0
+            equity = current_equity
 
             equity_curve.append(
                 PortfolioSnapshot(
@@ -184,9 +209,9 @@ class PortfolioBacktester:
             total_capital_days += len(open_positions) * cfg.position_size_pct
             total_days += 1
 
-        # Close any remaining positions at their exit prices
+        # Close any remaining positions at their net trade returns
         for sig, shares, allocated in open_positions:
-            pnl = shares * (sig.exit_price - sig.entry_price) if sig.exit_price else 0.0
+            pnl = allocated * sig.return_pct
             cash += allocated + pnl
             portfolio_trades.append(
                 PortfolioTrade(
@@ -220,13 +245,48 @@ class PortfolioBacktester:
         )
 
 
-def _mark_to_market(signal: TradeSignal, shares: float, current_date: date) -> float:
-    """Estimate position value via linear interpolation between entry and exit.
+def _build_close_map(
+    market_data: dict[str, pd.DataFrame] | None,
+) -> dict[str, tuple[list[date], list[float]]]:
+    """Build per-symbol date->close lookup tables for real daily MTM."""
+    out: dict[str, tuple[list[date], list[float]]] = {}
+    if not market_data:
+        return out
+    for sym, df in market_data.items():
+        if df is None or getattr(df, "empty", True):
+            continue
+        if "date" not in df.columns or "close" not in df.columns:
+            continue
+        pairs: list[tuple[date, float]] = []
+        for d_val, c_val in zip(df["date"].tolist(), df["close"].tolist(), strict=False):
+            d_norm = d_val.date() if hasattr(d_val, "date") and type(d_val) is not date else d_val
+            if isinstance(d_norm, date) and c_val is not None:
+                pairs.append((d_norm, float(c_val)))
+        if pairs:
+            pairs.sort(key=lambda item: item[0])
+            out[sym] = ([p[0] for p in pairs], [p[1] for p in pairs])
+    return out
 
-    Since we only have signal-level entry/exit prices (not daily OHLCV),
-    we linearly interpolate the price over the holding period to produce
-    a realistic equity curve with intra-trade P&L visibility.
-    """
+
+def _resolve_exit_date(signal: TradeSignal) -> date | None:
+    """Prefer actual realized exit_date over weekend-only estimate."""
+    return signal.exit_date or _estimate_exit_date(signal)
+
+
+def _mark_to_market(
+    signal: TradeSignal,
+    shares: float,
+    current_date: date,
+    *,
+    close_map: dict[str, tuple[list[date], list[float]]] | None = None,
+) -> float:
+    """Mark position using actual daily close when available, else linear interpolation."""
+    if close_map and signal.symbol in close_map:
+        dates_list, closes_list = close_map[signal.symbol]
+        pos = bisect_right(dates_list, current_date) - 1
+        if pos >= 0:
+            return shares * closes_list[pos]
+
     if signal.holding_days <= 0 or signal.exit_price is None:
         return shares * signal.entry_price  # Fallback to entry value
 
@@ -278,10 +338,10 @@ def _compute_portfolio_sharpe(
     curve: list[PortfolioSnapshot],
     risk_free_rate: float = 0.02,
 ) -> float:
-    """Compute annualized Sharpe ratio from daily returns."""
+    """Compute annualized Sharpe ratio from all daily portfolio returns."""
     if len(curve) < 2:
         return 0.0
-    returns = [snap.daily_return for snap in curve if snap.daily_return != 0.0]
+    returns = [snap.daily_return for snap in curve]
     if len(returns) < 2:
         return 0.0
     avg = sum(returns) / len(returns)

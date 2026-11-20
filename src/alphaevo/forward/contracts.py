@@ -38,6 +38,7 @@ class CandidateSpec(BaseModel):
     backtest_sharpe: float = 0.0
     deflated_sharpe_prob: float = 0.0
     null_control_passed: bool = False
+    stage_entered_as_of: date | None = None
     registered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     stage_history: list[StageTransition] = Field(default_factory=list)
 
@@ -71,6 +72,7 @@ class ForecastCommit(BaseModel):
     market_temperature: Literal["normal", "cautious", "defensive"] = "normal"
     total_raw_candidates: int = 0
     sector_capped_count: int = 0
+    is_replay: bool = False
     signals: list[SetupInstance] = Field(default_factory=list)
     prev_hash: str = "0" * 64
     record_hash: str = ""

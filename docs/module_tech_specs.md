@@ -838,9 +838,13 @@ def compute_confidence_score(metrics: OverallMetrics,
     dd_score = max(0, 1.0 - metrics.max_drawdown / 0.30) # 30%回撤得0分
     sharpe_score = min(1.0, max(0, metrics.sharpe_ratio / 2.0))
 
-    # 稳定性 (越高越好)
+    # 稳定性 (越高越好；未实测参数敏感度时保持中性 0.5)
     consistency = max(0, anti_fit.yearly_consistency)
-    sensitivity = max(0, 1.0 - anti_fit.param_sensitivity)
+    sensitivity = (
+        max(0, 1.0 - anti_fit.param_sensitivity)
+        if (anti_fit.param_sensitivity_measured or anti_fit.param_sensitivity > 0)
+        else 0.5
+    )
 
     # 惩罚
     overfit_penalty = 0.0

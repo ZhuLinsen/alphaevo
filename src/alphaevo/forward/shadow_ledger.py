@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import uuid
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -15,6 +16,7 @@ import pandas as pd  # type: ignore[import-untyped]
 
 from alphaevo.backtest.condition import ConditionEvaluator
 from alphaevo.backtest.indicators import IndicatorRegistry
+from alphaevo.backtest.rules import MarketRuleChecker
 from alphaevo.forward.contracts import (
     BitemporalEnvelope,
     CandidateSpec,
@@ -78,6 +80,7 @@ class ShadowLedger:
         evaluation: EvaluationReport,
         *,
         stage: PromotionStage = PromotionStage.SHADOW,
+        force_reset: bool = False,
     ) -> CandidateSpec:
         """Preregister a strategy candidate in the Forward Shadow Ledger."""
         if stage in {PromotionStage.SHADOW, PromotionStage.CANARY, PromotionStage.ACTIVE} and (
@@ -88,6 +91,12 @@ class ShadowLedger:
             )
 
         candidates = self._load_candidates()
+        existing = candidates.get(strategy.meta.id)
+        if existing is not None and existing.stage == PromotionStage.HALTED and not force_reset:
+            raise ValueError(
+                f"Candidate '{strategy.meta.id}' is HALTED and cannot be overwritten without force_reset=True"
+            )
+
         spec = CandidateSpec(
             strategy_id=strategy.meta.id,
             family_id=strategy.meta.family_id,
@@ -129,10 +138,40 @@ class ShadowLedger:
         sectors: dict[str, str] | None = None,
         market_regime: MarketRegime | None = None,
         contexts: dict[str, IndicatorContext] | None = None,
+        is_replay: bool = False,
+        enforce_wall_clock: bool = False,
+        allow_same_day: bool = True,
     ) -> ForecastCommit:
         """Generate & hash-chain forward stock setups strictly using data <= ``as_of``."""
+        registered = self.get_candidate(strategy.meta.id)
+        if registered is not None:
+            current_hash = compute_strategy_hash(strategy)
+            if current_hash != registered.strategy_hash:
+                raise ValueError(
+                    f"Strategy '{strategy.meta.id}' hash mismatch ({current_hash[:12]} != {registered.strategy_hash[:12]})"
+                )
+
+        existing_for_strat = self.load_commits(strategy.meta.id)
+        if existing_for_strat:
+            latest_as_of = existing_for_strat[-1].as_of
+            if as_of < latest_as_of or (not allow_same_day and as_of <= latest_as_of):
+                raise ValueError(
+                    f"Non-monotonic commit date {as_of} < latest committed {latest_as_of}"
+                )
+
+        if enforce_wall_clock and not is_replay:
+            today_utc = datetime.now(timezone.utc).date()
+            if (today_utc - as_of).days > 3 or as_of > today_utc + timedelta(days=1):
+                raise ValueError(
+                    f"Live commit date {as_of} deviates from UTC wall-clock {today_utc} without is_replay=True"
+                )
+
         raw_setups: list[SetupInstance] = []
         sector_map = sectors or {}
+        rule_checker = MarketRuleChecker()
+        market_key = strategy.meta.market.value
+        rules = strategy.market_rules.get(market_key, MarketRuleChecker.default_rules(market_key))
+        preferred_regimes = set(strategy.meta.preferred_regime)
 
         for symbol in sorted(market_data):
             pit_df = _truncate_pit(market_data[symbol], as_of)
@@ -144,6 +183,17 @@ class ShadowLedger:
 
             idx = len(pit_df) - 1
             ctx = contexts.get(symbol) if contexts else None
+            stock_name = ctx.stock_info.name if ctx and ctx.stock_info else ""
+            is_st = ctx.stock_info.is_st if ctx and ctx.stock_info else None
+            if not rule_checker.can_buy(
+                pit_df, idx, rules, symbol=symbol, stock_name=stock_name, is_st=is_st
+            ):
+                continue
+
+            detected_regime = market_regime or self._regime_detector.detect(pit_df)
+            if preferred_regimes and detected_regime.value not in preferred_regimes:
+                continue
+
             if not self._cond_eval.evaluate_entry(strategy.entry, pit_df, idx, ctx):
                 continue
 
@@ -159,7 +209,6 @@ class ShadowLedger:
                 continue
 
             target_price = round(close_price * (1.0 + stop_pct * planned_rr), 4)
-            detected_regime = market_regime or self._regime_detector.detect(pit_df)
             conviction = self._score_setup_conviction(strategy, pit_df, idx, ctx)
             grade: Literal["A", "B", "C"] = (
                 "A" if conviction >= 0.70 else ("B" if conviction >= 0.45 else "C")
@@ -203,6 +252,7 @@ class ShadowLedger:
             market_temperature=temp_label,
             total_raw_candidates=len(raw_setups),
             sector_capped_count=len(capped),
+            is_replay=is_replay,
             signals=capped,
             prev_hash=prev_hash,
             record_hash="",
@@ -280,14 +330,21 @@ class ShadowLedger:
             _truncate_pit(benchmark_df, evaluated_as_of) if benchmark_df is not None else None
         )
 
+        prior_events = {ev.signal_id: ev for ev in self.load_outcomes()}
         events: list[OutcomeEvent] = []
         for commit in self.load_commits():
             for sig in commit.signals:
+                prior_ev = prior_events.get(sig.signal_id)
                 sym_df = truncated_market.get(sig.symbol)
                 horizons_out: dict[int, OutcomeHorizon] = {}
                 if sym_df is None or sym_df.empty or "date" not in sym_df:
                     for h in _HORIZONS:
-                        horizons_out[h] = OutcomeHorizon(horizon_days=h, mature=False)
+                        prior_h = prior_ev.horizons.get(h) if prior_ev else None
+                        horizons_out[h] = (
+                            prior_h
+                            if prior_h is not None and prior_h.mature
+                            else OutcomeHorizon(horizon_days=h, mature=False)
+                        )
                     events.append(
                         OutcomeEvent(
                             signal_id=sig.signal_id,
@@ -304,8 +361,13 @@ class ShadowLedger:
                 dates = pd.to_datetime(sym_df["date"]).dt.date
                 future_bars = sym_df.loc[dates > sig.envelope.as_of].reset_index(drop=True)
                 for h in _HORIZONS:
+                    prior_h = prior_ev.horizons.get(h) if prior_ev else None
                     if len(future_bars) < h:
-                        horizons_out[h] = OutcomeHorizon(horizon_days=h, mature=False)
+                        horizons_out[h] = (
+                            prior_h
+                            if prior_h is not None and prior_h.mature
+                            else OutcomeHorizon(horizon_days=h, mature=False)
+                        )
                         continue
                     window = future_bars.iloc[:h]
                     entry_open = (
@@ -361,10 +423,17 @@ class ShadowLedger:
                     )
                 )
 
-        # Deduplicate outcomes by (signal_id, evaluated_as_of) rewrite for clean latest state
-        with self.outcomes_file.open("w", encoding="utf-8") as fh:
+        # Preserve any out-of-commit outcome records and write atomically
+        seen_ids = {ev.signal_id for ev in events}
+        for sig_id, prior_ev in prior_events.items():
+            if sig_id not in seen_ids:
+                events.append(prior_ev)
+
+        tmp_path = self.outcomes_file.with_suffix(".jsonl.tmp")
+        with tmp_path.open("w", encoding="utf-8") as fh:
             for ev in events:
                 fh.write(ev.model_dump_json() + "\n")
+        os.replace(tmp_path, self.outcomes_file)
         return events
 
     def load_outcomes(self, strategy_id: str | None = None) -> list[OutcomeEvent]:
@@ -458,13 +527,17 @@ class ShadowLedger:
         std_r = math.sqrt(max(0.0, var))
         lb90 = avg_ret - 1.2816 * std_r / math.sqrt(max(1.0, n_eff))
 
-        # Sequential drawdown on realized forward trades ordered by commit date
-        ordered = sorted(mature_pairs, key=lambda pair: pair[0].as_of)
+        # Daily equal-weight portfolio bucket drawdown ordered by commit date
+        by_day: dict[date, list[float]] = defaultdict(list)
+        for ev, hor in mature_pairs:
+            by_day[ev.as_of].append(hor.tradable_post_cost_return)
         equity = 1.0
         peak = 1.0
         max_dd = 0.0
-        for _, hor in ordered:
-            equity *= 1.0 + hor.tradable_post_cost_return
+        for d in sorted(by_day):
+            bucket = by_day[d]
+            day_ret = sum(bucket) / len(bucket)
+            equity *= max(0.0, 1.0 + day_ret)
             peak = max(peak, equity)
             dd = (peak - equity) / max(1e-9, peak)
             max_dd = max(max_dd, dd)
@@ -516,6 +589,17 @@ class ShadowLedger:
             raise ValueError(f"Strategy '{strategy_id}' is not registered in ShadowLedger")
 
         prev_stage = cand.stage
+        if prev_stage == PromotionStage.HALTED:
+            return PromotionDecision(
+                strategy_id=strategy_id,
+                previous_stage=prev_stage,
+                new_stage=prev_stage,
+                action="hold",
+                blocking_reasons=[
+                    "Candidate is HALTED and requires explicit force_reset before promotion"
+                ],
+            )
+
         decay = self.build_decay_report(strategy_id, horizon_days=horizon_days)
         chain_ok, chain_errors = self.verify_chain()
 
@@ -556,6 +640,23 @@ class ShadowLedger:
             passed.append("hash_chain_verified")
         else:
             blocking.append(f"Hash chain verification failed: {'; '.join(chain_errors)}")
+
+        commits = self.load_commits(strategy_id)
+        if commits and all(c.is_replay for c in commits):
+            blocking.append("Replay-only commits cannot trigger live stage promotion")
+
+        if prev_stage == PromotionStage.CANARY and cand.stage_entered_as_of is not None:
+            post_stage_days = {
+                ev.as_of
+                for ev in self.load_outcomes(strategy_id)
+                if ev.as_of > cand.stage_entered_as_of
+                and horizon_days in ev.horizons
+                and ev.horizons[horizon_days].mature
+            }
+            if len(post_stage_days) < min_trading_days:
+                blocking.append(
+                    f"Canary dwell days {len(post_stage_days)} < {min_trading_days} since {cand.stage_entered_as_of}"
+                )
 
         if decay.mature_trading_days >= min_trading_days:
             passed.append(f"mature_trading_days>={min_trading_days}")
@@ -613,7 +714,17 @@ class ShadowLedger:
                 passed_gates=passed,
             )
 
+        mature_dates = [
+            ev.as_of
+            for ev in self.load_outcomes(strategy_id)
+            if horizon_days in ev.horizons and ev.horizons[horizon_days].mature
+        ]
         cand.stage = new_stage
+        cand.stage_entered_as_of = (
+            max(mature_dates)
+            if mature_dates
+            else (commits[-1].as_of if commits else datetime.now(timezone.utc).date())
+        )
         cand.stage_history.append(
             StageTransition(
                 from_stage=prev_stage,

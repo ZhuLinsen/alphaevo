@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from datetime import date
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from alphaevo.models.market import EventContextSeries, IndicatorContext
 
@@ -88,6 +88,14 @@ class IndicatorRegistry:
 
     _registry: dict[str, IndicatorFn] = {}
     _templated_registry: dict[str, IndicatorFn] = {}
+    _takes_ctx: dict[str, bool] = {}
+
+    @classmethod
+    def _cache_signature(cls, name: str, fn: IndicatorFn) -> bool:
+        """Cache whether *fn* accepts a third ``ctx`` parameter."""
+        takes_ctx = len(inspect.signature(fn).parameters) >= 3
+        cls._takes_ctx[name] = takes_ctx
+        return takes_ctx
 
     @classmethod
     def register(cls, name: str) -> Callable:
@@ -95,6 +103,7 @@ class IndicatorRegistry:
 
         def decorator(fn: IndicatorFn) -> IndicatorFn:
             cls._registry[name] = fn
+            cls._cache_signature(name, fn)
             return fn
 
         return decorator
@@ -113,10 +122,40 @@ class IndicatorRegistry:
         if name not in cls._registry and name not in cls._templated_registry:
             raise KeyError(f"Unknown indicator: '{name}'. Available: {cls.available()}")
         fn = cls._registry.get(name) or cls._templated_registry[name]
-        sig = inspect.signature(fn)
-        if len(sig.parameters) >= 3:
+        takes_ctx = cls._takes_ctx.get(name)
+        if takes_ctx is None:
+            takes_ctx = cls._cache_signature(name, fn)
+        if takes_ctx:
             return fn(df, idx, ctx)
         return fn(df, idx)
+
+    @classmethod
+    def precompute(
+        cls,
+        names: Sequence[str],
+        df: pd.DataFrame,
+        ctx: IndicatorContext | None = None,
+    ) -> dict[str, list[IndicatorValue]]:
+        """Precompute O(N) vectorized series for a collection of indicator names."""
+        unique_names = list(dict.fromkeys(names))
+        if not unique_names or df.empty:
+            return {name: [] for name in unique_names}
+
+        state = _PrecomputeState(df, ctx)
+        result: dict[str, list[IndicatorValue]] = {}
+        for name in unique_names:
+            if name not in cls._registry and name not in cls._templated_registry:
+                cls._register_templated(name)
+            if name not in cls._registry and name not in cls._templated_registry:
+                raise KeyError(f"Unknown indicator: '{name}'. Available: {cls.available()}")
+            if name in cls._dynamic_registry:
+                result[name] = [cls.compute(name, df, i, ctx) for i in range(len(df))]
+                continue
+            series = state.compute(name)
+            if series is None:
+                series = [cls.compute(name, df, i, ctx) for i in range(len(df))]
+            result[name] = series
+        return result
 
     @classmethod
     def available(cls) -> list[str]:
@@ -147,6 +186,7 @@ class IndicatorRegistry:
         """
         cls._dynamic_registry[name] = fn
         cls._registry[name] = fn
+        cls._cache_signature(name, fn)
 
     @classmethod
     def unregister_dynamic(cls, name: str) -> bool:
@@ -154,6 +194,7 @@ class IndicatorRegistry:
         removed = cls._dynamic_registry.pop(name, None) is not None
         if removed:
             cls._registry.pop(name, None)
+            cls._takes_ctx.pop(name, None)
         return removed
 
     @classmethod
@@ -170,7 +211,596 @@ class IndicatorRegistry:
         if fn is None:
             return False
         cls._templated_registry[name] = fn
+        cls._cache_signature(name, fn)
         return True
+
+
+class _PrecomputeState:
+    """Lazy O(N) vectorized series calculator for ``IndicatorRegistry.precompute``."""
+
+    def __init__(self, df: pd.DataFrame, ctx: IndicatorContext | None) -> None:
+        self.df = df
+        self.ctx = ctx
+        self.n = len(df)
+        self.close_s = df["close"].astype(float)
+        self.open_s = df["open"].astype(float)
+        self.high_s = df["high"].astype(float)
+        self.low_s = df["low"].astype(float)
+        self.vol_s = df["volume"].astype(float)
+        self.close = self.close_s.to_numpy(dtype=float)
+        self.open = self.open_s.to_numpy(dtype=float)
+        self.high = self.high_s.to_numpy(dtype=float)
+        self.low = self.low_s.to_numpy(dtype=float)
+        self.vol = self.vol_s.to_numpy(dtype=float)
+        self._sma_cache: dict[int, np.ndarray] = {}
+        self._rsi_cache: dict[int, np.ndarray] = {}
+        self._tr: np.ndarray | None = None
+        self._event_df: pd.DataFrame | None = None
+
+    def _sma(self, period: int) -> np.ndarray:
+        cached = self._sma_cache.get(period)
+        if cached is not None:
+            return cached
+        arr = (
+            self.close_s.rolling(period).mean().to_numpy(dtype=float)
+            if period > 0
+            else np.full(self.n, np.nan, dtype=float)
+        )
+        self._sma_cache[period] = arr
+        return arr
+
+    def _rsi(self, period: int) -> np.ndarray:
+        cached = self._rsi_cache.get(period)
+        if cached is not None:
+            return cached
+        out = np.full(self.n, 50.0, dtype=float)
+        if period > 0 and self.n > period:
+            changes = self.close_s.diff().iloc[1:]
+            gains = changes.clip(lower=0.0)
+            losses = -changes.clip(upper=0.0)
+            ag = gains.ewm(com=period - 1, min_periods=period).mean().to_numpy(dtype=float)
+            al = losses.ewm(com=period - 1, min_periods=period).mean().to_numpy(dtype=float)
+            ag_tail = ag[period - 1 :]
+            al_tail = al[period - 1 :]
+            valid = ~np.isnan(ag_tail) & ~np.isnan(al_tail)
+            safe_al = np.where(al_tail == 0.0, 1.0, al_tail)
+            vals = np.where(al_tail == 0.0, 100.0, 100.0 - (100.0 / (1.0 + (ag_tail / safe_al))))
+            out[period:] = np.where(valid, vals, 50.0)
+        self._rsi_cache[period] = out
+        return out
+
+    def _true_range(self) -> np.ndarray:
+        if self._tr is not None:
+            return self._tr
+        tr = self.high - self.low
+        if self.n > 1:
+            tr[1:] = np.maximum(
+                self.high[1:] - self.low[1:],
+                np.maximum(
+                    np.abs(self.high[1:] - self.close[:-1]),
+                    np.abs(self.low[1:] - self.close[:-1]),
+                ),
+            )
+        self._tr = tr
+        return tr
+
+    def _macd(
+        self, fast: int, slow: int, signal: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        if fast <= 0 or slow <= 0 or signal <= 0 or fast >= slow:
+            return None
+        ema_fast = self.close_s.ewm(span=fast, adjust=False).mean()
+        ema_slow = self.close_s.ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        return (
+            macd_line.to_numpy(dtype=float),
+            signal_line.to_numpy(dtype=float),
+            histogram.to_numpy(dtype=float),
+        )
+
+    def _bollinger(
+        self, period: int, std_mult: float
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        if period <= 0 or std_mult <= 0 or self.n < period:
+            return None
+        mid = self._sma(period)
+        std = self.close_s.rolling(period).std(ddof=1).to_numpy(dtype=float)
+        return (mid, mid + std_mult * std, mid - std_mult * std)
+
+    def _event_source(self, column: str) -> pd.DataFrame:
+        if column in self.df.columns:
+            return self.df
+        if self._event_df is None:
+            self._event_df = enrich_with_event_proxies(self.df)
+        return self._event_df
+
+    def compute(self, name: str) -> list[IndicatorValue] | None:
+        """Return precomputed list for *name*, or ``None`` if scalar fallback needed."""
+        n = self.n
+        if n == 0:
+            return []
+
+        if match := re.fullmatch(r"ma(\d+)_above_ma(\d+)", name):
+            fast, slow = (
+                _parse_positive_period(match.group(1)),
+                _parse_positive_period(match.group(2)),
+            )
+            if fast is None or slow is None:
+                return None
+            fma, sma = self._sma(fast), self._sma(slow)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(~np.isnan(fma) & ~np.isnan(sma), fma > sma, False).tolist(),
+            )
+
+        if match := re.fullmatch(r"ma(\d+)_ge_ma(\d+)_or_crossing", name):
+            fast, slow = (
+                _parse_positive_period(match.group(1)),
+                _parse_positive_period(match.group(2)),
+            )
+            if fast is None or slow is None:
+                return None
+            fma, sma = self._sma(fast), self._sma(slow)
+            pfma = np.roll(fma, 1)
+            psma = np.roll(sma, 1)
+            pfma[0], psma[0] = np.nan, np.nan
+            valid = ~np.isnan(fma) & ~np.isnan(sma) & ~np.isnan(pfma) & ~np.isnan(psma)
+            res = (fma >= sma) | ((pfma < psma) & (fma >= sma * 0.998))
+            return cast("list[IndicatorValue]", np.where(valid, res, False).tolist())
+
+        if match := re.fullmatch(r"close_to_ma(\d+)_pct", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            ma = self._sma(p)
+            valid = ~np.isnan(ma) & (ma != 0.0)
+            safe_ma = np.where(valid, ma, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, np.abs(self.close - ma) / safe_ma, 1.0).tolist(),
+            )
+
+        if match := re.fullmatch(r"close_above_ma(\d+)", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            ma = self._sma(p)
+            return cast(
+                "list[IndicatorValue]", np.where(~np.isnan(ma), self.close > ma, False).tolist()
+            )
+
+        if match := re.fullmatch(r"close_below_ma(\d+)", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            ma = self._sma(p)
+            return cast(
+                "list[IndicatorValue]", np.where(~np.isnan(ma), self.close < ma, False).tolist()
+            )
+
+        if match := re.fullmatch(r"deviation_from_ma(\d+)_pct", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            ma = self._sma(p)
+            valid = ~np.isnan(ma) & (ma != 0.0)
+            safe_ma = np.where(valid, ma, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (self.close - ma) / safe_ma, 0.0).tolist(),
+            )
+
+        if match := re.fullmatch(r"ma(\d+)_slope", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            ma = self._sma(p)
+            ma_5ago = np.roll(ma, 5)
+            ma_5ago[: min(n, 5)] = np.nan
+            valid = ~np.isnan(ma) & ~np.isnan(ma_5ago) & (ma_5ago != 0.0)
+            safe_prev = np.where(valid, ma_5ago, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (ma - ma_5ago) / safe_prev, 0.0).tolist(),
+            )
+
+        if match := re.fullmatch(r"rsi_(\d+)", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            return cast("list[IndicatorValue]", self._rsi(p).tolist())
+
+        if match := re.fullmatch(r"rsi_(\d+)_zscore", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            rsi_arr = self._rsi(p)
+            rsi_s = pd.Series(rsi_arr)
+            mean50 = rsi_s.rolling(50).mean().to_numpy(dtype=float)
+            std50 = rsi_s.rolling(50).std(ddof=0).to_numpy(dtype=float)
+            valid = (np.arange(n) >= 50) & ~np.isnan(mean50) & (std50 >= 1e-6)
+            safe_std = np.where(valid, std50, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (rsi_arr - mean50) / safe_std, 0.0).tolist(),
+            )
+
+        if name == "atr":
+            atr_p: int | None = 14
+        elif atr_match := re.fullmatch(r"atr_(\d+)", name):
+            atr_p = _parse_positive_period(atr_match.group(1))
+        else:
+            atr_p = -1
+        if atr_p != -1:
+            if atr_p is None:
+                return None
+            tr = self._true_range()
+            out = tr.copy()
+            if n > atr_p:
+                tr_ma = pd.Series(tr).rolling(atr_p).mean().to_numpy(dtype=float)
+                out[atr_p:] = tr_ma[atr_p:]
+            return cast("list[IndicatorValue]", out.tolist())
+
+        if name == "macd_histogram":
+            fast_h: int | None = 12
+            slow_h: int | None = 26
+            signal_h: int | None = 9
+        elif macd_h_match := re.fullmatch(r"macd_histogram_fast(\d+)_slow(\d+)_signal(\d+)", name):
+            fast_h = _parse_positive_period(macd_h_match.group(1))
+            slow_h = _parse_positive_period(macd_h_match.group(2))
+            signal_h = _parse_positive_period(macd_h_match.group(3))
+        else:
+            fast_h = slow_h = signal_h = -1
+        if fast_h != -1:
+            if fast_h is None or slow_h is None or signal_h is None:
+                return None
+            comps = self._macd(fast_h, slow_h, signal_h)
+            if comps is None:
+                return [0.0] * n
+            out = comps[2].copy()
+            out[: min(n, slow_h + signal_h - 2)] = 0.0
+            return cast("list[IndicatorValue]", out.tolist())
+
+        if name == "macd_cross_bullish":
+            fast_c: int | None = 12
+            slow_c: int | None = 26
+            signal_c: int | None = 9
+        elif macd_c_match := re.fullmatch(
+            r"macd_cross_bullish_fast(\d+)_slow(\d+)_signal(\d+)", name
+        ):
+            fast_c = _parse_positive_period(macd_c_match.group(1))
+            slow_c = _parse_positive_period(macd_c_match.group(2))
+            signal_c = _parse_positive_period(macd_c_match.group(3))
+        else:
+            fast_c = slow_c = signal_c = -1
+        if fast_c != -1:
+            if fast_c is None or slow_c is None or signal_c is None:
+                return None
+            comps = self._macd(fast_c, slow_c, signal_c)
+            if comps is None:
+                return [False] * n
+            macd_line, signal_line, _ = comps
+            prev_m = np.roll(macd_line, 1)
+            prev_s = np.roll(signal_line, 1)
+            cross = (macd_line > signal_line) & (prev_m <= prev_s)
+            cross[: min(n, slow_c + signal_c - 1)] = False
+            return cast("list[IndicatorValue]", cross.tolist())
+
+        if name in {
+            "bollinger_band_width",
+            "price_above_bollinger_upper",
+            "price_below_bollinger_lower",
+        }:
+            period, std_mult = 20, 2.0
+            mode = name
+        elif match := re.fullmatch(
+            r"(bollinger_band_width|price_above_bollinger_upper|price_below_bollinger_lower)_(\d+)d(?:_std([0-9]+(?:p[0-9]+)?))?",
+            name,
+        ):
+            mode = match.group(1)
+            period_opt = _parse_positive_period(match.group(2))
+            std_opt = _parse_multiplier_token(match.group(3)) if match.group(3) else 2.0
+            if period_opt is None or std_opt is None:
+                return None
+            period, std_mult = period_opt, std_opt
+        else:
+            mode = ""
+            period, std_mult = 0, 0.0
+
+        if mode:
+            bands = self._bollinger(period, std_mult)
+            if bands is None:
+                default: IndicatorValue = 0.1 if mode == "bollinger_band_width" else False
+                return [default] * n
+            mid, upper, lower = bands
+            valid = ~np.isnan(mid) & ~np.isnan(upper)
+            if mode == "bollinger_band_width":
+                valid_w = valid & (mid != 0.0)
+                safe_mid = np.where(valid_w, mid, 1.0)
+                return cast(
+                    "list[IndicatorValue]",
+                    np.where(valid_w, (upper - lower) / safe_mid, 0.1).tolist(),
+                )
+            if mode == "price_above_bollinger_upper":
+                return cast(
+                    "list[IndicatorValue]", np.where(valid, self.close > upper, False).tolist()
+                )
+            return cast("list[IndicatorValue]", np.where(valid, self.close < lower, False).tolist())
+
+        if match := re.fullmatch(r"breakout_high_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            prior_high = self.high_s.shift(1).rolling(p).max().to_numpy(dtype=float)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(~np.isnan(prior_high), self.close > prior_high, False).tolist(),
+            )
+
+        if name == "price_position_52w":
+            lo = self.close_s.rolling(250, min_periods=20).min().to_numpy(dtype=float)
+            hi = self.close_s.rolling(250, min_periods=20).max().to_numpy(dtype=float)
+            valid = ~np.isnan(lo) & (hi != lo)
+            safe_span = np.where(valid, hi - lo, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (self.close - lo) / safe_span, 0.5).tolist(),
+            )
+
+        if match := re.fullmatch(r"price_position_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            if p < 2:
+                return [0.5] * n
+            lo = self.close_s.rolling(p, min_periods=2).min().to_numpy(dtype=float)
+            hi = self.close_s.rolling(p, min_periods=2).max().to_numpy(dtype=float)
+            valid = ~np.isnan(lo) & (hi != lo)
+            safe_span = np.where(valid, hi - lo, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (self.close - lo) / safe_span, 0.5).tolist(),
+            )
+
+        if match := re.fullmatch(r"volume_ratio_1d_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            baseline = self.vol_s.shift(1).rolling(p).mean().to_numpy(dtype=float)
+            valid = ~np.isnan(baseline) & (baseline > 0.0)
+            safe_base = np.where(valid, baseline, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, self.vol / safe_base, 1.0).tolist(),
+            )
+
+        if match := re.fullmatch(r"momentum_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            prev = self.close_s.shift(p).to_numpy(dtype=float)
+            valid = ~np.isnan(prev) & (prev != 0.0)
+            safe_prev = np.where(valid, prev, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (self.close - prev) / safe_prev, 0.0).tolist(),
+            )
+
+        if match := re.fullmatch(r"avg_volume_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            vma = self.vol_s.rolling(p).mean().to_numpy(dtype=float)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(np.isnan(vma), self.vol, vma).tolist(),
+            )
+
+        if name == "consecutive_up_days":
+            res_days: list[IndicatorValue] = [0] * n
+            count = 0
+            for i in range(1, n):
+                count = count + 1 if self.close[i] > self.close[i - 1] else 0
+                res_days[i] = count
+            return res_days
+
+        if name == "consecutive_down_days":
+            res_days = [0] * n
+            count = 0
+            for i in range(1, n):
+                count = count + 1 if self.close[i] < self.close[i - 1] else 0
+                res_days[i] = count
+            return res_days
+
+        if match := re.fullmatch(r"days_since_high_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            out_idx = np.zeros(n, dtype=int)
+            if n >= p:
+                wins = np.lib.stride_tricks.sliding_window_view(self.high, p)
+                out_idx[p - 1 :] = (p - 1) - np.argmax(wins, axis=1)
+            return cast("list[IndicatorValue]", out_idx.tolist())
+
+        if match := re.fullmatch(r"days_since_low_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            out_idx = np.zeros(n, dtype=int)
+            if n >= p:
+                wins = np.lib.stride_tricks.sliding_window_view(self.low, p)
+                out_idx[p - 1 :] = (p - 1) - np.argmin(wins, axis=1)
+            return cast("list[IndicatorValue]", out_idx.tolist())
+
+        if match := re.fullmatch(r"volatility_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            if p < 6 or n <= p:
+                return [0.0] * n
+            rets = self.close_s.pct_change()
+            rstd = rets.rolling(p - 1, min_periods=5).std(ddof=1).to_numpy(dtype=float)
+            out_vol = np.zeros(n, dtype=float)
+            tail = rstd[p:]
+            out_vol[p:] = np.where(~np.isnan(tail), tail * (250.0**0.5), 0.0)
+            return cast("list[IndicatorValue]", out_vol.tolist())
+
+        if match := re.fullmatch(r"relative_strength_(\d+)d", name):
+            p = _parse_positive_period(match.group(1))
+            if p is None:
+                return None
+            prev = self.close_s.shift(p).to_numpy(dtype=float)
+            valid_s = ~np.isnan(prev) & (prev != 0.0)
+            safe_prev = np.where(valid_s, prev, 1.0)
+            stock_ret = np.where(valid_s, (self.close / safe_prev) - 1.0, 0.0)
+            bm_ret = np.zeros(n, dtype=float)
+            if (
+                self.ctx
+                and isinstance(self.ctx.benchmark_df, pd.DataFrame)
+                and not self.ctx.benchmark_df.empty
+            ):
+                bm = self.ctx.benchmark_df
+                bm_close = bm["close"].to_numpy(dtype=float)
+                sym_dates = _extract_dates(self.df)
+                bm_dates = _extract_dates(bm)
+                if sym_dates is not None and bm_dates is not None:
+                    bm_indices = [bisect_right(bm_dates, d) - 1 for d in sym_dates]
+                else:
+                    bm_indices = [i if i < len(bm) else -1 for i in range(n)]
+                for i in range(p, n):
+                    bi = bm_indices[i]
+                    if bi >= p and bm_close[bi - p] != 0.0:
+                        bm_ret[i] = (bm_close[bi] / bm_close[bi - p]) - 1.0
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid_s, stock_ret - bm_ret, 0.0).tolist(),
+            )
+
+        if name == "has_stop_signal":
+            body = np.abs(self.close - self.open)
+            lower_shadow = np.minimum(self.open, self.close) - self.low
+            hammer = (body > 0.0) & (lower_shadow >= 2.0 * body)
+            prev_close = np.roll(self.close, 1)
+            prev_open = np.roll(self.open, 1)
+            engulf = (
+                (prev_close < prev_open)
+                & (self.close > self.open)
+                & (self.close > prev_open)
+                & (self.open < prev_close)
+            )
+            sig = hammer | engulf
+            sig[0] = False
+            return cast("list[IndicatorValue]", sig.tolist())
+
+        if name == "volume_shrink_then_rise":
+            if n < 4:
+                return [False] * n
+            res_vsr = np.zeros(n, dtype=bool)
+            res_vsr[3:] = (
+                (self.vol[:-3] > self.vol[1:-2])
+                & (self.vol[1:-2] > self.vol[2:-1])
+                & (self.vol[3:] > self.vol[2:-1])
+            )
+            return cast("list[IndicatorValue]", res_vsr.tolist())
+
+        if name == "gap_up_pct":
+            prev_gap = np.roll(self.close, 1)
+            prev_gap[0] = 0.0
+            valid = (np.arange(n) >= 1) & (prev_gap != 0.0)
+            safe_prev = np.where(valid, prev_gap, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, (self.open - prev_gap) / safe_prev, 0.0).tolist(),
+            )
+
+        if name == "body_to_range_ratio":
+            rng = self.high - self.low
+            valid = rng != 0.0
+            safe_rng = np.where(valid, rng, 1.0)
+            return cast(
+                "list[IndicatorValue]",
+                np.where(valid, np.abs(self.close - self.open) / safe_rng, 0.0).tolist(),
+            )
+
+        if name == "st_flag":
+            val = bool(self.ctx.stock_info.is_st) if self.ctx and self.ctx.stock_info else False
+            return [val] * n
+
+        if name == "sector_heat_rank":
+            val_int = (
+                int(self.ctx.sector_info.heat_rank)
+                if self.ctx and self.ctx.sector_info and self.ctx.sector_info.heat_rank is not None
+                else 1
+            )
+            return [val_int] * n
+
+        if name == "sector_heat_rising_days":
+            val_int = (
+                int(self.ctx.sector_info.rising_days)
+                if self.ctx
+                and self.ctx.sector_info
+                and self.ctx.sector_info.rising_days is not None
+                else 99
+            )
+            return [val_int] * n
+
+        if name == "intra_sector_strength_rank_pct":
+            val_flt = (
+                float(self.ctx.intra_sector_strength_rank_pct)
+                if self.ctx and self.ctx.intra_sector_strength_rank_pct is not None
+                else 0.0
+            )
+            return [val_flt] * n
+
+        if name == "sector_fund_flow_positive":
+            val_bool = (
+                bool(self.ctx.sector_info.net_inflow > 0)
+                if self.ctx and self.ctx.sector_info and self.ctx.sector_info.net_inflow is not None
+                else True
+            )
+            return [val_bool] * n
+
+        if name == "sector_risk_flag":
+            val_bool = (
+                bool(self.ctx.sector_info.risk_flag) if self.ctx and self.ctx.sector_info else False
+            )
+            return [val_bool] * n
+
+        if name == "sector_net_inflow_days":
+            val_int = (
+                int(self.ctx.sector_info.net_inflow_days)
+                if self.ctx
+                and self.ctx.sector_info
+                and self.ctx.sector_info.net_inflow_days is not None
+                else 99
+            )
+            return [val_int] * n
+
+        if name in {
+            "negative_news_score",
+            "news_sentiment_score",
+            "days_since_event",
+            "price_above_pre_event",
+            "already_overreacted",
+        }:
+            override = getattr(self.ctx, name, None) if self.ctx is not None else None
+            if override is not None:
+                if name == "days_since_event":
+                    return [int(override)] * n
+                if name in {"price_above_pre_event", "already_overreacted"}:
+                    return [bool(override)] * n
+                return [float(override)] * n
+            src = self._event_source(name)
+            col_vals = src[name].tolist()
+            if name == "days_since_event":
+                return [_NO_EVENT_DAYS if pd.isna(v) else int(v) for v in col_vals]
+            if name in {"price_above_pre_event", "already_overreacted"}:
+                return [False if pd.isna(v) else bool(v) for v in col_vals]
+            return [0.0 if pd.isna(v) else float(v) for v in col_vals]
+
+        return None
 
 
 def _parse_positive_period(value: str) -> int | None:
@@ -290,6 +920,30 @@ def _compute_breakout_high(df: pd.DataFrame, idx: int, lookback: int) -> bool:
     return bool(float(df["close"].iloc[idx]) > float(prior_high))
 
 
+def _extract_dates(df: pd.DataFrame) -> list[date] | None:
+    """Extract normalized ``date`` objects from ``df['date']`` when available."""
+    if "date" not in df.columns or df.empty:
+        return None
+    raw = df["date"].tolist()
+    if all(type(v) is date for v in raw):
+        return cast("list[date]", raw)
+    return cast("list[date]", pd.to_datetime(df["date"]).dt.date.tolist())
+
+
+def _align_benchmark_idx(df: pd.DataFrame, idx: int, bm: pd.DataFrame) -> int | None:
+    """Resolve the causal benchmark bar index aligned to ``df`` bar ``idx``."""
+    if bm.empty or idx < 0 or idx >= len(df):
+        return None
+    if "date" in df.columns and "date" in bm.columns:
+        sym_dates = _extract_dates(df)
+        bm_dates = _extract_dates(bm)
+        if not sym_dates or not bm_dates:
+            return None
+        bm_idx = bisect_right(bm_dates, sym_dates[idx]) - 1
+        return bm_idx if bm_idx >= 0 else None
+    return idx if idx < len(bm) else None
+
+
 def _compute_relative_strength(
     df: pd.DataFrame,
     idx: int,
@@ -304,12 +958,13 @@ def _compute_relative_strength(
         return 0.0
     stock_ret = (df["close"].iloc[idx] / base_price) - 1
     benchmark_ret = 0.0
-    if ctx and ctx.benchmark_df is not None:
+    if ctx and isinstance(ctx.benchmark_df, pd.DataFrame):
         bm = ctx.benchmark_df
-        if isinstance(bm, pd.DataFrame) and idx < len(bm) and idx >= lookback:
-            bm_base = bm["close"].iloc[idx - lookback]
+        bm_idx = _align_benchmark_idx(df, idx, bm)
+        if bm_idx is not None and bm_idx >= lookback:
+            bm_base = bm["close"].iloc[bm_idx - lookback]
             if bm_base != 0:
-                benchmark_ret = (bm["close"].iloc[idx] / bm_base) - 1
+                benchmark_ret = (bm["close"].iloc[bm_idx] / bm_base) - 1
     return float(stock_ret - benchmark_ret)
 
 
@@ -1410,20 +2065,7 @@ def body_to_range_ratio(df: pd.DataFrame, idx: int) -> float:
 @IndicatorRegistry.register("relative_strength_20d")
 def relative_strength_20d(df: pd.DataFrame, idx: int, ctx: IndicatorContext | None = None) -> float:
     """Stock 20-day return minus benchmark 20-day return."""
-    if idx < 20:
-        return 0.0
-    base_price = df["close"].iloc[idx - 20]
-    if base_price == 0:
-        return 0.0
-    stock_ret = (df["close"].iloc[idx] / base_price) - 1
-    benchmark_ret = 0.0
-    if ctx and ctx.benchmark_df is not None:
-        bm = ctx.benchmark_df
-        if isinstance(bm, pd.DataFrame) and idx < len(bm) and idx >= 20:
-            bm_base = bm["close"].iloc[idx - 20]
-            if bm_base != 0:
-                benchmark_ret = (bm["close"].iloc[idx] / bm_base) - 1
-    return float(stock_ret - benchmark_ret)
+    return _compute_relative_strength(df, idx, 20, ctx)
 
 
 @IndicatorRegistry.register("st_flag")

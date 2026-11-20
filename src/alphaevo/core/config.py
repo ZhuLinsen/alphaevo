@@ -38,6 +38,7 @@ class DataConfig(BaseModel):
     adanos_base_url: str = "https://api.adanos.org"
     source_failure_threshold: int = Field(default=3, ge=1)
     source_cooldown_seconds: float = Field(default=60.0, ge=0.0)
+    max_concurrent_fetches: int = Field(default=8, ge=1, le=64)
 
 
 class BacktestConfig(BaseModel):
@@ -110,6 +111,7 @@ _ENV_MAP: dict[str, str] = {
     "ALPHAEVO_DSA_PATH": "data.dsa_path",
     "ALPHAEVO_DATA_SOURCE_FAILURE_THRESHOLD": "data.source_failure_threshold",
     "ALPHAEVO_DATA_SOURCE_COOLDOWN_SECONDS": "data.source_cooldown_seconds",
+    "ALPHAEVO_DATA_MAX_CONCURRENT_FETCHES": "data.max_concurrent_fetches",
     "ADANOS_API_KEY": "data.adanos_api_key",
     "ALPHAEVO_ADANOS_API_KEY": "data.adanos_api_key",
     "ADANOS_API_BASE_URL": "data.adanos_base_url",
