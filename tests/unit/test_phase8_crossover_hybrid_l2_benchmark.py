@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import yaml
 from typer.testing import CliRunner
 
 from alphaevo.alpha_factory.factor_store import FactorStore
@@ -509,3 +510,25 @@ def test_arena_crossover_digest_and_cold_subprocess_import() -> None:
         check=True,
     )
     assert "COLD OK" in proc.stdout
+
+
+def test_github_workflows_valid_yaml_and_no_secrets_in_if() -> None:
+    wf_dir = Path(".github/workflows")
+    wf_files = sorted(list(wf_dir.glob("*.yml")) + list(wf_dir.glob("*.yaml")))
+    assert wf_files, "Expected GitHub workflow YAML files"
+    for wf_path in wf_files:
+        doc = yaml.safe_load(wf_path.read_text(encoding="utf-8"))
+        assert isinstance(doc, dict)
+        jobs = doc.get("jobs")
+        assert isinstance(jobs, dict) and jobs, f"{wf_path} missing jobs"
+        for job_name, job_cfg in jobs.items():
+            assert isinstance(job_cfg, dict)
+            if "if" in job_cfg:
+                assert "secrets." not in str(job_cfg["if"]), (
+                    f"{wf_path} job '{job_name}' uses forbidden secrets context in if"
+                )
+            for step in job_cfg.get("steps", []) or []:
+                if isinstance(step, dict) and "if" in step:
+                    assert "secrets." not in str(step["if"]), (
+                        f"{wf_path} step '{step.get('name')}' uses forbidden secrets context in if"
+                    )
