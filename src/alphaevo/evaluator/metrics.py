@@ -306,16 +306,16 @@ class Evaluator:
         return []
 
     @staticmethod
-    def compute_daily_mtm_returns(
+    def compute_daily_mtm_series(
         signals: list[TradeSignal],
         market_data: dict[str, Any] | None,
-    ) -> tuple[list[float], int, float, float, float]:
-        """Compute chronological equal-weight daily MTM basket returns.
+    ) -> tuple[list[date], list[float], int, float, float, float]:
+        """Compute chronological equal-weight daily MTM basket dates and return series.
 
-        Returns ``(daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
+        Returns ``(calendar, daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
         """
         if not signals or not market_data:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         sym_dates: dict[str, list[date]] = {}
         sym_closes: dict[str, list[float]] = {}
@@ -343,13 +343,13 @@ class Evaluator:
             calendar_set.update(dates_list)
 
         if not sym_dates or not calendar_set:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         min_entry = min(s.signal_date for s in signals)
         max_exit = max((s.exit_date or s.signal_date) for s in signals)
         calendar = sorted(d for d in calendar_set if min_entry <= d <= max_exit)
         if len(calendar) < 2:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         day_pos_rets: dict[date, list[float]] = defaultdict(list)
         for sig in signals:
@@ -385,7 +385,7 @@ class Evaluator:
                 day_pos_rets[bar_d].append(bar_ret)
 
         if not day_pos_rets:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         daily_rets: list[float] = []
         active_days = 0
@@ -398,7 +398,7 @@ class Evaluator:
                 daily_rets.append(0.0)
 
         if active_days == 0 or len(daily_rets) < 2:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         equity = 1.0
         peak = 1.0
@@ -413,6 +413,20 @@ class Evaluator:
         std_d = stdev(daily_rets)
         sharpe = (avg_d / std_d * math.sqrt(252)) if std_d > 0 else 0.0
         total_ret = equity - 1.0
+        return (calendar, daily_rets, active_days, max_dd, sharpe, total_ret)
+
+    @staticmethod
+    def compute_daily_mtm_returns(
+        signals: list[TradeSignal],
+        market_data: dict[str, Any] | None,
+    ) -> tuple[list[float], int, float, float, float]:
+        """Compute chronological equal-weight daily MTM basket returns.
+
+        Returns ``(daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
+        """
+        _cal, daily_rets, active_days, max_dd, sharpe, total_ret = (
+            Evaluator.compute_daily_mtm_series(signals, market_data)
+        )
         return (daily_rets, active_days, max_dd, sharpe, total_ret)
 
     def compute_confidence_score(

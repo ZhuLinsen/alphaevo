@@ -64,10 +64,11 @@ AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的�
 | 统一 `EvaluationKernel` 与锁定 Holdout (`LockedHoldoutVault`) | **已实现 (Implemented)** | 时间隔离不可见 Holdout、Layer-2 组合硬否决、优化器全量接入 `TrialLedger` 及 CI 全指标 PIT 不变性校验 |
 | L0 真相核 (`TrialLedger` / DSR / 零信号对照 / PIT 探针) | **已实现 (Implemented)** | 严格持久化落盘、自定义因子运行时 PIT 截断与 CI Tier-2 零假晋升审讯 |
 | 双时钟 RSI 棘轮与前瞻影子账本 (`alphaevo rsi` / `shadow`) | **已实现 (Implemented)** | Co-STEER L2 因子落库 `FactorStore`、统一 `ExperienceStore` 评分口径、SHA-256 哈希链与可选自动入账 |
-| 不可变 Run Provenance 与分级排行榜 (`runs` / `leaderboard`) | **已实现 (Implemented)** | `RunArtifactStore` 清单、脱敏配置快照、`alphaevo runs list/show/compare` 与 `leaderboard --scope local\|official` |
+| 不可变 Run Provenance 与分级排行榜 (`runs` / `leaderboard`) | **已实现 (Implemented)** | `RunArtifactStore` 清单、脱敏配置快照、`DataBundleStore` SHA-256 数据包、`runs rerun-official` 与 `leaderboard --scope local\|official` |
+| 多策略市场状态自适应资金配权 (`portfolio allocate`) | **已实现 (Implemented)** | 严格因果波动率倒数、市场状态降权、日频相关性惩罚与回撤去杠杆风险预算 |
 | 异构多模型议会 (CLI / LiteLLM 审讯) | **已实现 (Implemented)** | 无 Key 时退化为策略无关通用启发式探索 |
 | L2/L3 事件新闻与板块情绪指标 | **实验性 (Experimental)** | 缺少外部馈送时自动降级并记录静态上下文警示 (`static_context_warnings`) |
-| 不可变 Data Bundle 与 Web UI 面板 | **规划中 (Planned)** | 路线图下一阶段 |
+| Web UI 研究工作台面板 | **规划中 (Planned)** | 路线图下一阶段 |
 
 ## 🚀 快速开始
 
@@ -270,10 +271,15 @@ alphaevo strategy research "<idea>"       # 一句话策略→保存→回测→
 alphaevo strategy improve <id> "<改法>"   # 修订已有策略→保存→复测（无需 LLM）
 alphaevo strategy list / show <id>        # 查看策略列表与详情
 
-# 回测、优化、Provenance 与经典进化
-alphaevo run <strategy_id> --protocol full_research_v1
-                                          # 运行完整研究闭环并落盘不可变 provenance 工件
+# 回测、优化、数据包、Provenance 与经典进化
+alphaevo data bundle create --name us_snap
+                                          # 创建 SHA-256 校验的不可变 OHLCV 数据包
+alphaevo run <strategy_id> --bundle <bundle_id> --protocol full_research_v1
+                                          # 基于不可变数据包跑完整研究闭环并落盘 provenance 工件
 alphaevo runs list / show / compare       # 检索与对比不可变 run artifact 清单及策略差异
+alphaevo runs rerun-official <id> --bundle <bundle_id>
+                                          # 在官方验证数据包上按 official_v1 协议复评
+alphaevo portfolio allocate <s1> <s2>     # 多策略因果市场状态自适应风险预算分配
 alphaevo optimize <strategy_id> --objective robust_profit_quality --reject-overfit
                                           # 参数与风控搜索（试错接入 TrialLedger，完整选项见 --help）
 alphaevo evolve <strategy_id> --method llm --rounds 3 --output reports/
@@ -391,7 +397,7 @@ pip install -e ".[dev]"           # 开发环境
 - [x] Phase 4: 开源打磨 — CI/CD、文档、英文模板、CHANGELOG
 - [x] Phase 5: 真实验证 — 实盘数据回测 + 真实 LLM 进化验证
 - [x] Phase 6: 股票递归自我进化（RSI）与前瞻影子账本 — `TrialLedger` + DSR、零信号对照、PIT 探针、MAP-Elites、异构评审与双时态承诺追踪
-- [ ] Phase 7: 市场环境自适应与组合风控（见 Issue `#20`）
+- [x] Phase 7: 市场环境自适应多策略风控配权与不可变数据包 — `RegimeAdaptiveAllocator`、`DataBundleStore`、`runs rerun-official` 与 `EvolutionPipeline` 统一收敛
 - [ ] Phase 8: Web UI 仪表盘
 
 ## 🤝 参与贡献

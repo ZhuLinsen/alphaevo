@@ -2,7 +2,7 @@
 
 更新时间: 2026-11-21
 
-> **实现状态**: 核心不可变 Run Artifact 契约（`manifest.json`、`strategy_snapshot.yaml`、`config_snapshot.json`、`data_fingerprint.json`、`evaluation.json`、`trades.jsonl`、`report.md`、`run_artifacts` SQLite 索引、`alphaevo runs list/show/compare`、`alphaevo leaderboard --scope local|official` 及 `official_v1` 降级门控）已在 `src/alphaevo/provenance/` 与 `src/alphaevo/leaderboard/` 落地；完整 `alphaevo data bundle create` 不可变数据包阶段作为下一步扩展。
+> **实现状态**: 核心不可变 Run Artifact 契约（`manifest.json`、`strategy_snapshot.yaml`、`config_snapshot.json`、`data_fingerprint.json`、`evaluation.json`、`trades.jsonl`、`report.md`、`run_artifacts` SQLite 索引、`alphaevo runs list/show/compare/rerun-official`、`alphaevo leaderboard --scope local|official` 及 `official_v1` 降级门控）与 SHA-256 不可变数据包（`DataBundleStore`、`alphaevo data bundle create/list/show/verify`、`alphaevo run --bundle`）均已落地；Web 工作台与扩展多市场分钟级包作为后续阶段扩展。
 
 ## 1. 目标
 

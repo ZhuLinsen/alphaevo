@@ -30,7 +30,7 @@
 | **Data Layer** | `src/alphaevo/data/` | 多数据源接入，统一 MarketSnapshot 输出 |
 | **Strategy Layer** | `src/alphaevo/strategy/` | 策略 DSL 定义、解析、序列化、版本管理 |
 | **Sampler Layer** | `src/alphaevo/sampler/` | 分层采样（市场环境/风格/策略适用范围） |
-| **Backtest Layer** | `src/alphaevo/backtest/` | 指标注册表 + 条件评估 + 回测引擎 + 组合回测 |
+| **Backtest Layer** | `src/alphaevo/backtest/` | 指标注册表 + 条件评估 + 回测引擎 + 组合回测 + 因果自适应风险分配器 |
 | **Evaluator Layer** | `src/alphaevo/evaluator/` | 多维评估（胜率/盈亏比/回撤/环境适应性） |
 | **Reflection Layer** | `src/alphaevo/reflection/` | 失败归因 + 修正建议 + 下一版策略生成 |
 | **Orchestrator** | `src/alphaevo/orchestrator/` | 端到端流程编排 |
@@ -43,7 +43,7 @@
 | **CLI** | `src/alphaevo/cli/` | Typer + Rich 命令行界面 |
 | **Config** | `src/alphaevo/core/config.py` | 统一配置管理 (Pydantic Settings) |
 | **Leaderboard** | `src/alphaevo/leaderboard/` | 策略排行榜，严格区分 local / official scope |
-| **Provenance** | `src/alphaevo/provenance/` | 不可变 run artifact 清单、脱敏配置快照、official_v1 降级门控与 `compare_runs` |
+| **Provenance** | `src/alphaevo/provenance/` | 不可变 run artifact 清单、SHA-256 数据包 (`DataBundleStore`)、脱敏配置快照、`official_v1` 降级门控与 `compare_runs` |
 | **Utils** | `src/alphaevo/utils/` | 公共工具函数 (utcnow, fmt_pct, safe_div 等) |
 | **Alpha Factory** | `src/alphaevo/alpha_factory/` | LLM 驱动因子合成、验证、注册 |
 | **Research Log** | `src/alphaevo/research_log/` | 进化过程结构化记录与渲染 |
@@ -628,6 +628,9 @@ alphaevo run <strategy_id>            # 运行完整闭环（采样→回测→�
   --sampling strategy_scoped          #   覆盖采样模式
   --fill-policy conservative          #   止损/止盈同 K 线冲突策略
   --protocol full_research_v1         #   评估协议: fast_research_v1 | full_research_v1 | official_v1
+  --bundle <bundle_id>                #   基于 SHA-256 不可变数据包运行
+alphaevo data bundle create|list|show|verify  # 创建/检索/校验不可变 OHLCV 数据包
+alphaevo portfolio allocate <s1> <s2> # 多策略因果市场状态自适应风险预算分配
 alphaevo rsi run <strategy_id>        # 运行受 L0 真相核约束的 Stock RSI 进化闭环
   --holdout-pct 0.20                  #   物理隔离前向锁定 Holdout 窗口
   --portfolio-gate                    #   启用 Layer-2 组合回撤/收益硬否决门禁
@@ -666,9 +669,10 @@ alphaevo evolve <strategy_id>         # 进化策略 (需要 [llm])
 alphaevo leaderboard                  # 策略排行榜（默认 local scope）
   --scope local|official              #   local 显示本地研究 run；official 只显示 official_v1 通过项
 alphaevo compare <id1> <id2>          # 策略对比
-alphaevo runs list                    # 列出不可变 run / optimization artifact 索引
+alphaevo runs list                    # 列出不可变 run / optimization / evolve artifact 索引
 alphaevo runs show <run_id>           # 查看 run provenance 与 artifact 路径
 alphaevo runs compare <id1> <id2>     # 比较两个 run；不同 protocol 只诊断不排名
+alphaevo runs rerun-official <id> --bundle <bid>  # 在不可变数据包上按 official_v1 复评
 
 # 进化树
 alphaevo tree <strategy_id>           # 查看策略进化树

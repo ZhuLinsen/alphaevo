@@ -16,6 +16,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from alphaevo.backtest.engine import BacktestEngine
@@ -40,6 +41,7 @@ from alphaevo.reflection.playbook import PlaybookStore
 from alphaevo.research_log import ResearchLogger
 from alphaevo.research_log.context import ContextBuilder
 from alphaevo.research_log.trajectory import TrajectoryCollector, TrajectoryStep
+from alphaevo.rsi.co_steer import ScarRegistry
 from alphaevo.strategy.library import PatternLibrary
 from alphaevo.strategy.tunable import (
     is_integer_tunable_target,
@@ -47,6 +49,8 @@ from alphaevo.strategy.tunable import (
     resolve_tunable_target,
     tune_period_value,
 )
+from alphaevo.truth.kernel import EvaluationKernel
+from alphaevo.truth.ledger import TrialLedger
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -112,6 +116,7 @@ class EvolutionResult:
     research_log: ResearchLogger | None = field(default=None, repr=False)
     baseline_param_search_score: float | None = None
     trajectory: object | None = field(default=None, repr=False)  # EvolutionTrajectory
+    _market_data: dict | None = field(default=None, repr=False)
 
     @property
     def improvement(self) -> float:
@@ -159,9 +164,23 @@ class EvolutionPipeline:
         self._experience_store = ExperienceStore(config.db_path)
         self._meta_learner = MetaLearner(self._experience_store)
         self._pattern_library = PatternLibrary(db_path=config.db_path)
+        scar_path = (
+            Path(config.db_path).expanduser().with_suffix(".scars.jsonl")
+            if str(config.db_path) != ":memory:"
+            else None
+        )
+        self._scar_registry = ScarRegistry(path=scar_path)
         self._critic = SelfCritic(
             experience_store=self._experience_store,
             complexity_limit=config.evolution.complexity_limit,
+            scars=self._scar_registry.list_all(),
+        )
+        self._trial_ledger = TrialLedger(config.db_path)
+        self._kernel = EvaluationKernel(
+            backtest_config=config.backtest,
+            db_path=None,
+            trial_ledger=self._trial_ledger,
+            min_data_days=config.backtest.min_data_days,
         )
         self._alpha_factory: AlphaFactory | None = None
         self._playbook_store = PlaybookStore(db_path=config.db_path)
@@ -297,7 +316,9 @@ class EvolutionPipeline:
         _trajectory.set_metadata("rounds", rounds)
         _trajectory.set_metadata("max_symbols", max_symbols)
 
+        last_market_data: dict | None = None
         for round_num in range(1, rounds + 1):
+            self._critic.set_scars(self._scar_registry.list_all(family_id))
             _progress(f"Round {round_num}/{rounds}: Running {current_id}...")
 
             # Step 1: Run backtest
@@ -363,6 +384,9 @@ class EvolutionPipeline:
                     },
                 )
 
+            if run_result._data:
+                last_market_data = run_result._data
+
             # Compute param sensitivity if engine and data are available
             if (
                 run_result._engine is not None
@@ -383,6 +407,7 @@ class EvolutionPipeline:
                         contexts=run_result._contexts,
                     )
                     run_result.evaluation.anti_overfit.param_sensitivity = sensitivity
+                    run_result.evaluation.anti_overfit.param_sensitivity_measured = True
                     # Recompute confidence with real sensitivity
                     run_result.evaluation.confidence_score = _Eval().compute_confidence_score(
                         run_result.evaluation.overall,
@@ -401,6 +426,16 @@ class EvolutionPipeline:
 
             # Record pending experience from previous round now that we know the outcome
             if pending_exp:
+                prior_score = pending_exp[0][1]
+                score_delta = score - prior_score
+                if signal_count == 0 or score_delta < -0.08:
+                    with contextlib.suppress(Exception):
+                        self._scar_registry.synthesize_from_failure(
+                            strategy=run_result.strategy,
+                            changes=[item[0] for item in pending_exp],
+                            signal_count=signal_count,
+                            score_delta=score_delta,
+                        )
                 if sparse_signal_block:
                     self._record_pending_experience(
                         pending_exp,
@@ -1089,6 +1124,7 @@ class EvolutionPipeline:
         best_score_value = best_score if best_score is not None else 0.0
         result.champion_id = best_id
         result.champion_score = best_score_value
+        result._market_data = last_market_data
 
         # Extract and save reusable patterns from the champion strategy
         if best_score_value > 0 and result.rounds:
@@ -1699,21 +1735,16 @@ class EvolutionPipeline:
             return screened
 
         try:
-            backtest_result = engine.run(
+            outcome = self._kernel.evaluate(
                 mutated_strategy,
                 data,
-                run_result.batch,
+                batch=run_result.batch,
                 contexts=run_result._contexts or None,
+                mode="full",
+                record_trial=True,
+                notes="evolve_screen",
             )
-            from alphaevo.evaluator.metrics import Evaluator as _Eval
-
-            evaluation = _Eval().evaluate(
-                backtest_result,
-                mutated_strategy,
-                market_data=data,
-                contexts=run_result._contexts or None,
-                backtest_config=self.config.backtest,
-            )
+            evaluation = outcome.evaluation
             screened.evaluation = evaluation
             screened.score_delta = (
                 evaluation.confidence_score - run_result.evaluation.confidence_score

@@ -64,10 +64,11 @@ Different data windows and protocols should not be ranked directly; the snapshot
 | Unified `EvaluationKernel` & Locked Holdout Vault | **Implemented** | Chronological holdout isolation, Layer-2 portfolio veto gate, Optimizer `TrialLedger` tracking & CI all-indicator PIT invariance tests |
 | L0 Truth Kernel (`TrialLedger`, DSR, Joint Null Controls, PIT Probe) | **Implemented** | Fail-closed persistence, runtime PIT truncation on custom factors & CI Tier-2 0-false-promotion audit |
 | Dual-Clock RSI Ratchet & Forward Shadow Ledger | **Implemented** | `FactorStore`-persisted Co-STEER L2 factors, unified `ExperienceStore` metrics, SHA-256 hash chain & optional auto-enrollment |
-| Immutable Run Provenance & Scoped Leaderboard | **Implemented** | `RunArtifactStore` manifests, secret-free config snapshots, `alphaevo runs list/show/compare` & `leaderboard --scope local\|official` |
+| Immutable Run Provenance & Scoped Leaderboard | **Implemented** | `RunArtifactStore` manifests, secret-free config snapshots, `DataBundleStore` SHA-256 bundles, `runs rerun-official` & `leaderboard --scope local\|official` |
+| Multi-Strategy Regime-Adaptive Allocator | **Implemented** | Causal inverse-vol, regime haircut, pairwise correlation penalty & drawdown deleveraging (`alphaevo portfolio allocate`) |
 | Heterogeneous CLI / LiteLLM Multi-Model Council | **Implemented** | Deterministic general heuristic fallback when API keys unavailable |
 | Event/News & Sector Context Indicators (L2/L3) | **Experimental** | Degrades to price/volume proxy or static snapshot with explicit warnings |
-| Data Bundles (`data bundle create`) & Web Dashboard | **Planned** | Next-stage canonical bundle & web workspace |
+| Web UI Dashboard | **Planned** | Next-stage web research workspace |
 
 ## 🚀 Quick Start
 
@@ -326,9 +327,12 @@ data_manager = DataManager([DSAAdapter(dsa_path="/path/to/dsa")])
 ```bash
 alphaevo showcase                 # Real-data 30s snapshot showcase (no API key)
 alphaevo demo --real              # Real data demo without API key
-alphaevo run <id> --protocol full_research_v1  # Full loop + immutable provenance bundle
+alphaevo data bundle create       # Freeze & SHA-256 hash market data into an immutable bundle
+alphaevo run <id> --bundle <bid>  # Run full loop on an immutable verified bundle
 alphaevo runs list                # Inspect indexed run/evolve/optimize/rsi artifacts
+alphaevo runs rerun-official <id> --bundle <bid>  # Verify candidate under official_v1
 alphaevo runs compare <r1> <r2>   # Compare immutable manifests & strategy YAML diffs
+alphaevo portfolio allocate <s1> <s2>  # Causal regime-adaptive multi-strategy risk budget
 alphaevo evolve <id> --method llm --rounds 3 --output reports/  # LLM-first evolution
 alphaevo rsi run <id> --holdout-pct 0.20 --portfolio-gate --enroll-shadow
 alphaevo rsi null-audit <id>      # Verify 0 false promotions under shuffled returns
@@ -358,7 +362,7 @@ AlphaEvo adapts these ideas to falsifiable quantitative equity strategy research
 - [x] Phase 3: CLI & Orchestration — full command suite, strategy store, leaderboard
 - [x] Phase 4: Open-Source Polish — CI/CD, docs, English templates, CHANGELOG
 - [x] Phase 5: Recursive Stock Self-Improvement & Shadow Ledger — `TrialLedger` + DSR, null controls, runtime PIT probe, MAP-Elites, heterogeneous council, bitemporal forward tracking
-- [ ] Phase 6: Market Regime Adaptive Gating — multi-strategy portfolio allocation, risk budgets & PIT event caches
+- [x] Phase 6: Market Regime Adaptive Gating & Canonical Data Bundles — causal multi-strategy `RegimeAdaptiveAllocator`, risk budgets, SHA-256 `DataBundleStore`, unified `EvaluationKernel`, and `runs rerun-official`
 - [ ] Phase 7: Web UI Dashboard — interactive strategy lineage, RSI ratchets & shadow ledger exploration
 
 ## 🤝 Contributing

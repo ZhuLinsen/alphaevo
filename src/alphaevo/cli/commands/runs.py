@@ -165,4 +165,87 @@ def runs_compare(
             console.print(f"  • [cyan]{path}[/cyan]")
 
 
+@runs_app.command("rerun-official")
+def runs_rerun_official(
+    target: str = typer.Argument(
+        ..., help="Existing run_id (frozen snapshot) or strategy_id / YAML path"
+    ),
+    bundle_id: str = typer.Option(..., "--bundle", "-b", help="Verified DataBundle ID"),
+    artifact_root: str = typer.Option(
+        "reports", "--artifact-root", "-a", help="Run artifacts root directory"
+    ),
+    bundle_root: str = typer.Option(
+        "reports/bundles", "--bundle-root", help="Root directory storing immutable bundles"
+    ),
+) -> None:
+    """Re-evaluate a frozen snapshot or strategy under ``official_v1`` using a verified bundle."""
+    from alphaevo.cli.commands.rsi import _resolve_strategy
+    from alphaevo.provenance.bundle import DataBundleStore, build_bundle_summary_dict
+    from alphaevo.provenance.store import RunArtifactStore
+    from alphaevo.truth.kernel import EvaluationKernel
+
+    config = _get_config()
+    art_store = RunArtifactStore(artifact_root=artifact_root, db_path=config.db_path)
+
+    strategy = art_store.load_strategy_snapshot(target)
+    if strategy is None:
+        try:
+            strategy = _resolve_strategy(target, config)
+        except ValueError as exc:
+            console.print(f"[red]Target run or strategy not found: {exc}[/red]")
+            raise typer.Exit(1) from None
+
+    try:
+        market_data, b_manifest = DataBundleStore(bundle_root).load_bundle(bundle_id, verify=True)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Data bundle error: {exc}[/red]")
+        raise typer.Exit(1) from None
+
+    kernel = EvaluationKernel(
+        backtest_config=config.backtest,
+        db_path=config.db_path,
+        min_data_days=min(15, config.backtest.min_data_days),
+    )
+    outcome = kernel.evaluate(
+        strategy,
+        market_data,
+        mode="full",
+        record_trial=True,
+        notes=f"official_rerun:{b_manifest.bundle_id}",
+    )
+    manifest = art_store.save_run(
+        kind="run",
+        strategy=strategy,
+        evaluation=outcome.evaluation,
+        market_data=market_data,
+        trades=outcome.backtest_result.signals,
+        config=config,
+        adapter_name=f"bundle:{b_manifest.adapter}",
+        requested_protocol="official_v1",
+        data_reproducibility="replayable",
+        data_mutability="immutable_bundle",
+        data_bundle_id=b_manifest.bundle_id,
+        extra_config={"bundle": build_bundle_summary_dict(b_manifest)},
+        min_signals_official=min(15, config.evolution.min_signal_count),
+    )
+
+    color = "green" if manifest.effective_protocol == "official_v1" else "yellow"
+    console.print(
+        Panel(
+            f"[bold]Run ID:[/bold] [cyan]{manifest.run_id}[/cyan]\n"
+            f"[bold]Strategy:[/bold] {manifest.strategy.id} | "
+            f"[bold]Bundle:[/bold] {b_manifest.bundle_id}\n"
+            f"[bold]Effective Protocol:[/bold] [{color}]{manifest.effective_protocol}[/{color}] "
+            f"(requested={manifest.requested_protocol})\n"
+            f"[bold]Metrics:[/bold] score={manifest.summary.score:.1%} "
+            f"win={manifest.summary.win_rate:.1%} avg={manifest.summary.avg_return:.2%} "
+            f"dd={manifest.summary.max_drawdown:.1%} signals={manifest.summary.signal_count}",
+            title="🏅 Official Bundle Rerun",
+            border_style=color,
+        )
+    )
+    if manifest.protocol_downgrade_reason:
+        console.print(f"[yellow]Downgrade reason: {manifest.protocol_downgrade_reason}[/yellow]")
+
+
 __all__ = ["runs_app"]
