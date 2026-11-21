@@ -15,6 +15,7 @@ from alphaevo.arena.models import (
     ArenaStrategyEntry,
     EquityPoint,
     EvolutionNodeView,
+    TradeReplayView,
 )
 from alphaevo.backtest.allocator import RegimeAdaptiveAllocator
 from alphaevo.core.config import BacktestConfig
@@ -130,6 +131,126 @@ class ArenaRunner:
                     by_date_rets.setdefault(cur_d, []).append((cur_c / prev_c) - 1.0)
         return {d: (sum(vals) / len(vals) if vals else 0.0) for d, vals in by_date_rets.items()}
 
+    @staticmethod
+    def build_trade_replays(
+        signals: Sequence[TradeSignal],
+        market_data: dict[str, pd.DataFrame] | None,
+        *,
+        max_trades: int = 12,
+        pad_before: int = 10,
+        pad_after: int = 6,
+    ) -> list[TradeReplayView]:
+        """Build balanced OHLC K-line slices for representative executed trades."""
+        import pandas as pd  # type: ignore[import-untyped]
+
+        executed = [s for s in signals if s.exit_price is not None]
+        if not executed:
+            return []
+
+        winners = sorted(executed, key=lambda s: float(s.return_pct), reverse=True)[:4]
+        losers = sorted(executed, key=lambda s: float(s.return_pct))[:4]
+        recent = sorted(
+            executed,
+            key=lambda s: (s.exit_date or s.signal_date, s.signal_date),
+            reverse=True,
+        )[:4]
+
+        selected: list[TradeSignal] = []
+        seen_keys: set[tuple[str, str, str | None]] = set()
+        for sig in [*winners, *losers, *recent, *executed]:
+            key = (
+                sig.symbol,
+                sig.signal_date.isoformat(),
+                sig.exit_date.isoformat() if sig.exit_date else None,
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            selected.append(sig)
+            if len(selected) >= max_trades:
+                break
+
+        prepared: dict[str, tuple[list[date], list[dict[str, object]]]] = {}
+        if market_data:
+            for sym, df in market_data.items():
+                if df is None or df.empty or "date" not in df.columns or "close" not in df.columns:
+                    continue
+                dates_raw = pd.to_datetime(df["date"], errors="coerce").dt.date.tolist()
+                rows_raw: list[tuple[date, dict[str, object]]] = []
+                opens = df["open"].tolist() if "open" in df.columns else df["close"].tolist()
+                highs = df["high"].tolist() if "high" in df.columns else df["close"].tolist()
+                lows = df["low"].tolist() if "low" in df.columns else df["close"].tolist()
+                closes = df["close"].tolist()
+                for d_val, o_val, h_val, l_val, c_val in zip(
+                    dates_raw, opens, highs, lows, closes, strict=False
+                ):
+                    if not isinstance(d_val, date):
+                        continue
+                    try:
+                        c_f = float(c_val)
+                        o_f = float(o_val) if pd.notna(o_val) else c_f
+                        h_f = float(h_val) if pd.notna(h_val) else max(o_f, c_f)
+                        l_f = float(l_val) if pd.notna(l_val) else min(o_f, c_f)
+                    except (TypeError, ValueError):
+                        continue
+                    rows_raw.append(
+                        (
+                            d_val,
+                            {
+                                "date": d_val.isoformat(),
+                                "open": round(o_f, 4),
+                                "high": round(max(h_f, o_f, c_f), 4),
+                                "low": round(min(l_f, o_f, c_f), 4),
+                                "close": round(c_f, 4),
+                            },
+                        )
+                    )
+                rows_raw.sort(key=lambda pair: pair[0])
+                prepared[sym] = (
+                    [pair[0] for pair in rows_raw],
+                    [pair[1] for pair in rows_raw],
+                )
+
+        replays: list[TradeReplayView] = []
+        for sig in selected:
+            bars: list[dict[str, object]] = []
+            sym_entry = prepared.get(sig.symbol)
+            if sym_entry is not None and sym_entry[0]:
+                sym_dates, sym_bars = sym_entry
+                entry_idx = 0
+                for i, d_val in enumerate(sym_dates):
+                    if d_val >= sig.signal_date:
+                        entry_idx = i
+                        break
+                    entry_idx = i
+                exit_target = sig.exit_date or sig.signal_date
+                exit_idx = entry_idx
+                for i in range(entry_idx, len(sym_dates)):
+                    if sym_dates[i] >= exit_target:
+                        exit_idx = i
+                        break
+                    exit_idx = i
+                lo_idx = max(0, entry_idx - pad_before)
+                hi_idx = min(len(sym_bars), exit_idx + pad_after + 1)
+                bars = sym_bars[lo_idx:hi_idx]
+
+            replays.append(
+                TradeReplayView(
+                    symbol=sig.symbol,
+                    signal_date=sig.signal_date.isoformat(),
+                    exit_date=sig.exit_date.isoformat() if sig.exit_date else None,
+                    entry_price=round(float(sig.entry_price), 4),
+                    exit_price=(
+                        round(float(sig.exit_price), 4) if sig.exit_price is not None else None
+                    ),
+                    return_pct=round(float(sig.return_pct), 6),
+                    holding_days=int(sig.holding_days),
+                    exit_reason=sig.exit_reason.value if sig.exit_reason is not None else "",
+                    bars=bars,
+                )
+            )
+        return replays
+
     def run(
         self,
         strategies: Sequence[Strategy],
@@ -172,6 +293,9 @@ class ArenaRunner:
         champions: list[Strategy] = []
         total_promotions = 0
         total_vetoes = 0
+        total_deliberations = 0
+        total_prosecutor_vetoes = 0
+        snapshot_veto_breakdown: dict[str, int] = {}
         all_chains_verified = True
 
         for idx, base_strat in enumerate(strategies):
@@ -230,9 +354,23 @@ class ArenaRunner:
                 )
             )
 
-            veto_count = sum(1 for row in rsi_res.rows if row.status == "vetoed")
+            veto_count = (
+                sum(
+                    1
+                    for d in rsi_res.deliberations
+                    if d.l0_outcome in {"prosecutor_vetoed", "revert"}
+                )
+                if rsi_res.deliberations
+                else sum(1 for row in rsi_res.rows if row.status in {"vetoed", "revert"})
+            )
             total_promotions += rsi_res.promotions
             total_vetoes += veto_count
+            total_deliberations += len(rsi_res.deliberations)
+            total_prosecutor_vetoes += sum(
+                1 for d in rsi_res.deliberations if d.l0_outcome == "prosecutor_vetoed"
+            )
+            for v_key, v_cnt in rsi_res.veto_breakdown.items():
+                snapshot_veto_breakdown[v_key] = snapshot_veto_breakdown.get(v_key, 0) + v_cnt
 
             nodes: list[EvolutionNodeView] = []
             for row in rsi_res.rows:
@@ -243,7 +381,8 @@ class ArenaRunner:
                     EvolutionNodeView(
                         round_num=row.round_num,
                         strategy_id=row.strategy_id,
-                        parent_id=base_strat.meta.id if row.round_num > 0 else None,
+                        parent_id=row.parent_id
+                        or (base_strat.meta.id if row.round_num > 0 else None),
                         status=row.status,
                         level=row.level.value,
                         score=round(float(row.fitness_score), 4),
@@ -253,6 +392,7 @@ class ArenaRunner:
                         dsr_prob=round(float(row.dsr_probability), 4),
                         null_passed=bool(row.null_passed),
                         description=row.description,
+                        veto_reasons=list(row.veto_reasons),
                         yaml_diff=row_diff[:40],
                     )
                 )
@@ -312,6 +452,9 @@ class ArenaRunner:
             equity_curve = self.compute_equity_curve(
                 champ_outcome.backtest_result.signals, market_data
             )
+            trade_replays = self.build_trade_replays(
+                champ_outcome.backtest_result.signals, market_data
+            )
             champ_score = float(champ_eval.confidence_score)
 
             entries.append(
@@ -341,6 +484,9 @@ class ArenaRunner:
                     shadow_chain_verified=shadow_verified,
                     equity_curve=equity_curve,
                     evolution_nodes=nodes,
+                    deliberations=[d.model_dump(mode="json") for d in rsi_res.deliberations],
+                    veto_breakdown=dict(rsi_res.veto_breakdown),
+                    trade_replays=trade_replays,
                     committee_verdicts=verdicts_json,
                     champion_yaml=champ_yaml,
                     baseline_yaml=base_yaml,
@@ -409,6 +555,9 @@ class ArenaRunner:
             total_strategies=len(entries),
             total_promotions=total_promotions,
             total_vetoes=total_vetoes,
+            total_deliberations=total_deliberations,
+            total_prosecutor_vetoes=total_prosecutor_vetoes,
+            veto_breakdown=snapshot_veto_breakdown,
             chain_verified=all_chains_verified,
             entries=entries,
             allocation_weights=alloc_weights,
@@ -420,10 +569,17 @@ class ArenaRunner:
     def render_digest_markdown(snapshot: ArenaSnapshot) -> str:
         """Render a concise Markdown digest for step summaries and notifications."""
         lines = [
-            f"## 🧬 AlphaEvo Live Strategy Arena — {snapshot.market_label}",
+            f"## 🧬 AlphaEvo Strategy Evolution Observatory & Overfit Audit — {snapshot.market_label}",
             "",
-            f"- Source: `{snapshot.data_source}` | Window: `{snapshot.date_range[0]}` -> `{snapshot.date_range[1]}` ({len(snapshot.symbols)} symbols)",
-            f"- Strategies: **{snapshot.total_strategies}** | Validated Promotions: **{snapshot.total_promotions}** | Overfit Vetoes: **{snapshot.total_vetoes}** | Shadow Hash Chain: **{'VERIFIED' if snapshot.chain_verified else 'FAILED'}**",
+            f"- Source: `{snapshot.data_source}` | Window: `{snapshot.date_range[0]}` -> `{snapshot.date_range[1]}` ({len(snapshot.symbols)} benchmark symbols)",
+            (
+                f"- Strategies Evolving: **{snapshot.total_strategies}** | "
+                f"Council Deliberations: **{snapshot.total_deliberations}** | "
+                f"L0 Promotions: **{snapshot.total_promotions}** | "
+                f"Overfit / Prosecutor Vetoes: **{snapshot.total_vetoes}** "
+                f"(Prosecutor: {snapshot.total_prosecutor_vetoes}) | "
+                f"Shadow Hash Chain: **{'VERIFIED' if snapshot.chain_verified else 'FAILED'}**"
+            ),
             "",
             "| Strategy | Champion | Base -> Champ | Win% | AvgRet | MaxDD | Sharpe | Null | Shadow |",
             "|----------|----------|---------------|------|--------|-------|--------|------|--------|",
@@ -435,6 +591,13 @@ class ArenaRunner:
                 f"| {e.win_rate:.1%} | {e.avg_return:+.2%} | {e.max_drawdown:.1%} | {e.sharpe_ratio:.2f} | {null_badge} | `{e.shadow_stage}` |"
             )
 
+        if snapshot.veto_breakdown:
+            top_vetoes = ", ".join(
+                f"`{k}`: {v}"
+                for k, v in sorted(snapshot.veto_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
+            lines += ["", f"- **Overfit Graveyard (Vetoes by Gate)**: {top_vetoes}"]
+
         if snapshot.allocation_weights:
             w_txt = ", ".join(f"`{k}`: {v:.1%}" for k, v in snapshot.allocation_weights.items())
             lines += [
@@ -445,7 +608,7 @@ class ArenaRunner:
 
         lines += [
             "",
-            "*Research & educational software only. Simulated backtests and replay shadow runs do not constitute investment advice.*",
+            "*Research & educational strategy evolution engine only (not stock picking or investment advice). Simulated backtests and replay shadow runs do not guarantee future performance.*",
             "",
         ]
         return "\n".join(lines)

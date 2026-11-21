@@ -94,14 +94,42 @@ pre {
   background: #090d14; border: 1px solid var(--border); border-radius: 10px;
   padding: 12px; overflow: auto; font-size: 12px; color: #cbd5e1; max-height: 280px; margin: 0;
 }
+.diff-add { color: #34d399; }
+.diff-del { color: #f87171; }
+.diff-hdr { color: #38bdf8; font-weight: 600; }
 .chart-svg { width: 100%; height: auto; display: block; border-radius: 12px; }
 .status-msg { font-size: 12px; color: var(--muted); margin-left: 8px; }
+.node-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow-y: auto; }
+.node {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.node-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; }
+.node-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.debate-vs { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 8px; margin-top: 8px; }
+.debate-side { background: #0e1523; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+.trade-pill {
+  width: 100%; text-align: left; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 9px; padding: 8px 10px; color: var(--text); cursor: pointer; font-size: 12px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.trade-pill:hover, .trade-pill.active { border-color: var(--cyan); background: #1d2a42; }
+.bar-track { background: #0f172a; border-radius: 999px; height: 9px; overflow: hidden; margin-top: 4px; }
+.bar-fill.veto { background: linear-gradient(90deg, var(--amber), var(--red)); height: 100%; }
+.live-feed {
+  margin-top: 10px; background: #090d14; border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  max-height: 140px; overflow-y: auto; color: #94a3b8;
+}
+details.council-cfg {
+  margin-top: 10px; background: #0e1523; border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px;
+}
+details.council-cfg summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--cyan); }
 footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px 0 32px; }
 </style>
 </head>
 <body>
 <div class="topbar">
-  <div class="brand">🧬 AlphaEvo Research Studio <span class="badge">Local Kernel + L0 Truth</span></div>
+  <div class="brand">🧬 AlphaEvo Research Studio <span class="badge">Strategy Evolution Lab + L0 Truth</span></div>
   <div class="tabs">
     <button class="tab active" onclick="showTab('lab', this)">Strategy &amp; RSI Lab</button>
     <button class="tab" onclick="showTab('runs', this); loadRuns()">Leaderboard &amp; Runs</button>
@@ -139,16 +167,35 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
           <input id="rsi-rounds" type="number" min="1" max="5" value="2" style="width:90px" title="RSI Rounds" />
         </div>
         <textarea id="yaml-editor" spellcheck="false"></textarea>
+        <details class="council-cfg">
+          <summary>Adversarial Council (Optional Session LLM — Never Saved to Disk)</summary>
+          <div class="grid" style="margin-top:10px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+            <div>
+              <label for="proposer-model">Proposer Model</label>
+              <input id="proposer-model" value="heuristic" placeholder="heuristic or gemini/gemini-3.8-flash" />
+            </div>
+            <div>
+              <label for="prosecutor-model">Prosecutor Model</label>
+              <input id="prosecutor-model" value="heuristic" placeholder="heuristic or anthropic/claude-sonnet-5.5" />
+            </div>
+            <div>
+              <label for="session-api-key">Session API Key (Memory Only)</label>
+              <input id="session-api-key" type="password" autocomplete="off" placeholder="Optional API key for LiteLLM calls" />
+            </div>
+          </div>
+        </details>
         <div class="row">
           <button class="btn" id="btn-run" onclick="runBacktest()">Run EvaluationKernel</button>
-          <button class="btn" id="btn-rsi" onclick="runRSI()">Run Stock RSI Evolution</button>
+          <button class="btn" id="btn-rsi" onclick="runRSI()">Stream Stock RSI Evolution</button>
           <span id="lab-status" class="status-msg"></span>
         </div>
+        <div id="live-feed" class="live-feed">Live SSE stream idle. Click "Stream Stock RSI Evolution" to watch round-by-round ratchets &amp; vetoes.</div>
       </div>
 
       <div class="card">
-        <h2>3. Evaluation &amp; Daily MTM Equity Curve</h2>
+        <h2>3. Evaluation, Lineage &amp; Equity Curve</h2>
         <div id="lab-kpis" class="kpis"></div>
+        <div id="lab-tree" style="margin-top:10px"></div>
         <div id="lab-chart" style="margin-top:10px"></div>
         <div id="lab-verdicts" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px"></div>
       </div>
@@ -156,13 +203,35 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
 
     <div class="grid">
       <div class="card">
-        <h2>RSI Ratchet Rounds (Keep / Revert / Vetoed)</h2>
+        <h2>Adversarial Council Debate (Proposer vs. Prosecutor)</h2>
+        <div id="council-debate-box" class="node-list">
+          <div style="color:var(--muted);font-size:13px">Deliberations will appear here live during Stock RSI Evolution.</div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Overfit Graveyard &amp; RSI Ratchet Ledger</h2>
+        <div id="lab-veto-bars" style="margin-bottom:12px"></div>
         <div id="rsi-rounds-box" style="overflow-x:auto">
           <div style="color:var(--muted);font-size:13px">Run Stock RSI Evolution to inspect candidate rounds, DSR probabilities, and Null-Control gates.</div>
         </div>
       </div>
+    </div>
+
+    <div class="grid">
       <div class="card">
-        <h2>Champion Diff / Log</h2>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h2 style="margin:0">Trade K-Line Replay Inspector</h2>
+          <span style="font-size:12px;color:var(--muted)">Executed backtest trades</span>
+        </div>
+        <div id="trade-replay-box">
+          <div style="color:var(--muted);font-size:13px">Run EvaluationKernel or Stock RSI Evolution to inspect entry/exit candlesticks.</div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h2 style="margin:0">Champion YAML &amp; Diff</h2>
+          <button class="btn secondary" id="btn-load-champ" onclick="loadChampionYaml()" disabled>Load Champion into Editor</button>
+        </div>
         <pre id="lab-diff">No evolution diff yet.</pre>
       </div>
     </div>
@@ -221,9 +290,12 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
   </div>
 </div>
 
-<footer>AlphaEvo Open-Source RSI Engine · Research &amp; educational workspace only — not investment advice.</footer>
+<footer>AlphaEvo Open-Source Strategy Self-Evolution Studio · Research &amp; educational workspace only — not investment advice.</footer>
 
 <script>
+let LAST_CHAMPION_YAML = "";
+let LAST_REPLAYS = [];
+
 async function api(url, method="GET", body=null) {
   const opts = { method, headers: { "Content-Type": "application/json" } };
   if (body !== null) opts.body = JSON.stringify(body);
@@ -243,6 +315,73 @@ function showTab(name, el) {
 }
 function useIdea(txt) {
   document.getElementById("idea-input").value = txt;
+}
+function appendFeed(line) {
+  const feed = document.getElementById("live-feed");
+  const div = document.createElement("div");
+  div.textContent = line;
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+}
+function renderColoredDiff(lines, fallbackYaml) {
+  if (!lines || !lines.length) return esc(fallbackYaml || "No changes recorded.");
+  return lines.map((line) => {
+    if (line.startsWith("+") && !line.startsWith("+++")) return `<span class="diff-add">${esc(line)}</span>`;
+    if (line.startsWith("-") && !line.startsWith("---")) return `<span class="diff-del">${esc(line)}</span>`;
+    if (line.startsWith("@@") || line.startsWith("+++") || line.startsWith("---")) return `<span class="diff-hdr">${esc(line)}</span>`;
+    return esc(line);
+  }).join("\\n");
+}
+function renderVetoBars(vetoMap) {
+  const box = document.getElementById("lab-veto-bars");
+  const entries = Object.entries(vetoMap || {}).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((acc, [, v]) => acc + v, 0);
+  if (!entries.length || total <= 0) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = entries.map(([k, v]) => {
+    const pct = Math.max(5, Math.min(100, (v / total) * 100));
+    return `<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;font-size:12px"><span><code>${esc(k)}</code></span><span><strong>${v}</strong></span></div><div class="bar-track"><div class="bar-fill veto" style="width:${pct.toFixed(1)}%"></div></div></div>`;
+  }).join("");
+}
+function selectStudioReplay(idx) {
+  const rep = LAST_REPLAYS[idx];
+  document.querySelectorAll("#trade-replay-box .trade-pill").forEach((b, i) => b.classList.toggle("active", i === idx));
+  const chartBox = document.getElementById("studio-kline-slot");
+  if (chartBox && rep) chartBox.innerHTML = rep.kline_svg || "";
+}
+function renderTradeReplays(replays) {
+  LAST_REPLAYS = replays || [];
+  const box = document.getElementById("trade-replay-box");
+  if (!LAST_REPLAYS.length) {
+    box.innerHTML = `<div style="color:var(--muted);font-size:13px">No executed trades recorded for K-line replay.</div>`;
+    return;
+  }
+  const pills = LAST_REPLAYS.map((tr, i) => {
+    const col = tr.return_pct >= 0 ? "var(--green)" : "var(--red)";
+    return `<button type="button" class="trade-pill${i === 0 ? " active" : ""}" onclick="selectStudioReplay(${i})"><span><strong>${esc(tr.symbol)}</strong> · ${esc(tr.signal_date)} → ${esc(tr.exit_date || "-")} (${esc(tr.exit_reason)})</span><span style="color:${col};font-weight:700">${(Number(tr.return_pct)*100).toFixed(2)}%</span></button>`;
+  }).join("");
+  box.innerHTML = `<div class="node-list" style="max-height:145px;margin-bottom:10px">${pills}</div><div id="studio-kline-slot">${LAST_REPLAYS[0].kline_svg || ""}</div>`;
+}
+function renderDebates(deliberations) {
+  const box = document.getElementById("council-debate-box");
+  const items = deliberations || [];
+  if (!items.length) {
+    box.innerHTML = `<div style="color:var(--muted);font-size:13px">No council deliberations recorded in this session.</div>`;
+    return;
+  }
+  box.innerHTML = items.map((d) => {
+    const cls = d.l0_outcome === "keep" ? "pass" : (d.l0_outcome === "stepping_stone" ? "watch" : "fail");
+    const objs = (d.prosecutor_objections || []).length ? d.prosecutor_objections.map(esc).join("; ") : "Approved by Prosecutor";
+    const vetoes = (d.veto_reasons || []).length ? ` · Failed: ${d.veto_reasons.map(esc).join(", ")}` : "";
+    return `<div class="node"><div class="node-top"><span>Round ${d.round_num} · ${esc(d.candidate_strategy_id || d.parent_strategy_id)}</span><span class="badge ${cls}">${esc(d.l0_outcome).toUpperCase()}</span></div><div class="debate-vs"><div class="debate-side"><strong>Proposer (${esc(d.proposer_family)})</strong><br>${esc(d.rationale)}<br><span style="color:var(--cyan)">${(d.proposed_changes || []).map(esc).join(" | ")}</span></div><div class="debate-side"><strong>Prosecutor (${esc(d.prosecutor_family)})</strong><br>${objs}<br><span style="color:var(--muted)">Signals ${d.signals ?? "-"} · DSR ${d.dsr_probability != null ? (d.dsr_probability*100).toFixed(0)+"%" : "-"}${vetoes}</span></div></div></div>`;
+  }).join("");
+}
+function loadChampionYaml() {
+  if (!LAST_CHAMPION_YAML) return;
+  document.getElementById("yaml-editor").value = LAST_CHAMPION_YAML;
+  document.getElementById("lab-status").textContent = "Loaded champion YAML into editor.";
 }
 async function initStudio() {
   try {
@@ -301,40 +440,115 @@ async function runBacktest() {
       ["Signals", ev.signal_count],
       ["Protocol", res.effective_protocol],
     ]);
+    document.getElementById("lab-tree").innerHTML = "";
     document.getElementById("lab-chart").innerHTML = res.equity_svg || "";
     document.getElementById("lab-verdicts").innerHTML = (res.committee_verdicts || []).map(v => {
       const c = v.status === "pass" ? "pass" : (v.status === "fail" ? "fail" : "watch");
       return `<span class="badge ${c}" title="${esc(v.summary)}">${esc(v.analyst)}: ${esc(v.status).toUpperCase()}</span>`;
     }).join("");
+    renderTradeReplays(res.trade_replays || []);
     status.textContent = `Saved run ${res.run_id}`;
   } catch (e) {
     status.textContent = `Error: ${e.message}`;
   }
 }
+function applyRsiResult(res) {
+  renderKpis([
+    ["Champion", res.champion_id],
+    ["Champ Score", `${(res.champion_score * 100).toFixed(1)}%`],
+    ["Promotions", res.promotions],
+    ["Trials Recorded", res.total_trials_recorded],
+    ["Kernel Intact", res.kernel_intact ? "YES" : "NO"],
+  ]);
+  document.getElementById("lab-tree").innerHTML = res.evolution_tree_svg || "";
+  document.getElementById("lab-chart").innerHTML = res.equity_svg || "";
+  document.getElementById("lab-verdicts").innerHTML = "";
+  renderVetoBars(res.veto_breakdown || {});
+  renderDebates(res.deliberations || []);
+  renderTradeReplays(res.trade_replays || []);
+  const rowsHtml = (res.rows || []).map(r => {
+    const cls = r.status === "keep" ? "pass" : ((r.status === "vetoed" || r.status === "revert") ? "fail" : "watch");
+    return `<tr><td>${r.round_num}</td><td>${esc(r.strategy_id)}</td><td><span class="badge ${cls}">${esc(r.status).toUpperCase()}</span></td><td>${r.signals}</td><td>${(r.win_rate*100).toFixed(1)}%</td><td>${(r.dsr_probability*100).toFixed(1)}%</td><td>${r.null_passed ? "PASS" : "FAIL"}</td><td>${esc(r.description)}</td></tr>`;
+  }).join("");
+  document.getElementById("rsi-rounds-box").innerHTML = `<table><thead><tr><th>Rd</th><th>ID</th><th>Status</th><th>Signals</th><th>Win%</th><th>DSR</th><th>Null</th><th>Change</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
+  document.getElementById("lab-diff").innerHTML = renderColoredDiff(res.yaml_diff, res.champion_yaml);
+  LAST_CHAMPION_YAML = res.champion_yaml || "";
+  document.getElementById("btn-load-champ").disabled = !LAST_CHAMPION_YAML;
+}
 async function runRSI() {
   const yaml = document.getElementById("yaml-editor").value;
   const rounds = Number(document.getElementById("rsi-rounds").value || 2);
+  const proposer_model = document.getElementById("proposer-model").value.trim() || null;
+  const prosecutor_model = document.getElementById("prosecutor-model").value.trim() || null;
+  const api_key = document.getElementById("session-api-key").value || null;
   const status = document.getElementById("lab-status");
-  status.textContent = "Running Stock RSI Evolution...";
+  const btn = document.getElementById("btn-rsi");
+  const feed = document.getElementById("live-feed");
+
+  feed.innerHTML = "";
+  appendFeed("→ Connecting to /api/rsi/stream...");
+  status.textContent = "Streaming Stock RSI Evolution...";
+  btn.disabled = true;
+
   try {
-    const res = await api("/api/rsi/run", "POST", { strategy_yaml: yaml, rounds });
-    renderKpis([
-      ["Champion", res.champion_id],
-      ["Champ Score", `${(res.champion_score * 100).toFixed(1)}%`],
-      ["Promotions", res.promotions],
-      ["Trials Recorded", res.total_trials_recorded],
-      ["Kernel Intact", res.kernel_intact ? "YES" : "NO"],
-    ]);
-    document.getElementById("lab-chart").innerHTML = res.equity_svg || "";
-    const rowsHtml = (res.rows || []).map(r => {
-      const cls = r.status === "keep" ? "pass" : (r.status === "vetoed" ? "fail" : "watch");
-      return `<tr><td>${r.round_num}</td><td>${esc(r.strategy_id)}</td><td><span class="badge ${cls}">${esc(r.status).toUpperCase()}</span></td><td>${r.signals}</td><td>${(r.win_rate*100).toFixed(1)}%</td><td>${(r.dsr_probability*100).toFixed(1)}%</td><td>${r.null_passed ? "PASS" : "FAIL"}</td><td>${esc(r.description)}</td></tr>`;
-    }).join("");
-    document.getElementById("rsi-rounds-box").innerHTML = `<table><thead><tr><th>Rd</th><th>ID</th><th>Status</th><th>Signals</th><th>Win%</th><th>DSR</th><th>Null</th><th>Change</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
-    document.getElementById("lab-diff").textContent = (res.yaml_diff && res.yaml_diff.length) ? res.yaml_diff.join("\\n") : (res.champion_yaml || "");
-    status.textContent = `RSI complete (${res.champion_id})`;
+    const res = await fetch("/api/rsi/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        strategy_yaml: yaml,
+        rounds,
+        proposer_model,
+        prosecutor_model,
+        api_key,
+      }),
+    });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalRes = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split("\\n\\n");
+      buffer = blocks.pop() || "";
+      for (const blk of blocks) {
+        let evName = "message";
+        let dataStr = "";
+        for (const line of blk.split("\\n")) {
+          if (line.startsWith("event:")) evName = line.slice(6).trim();
+          else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+        }
+        if (!dataStr) continue;
+        const payload = JSON.parse(dataStr);
+        if (evName === "error") throw new Error(payload.error || "RSI stream failed");
+        if (evName === "baseline" && payload.row) {
+          appendFeed(`[R0] Baseline ${payload.row.strategy_id}: Fit ${(payload.row.fitness_score * 100).toFixed(1)}% · Signals ${payload.row.signals}`);
+        } else if (evName === "council_deliberation" && payload.deliberation) {
+          const d = payload.deliberation;
+          appendFeed(`[R${d.round_num}] ${d.proposer_family} vs ${d.prosecutor_family} -> ${String(d.l0_outcome).toUpperCase()} (${(d.veto_reasons || []).join(", ") || "clear"})`);
+        } else if (evName === "round_complete" && payload.row) {
+          const r = payload.row;
+          appendFeed(`[R${r.round_num}] Round Verdict: ${String(r.status).toUpperCase()} · ${r.strategy_id} · Fit ${(r.fitness_score * 100).toFixed(1)}%`);
+        } else if (evName === "result") {
+          finalRes = payload;
+        }
+      }
+    }
+    if (finalRes) {
+      applyRsiResult(finalRes);
+      status.textContent = `RSI complete (${finalRes.champion_id})`;
+    } else {
+      throw new Error("Stream ended without final result");
+    }
   } catch (e) {
     status.textContent = `Error: ${e.message}`;
+    appendFeed(`✖ Error: ${e.message}`);
+  } finally {
+    btn.disabled = false;
   }
 }
 async function loadRuns() {

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import tempfile
+import threading
+from collections.abc import Callable
 from datetime import date
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -128,7 +131,7 @@ class AlphaEvoWebService:
         protocol: str = "full_research_v1",
     ) -> dict[str, Any]:
         """Evaluate a strategy through EvaluationKernel and persist run artifacts."""
-        from alphaevo.arena.html_renderer import render_equity_svg
+        from alphaevo.arena.html_renderer import render_equity_svg, render_trade_kline_svg
         from alphaevo.arena.runner import ArenaRunner
         from alphaevo.research_committee import ResearchCommittee
         from alphaevo.strategy.dsl.serializer import StrategySerializer
@@ -161,6 +164,13 @@ class AlphaEvoWebService:
         )
         eq_points = ArenaRunner.compute_equity_curve(outcome.backtest_result.signals, market_data)
         eq_svg = render_equity_svg(eq_points)
+        replays = ArenaRunner.build_trade_replays(
+            outcome.backtest_result.signals, market_data, max_trades=15
+        )
+        replay_items = [
+            {**rep.model_dump(mode="json"), "kline_svg": render_trade_kline_svg(rep)}
+            for rep in replays
+        ]
 
         req_proto: Literal["fast_research_v1", "full_research_v1", "official_v1"] = (
             protocol  # type: ignore[assignment]
@@ -203,7 +213,40 @@ class AlphaEvoWebService:
             "equity_svg": eq_svg,
             "committee_verdicts": [v.model_dump(mode="json") for v in committee.verdicts],
             "trades": [t.model_dump(mode="json") for t in outcome.backtest_result.signals[:100]],
+            "trade_replays": replay_items,
         }
+
+    @staticmethod
+    def _build_council(
+        proposer_model: str | None,
+        prosecutor_model: str | None,
+        api_key: str | None,
+    ) -> Any:
+        """Build optional HeterogeneousCouncil from session parameters."""
+        from alphaevo.rsi.council import (
+            HeterogeneousCouncil,
+            HeterogeneousCouncilConfig,
+            ModelSpec,
+        )
+
+        p_raw = (proposer_model or "").strip()
+        q_raw = (prosecutor_model or "").strip()
+        if (not p_raw or p_raw == "heuristic") and (not q_raw or q_raw == "heuristic"):
+            return None
+
+        p_eff = p_raw or "heuristic"
+        q_eff = q_raw or "heuristic"
+        p_spec = ModelSpec(
+            model=p_eff,
+            backend="deterministic" if p_eff.lower().startswith("heuristic") else "litellm",
+        )
+        q_spec = ModelSpec(
+            model=q_eff,
+            backend="deterministic" if q_eff.lower().startswith("heuristic") else "litellm",
+        )
+        cfg = HeterogeneousCouncilConfig(proposer=p_spec, prosecutor=q_spec)
+        clean_key = (api_key or "").strip() or None
+        return HeterogeneousCouncil(config=cfg, api_key=clean_key)
 
     def run_rsi(
         self,
@@ -214,11 +257,19 @@ class AlphaEvoWebService:
         holdout_pct: float = 0.0,
         portfolio_gate: bool = False,
         live: bool | None = None,
+        proposer_model: str | None = None,
+        prosecutor_model: str | None = None,
+        api_key: str | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
-        """Run StockRSIEngine evolution ratchet and return rounds, YAML diff & curve."""
+        """Run StockRSIEngine evolution ratchet and return rounds, debates, replays & diff."""
         import difflib
 
-        from alphaevo.arena.html_renderer import render_equity_svg
+        from alphaevo.arena.html_renderer import (
+            render_equity_svg,
+            render_evolution_tree_svg,
+            render_trade_kline_svg,
+        )
         from alphaevo.arena.runner import ArenaRunner
         from alphaevo.models.enums import RSILevel
         from alphaevo.rsi.engine import StockRSIEngine
@@ -226,6 +277,7 @@ class AlphaEvoWebService:
         from alphaevo.strategy.dsl.serializer import StrategySerializer
         from alphaevo.truth.kernel import EvaluationKernel
 
+        council = self._build_council(proposer_model, prosecutor_model, api_key)
         strategy = self._resolve_input_strategy(
             strategy_id=strategy_id, strategy_yaml=strategy_yaml
         )
@@ -247,12 +299,14 @@ class AlphaEvoWebService:
         engine = StockRSIEngine(
             db_path=self.config.db_path,
             backtest_config=self.config.backtest,
+            council=council,
         )
         res = engine.run(
             strategy,
             market_data,
             charter=charter,
             persist_champion=False,
+            on_event=on_event,
         )
         champ = res.champion_strategy
         outcome = EvaluationKernel(
@@ -262,6 +316,14 @@ class AlphaEvoWebService:
         ).evaluate(champ, market_data, mode="fast", record_trial=False, run_null_control=False)
 
         eq_points = ArenaRunner.compute_equity_curve(outcome.backtest_result.signals, market_data)
+        replays = ArenaRunner.build_trade_replays(
+            outcome.backtest_result.signals, market_data, max_trades=12
+        )
+        replay_items = [
+            {**rep.model_dump(mode="json"), "kline_svg": render_trade_kline_svg(rep)}
+            for rep in replays
+        ]
+
         serializer = StrategySerializer()
         base_yaml = serializer.to_yaml(strategy)
         champ_yaml = serializer.to_yaml(champ)
@@ -274,6 +336,18 @@ class AlphaEvoWebService:
                 lineterm="",
             )
         )
+        rows_json = [row.model_dump(mode="json") for row in res.rows]
+        tree_nodes = [
+            {
+                "round_num": r["round_num"],
+                "strategy_id": r["strategy_id"],
+                "parent_id": r.get("parent_id"),
+                "status": r["status"],
+                "score": r["fitness_score"],
+                "dsr_probability": r["dsr_probability"],
+            }
+            for r in rows_json
+        ]
         return {
             "seed_strategy_id": strategy.meta.id,
             "champion_id": res.champion_id,
@@ -283,7 +357,11 @@ class AlphaEvoWebService:
             "kept_rounds": res.kept_rounds,
             "total_trials_recorded": res.total_trials_recorded,
             "kernel_intact": res.kernel_intact,
-            "rows": [row.model_dump(mode="json") for row in res.rows],
+            "rows": rows_json,
+            "deliberations": [d.model_dump(mode="json") for d in res.deliberations],
+            "veto_breakdown": dict(res.veto_breakdown),
+            "evolution_tree_svg": render_evolution_tree_svg(tree_nodes),
+            "trade_replays": replay_items,
             "champion_yaml": champ_yaml,
             "yaml_diff": yaml_diff,
             "equity_curve": [p.model_dump(mode="json") for p in eq_points],
@@ -567,6 +645,63 @@ def create_web_server(
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
+        def _send_sse(self, event_name: str, payload: dict[str, Any]) -> None:
+            data = json.dumps(payload, ensure_ascii=False, default=str)
+            frame = f"event: {event_name}\ndata: {data}\n\n".encode()
+            self.wfile.write(frame)
+            self.wfile.flush()
+
+        def _stream_rsi(self, body: dict[str, Any]) -> None:
+            event_q: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue()
+
+            def _worker() -> None:
+                try:
+
+                    def _on_event(evt: dict[str, Any]) -> None:
+                        etype = str(evt.get("type", "progress"))
+                        event_q.put((etype, evt))
+
+                    res = service.run_rsi(
+                        strategy_id=body.get("strategy_id"),
+                        strategy_yaml=body.get("strategy_yaml"),
+                        rounds=int(body.get("rounds", 2)),
+                        holdout_pct=float(body.get("holdout_pct", 0.0)),
+                        portfolio_gate=bool(body.get("portfolio_gate", False)),
+                        live=body.get("live"),
+                        proposer_model=body.get("proposer_model"),
+                        prosecutor_model=body.get("prosecutor_model"),
+                        api_key=body.get("api_key"),
+                        on_event=_on_event,
+                    )
+                    event_q.put(("result", res))
+                except Exception as exc:
+                    event_q.put(("error", {"error": str(exc)}))
+                finally:
+                    event_q.put(None)
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            worker = threading.Thread(target=_worker, daemon=True)
+            worker.start()
+            try:
+                self._send_sse("start", {"status": "running"})
+                while True:
+                    item = event_q.get()
+                    if item is None:
+                        break
+                    ev_name, ev_payload = item
+                    self._send_sse(ev_name, ev_payload)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                worker.join(timeout=5.0)
+
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path
             try:
@@ -603,8 +738,14 @@ def create_web_server(
                             holdout_pct=float(body.get("holdout_pct", 0.0)),
                             portfolio_gate=bool(body.get("portfolio_gate", False)),
                             live=body.get("live"),
+                            proposer_model=body.get("proposer_model"),
+                            prosecutor_model=body.get("prosecutor_model"),
+                            api_key=body.get("api_key"),
                         ),
                     )
+                    return
+                if path == "/api/rsi/stream":
+                    self._stream_rsi(body)
                     return
                 if path == "/api/shadow/simulate":
                     self._send_json(

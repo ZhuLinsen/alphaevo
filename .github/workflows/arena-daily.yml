@@ -1,4 +1,4 @@
-name: Live Self-Evolving Strategy Arena
+name: AlphaEvo Strategy Evolution Observatory
 
 on:
   schedule:
@@ -9,24 +9,35 @@ on:
       rounds:
         description: "RSI evolution rounds per strategy"
         required: false
-        default: "2"
+        default: "3"
       live:
         description: "Fetch live market data (falls back gracefully to bundled snapshot)"
         required: false
         default: "true"
         type: boolean
       market:
-        description: "Live market preset: us or cn"
+        description: "Benchmark market preset: us or cn"
         required: false
         default: "us"
       notify:
-        description: "Send digest to configured notification channels"
+        description: "Send evolution & veto digest to configured notification channels"
+        required: false
+        default: "true"
+        type: boolean
+      deploy_pages:
+        description: "Deploy interactive Evolution Observatory HTML to GitHub Pages"
         required: false
         default: "true"
         type: boolean
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   evolve-arena:
@@ -40,7 +51,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[data-yfinance,data-akshare]"
-      - name: Run Live Self-Evolving Arena
+      - name: Run Strategy Evolution Observatory & Overfit Audit
         env:
           ALPHAEVO_API_KEY: ${{ secrets.ALPHAEVO_API_KEY }}
           ALPHAEVO_LLM_MODEL: ${{ vars.ALPHAEVO_LLM_MODEL || 'gemini/gemini-3.8-flash' }}
@@ -62,15 +73,35 @@ jobs:
             NOTIFY_FLAG="--notify"
           fi
           alphaevo arena run \
-            --rounds "${{ inputs.rounds || '2' }}" \
+            --rounds "${{ inputs.rounds || '3' }}" \
             --market "${{ inputs.market || 'us' }}" \
             $LIVE_FLAG \
             $NOTIFY_FLAG \
             --shadow-dir .alphaevo/shadow_ledger \
             --output-dir site
+          touch site/.nojekyll
           cat site/digest.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload Interactive Arena Dashboard Artifact
+      - name: Upload Interactive Observatory Artifact
         uses: actions/upload-artifact@v4
         with:
           name: alphaevo-arena-site
           path: site/
+      - name: Upload GitHub Pages Artifact
+        if: inputs.deploy_pages != false
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+
+  deploy-pages:
+    needs: evolve-arena
+    if: inputs.deploy_pages != false
+    # Forks without GitHub Pages enabled keep the audit job green instead of failing.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Evolution Observatory to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

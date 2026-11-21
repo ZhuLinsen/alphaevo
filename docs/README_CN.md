@@ -41,18 +41,20 @@ AlphaEvo 把股票策略变成**可读、可微调、可证伪、可前瞻追踪
 
 ## ⚡ 4 种零门槛上手方式
 
-### 1. 本地 Web 研究工作台（零额外前端/后端依赖）
+### 1. 本地 Web 研究工作台 & 实时 SSE 进化流（零额外前后端依赖）
 ```bash
 git clone https://github.com/ZhuLinsen/alphaevo.git && cd alphaevo
 pip install -e .
 alphaevo web
+# 或一条 Docker 命令直接启动 Web Studio：
+# docker compose up --build
 ```
-浏览器打开 `http://127.0.0.1:8765` 即可：一句话起草策略 YAML、运行 `EvaluationKernel` 并查看交互 SVG 净值/回撤曲线、一键触发 Stock RSI 多轮进化并对照 Diff、跑前瞻影子账本仿真、执行因子 OOS/PIT 审计与因果风险配权。
+浏览器打开 `http://127.0.0.1:8765` 即可：一句话起草策略 YAML、通过 SSE（`/api/rsi/stream`）实时观看每轮 Stock RSI 进化与否决、查看 **Proposer vs. Prosecutor 对抗辩论卡片**、**进化家谱树 SVG**、**过拟合处决坟场分布** 与 **单笔交易买卖点 K 线复盘图**，还能跑前瞻影子账本仿真、因子 OOS/PIT 审计与因果风险配权。
 
-### 2. Live Self-Evolving Arena & 单文件交互 HTML 战报（30 秒无需 Key）
+### 2. 策略进化观测站（Overfit Graveyard）& 单文件交互 HTML 战报（30 秒无需 Key）
 ```bash
-alphaevo showcase                       # 30 秒真实快照进化闭环（同时生成 report.md 与 report.html）
-alphaevo arena run --rounds 2           # 多策略自进化竞技场 -> reports/arena/index.html + digest.md
+alphaevo showcase                       # 30 秒真实快照进化闭环（生成 report.md 与带 K 线复盘的 report.html）
+alphaevo arena run --rounds 2           # 策略进化观测站 -> reports/arena/index.html + digest.md
 ```
 
 ### 3. 一行接入 Claude Code / OpenClaw / Cursor / Codex（原生 MCP + `SKILL.md`）
@@ -65,10 +67,10 @@ alphaevo arena run --rounds 2           # 多策略自进化竞技场 -> reports
 ```
 开箱提供 9 个标准化研究工具（`alphaevo_draft_strategy`、`alphaevo_evaluate_strategy`、`alphaevo_evolve_rsi`、`alphaevo_null_audit`、`alphaevo_shadow_simulate`、`alphaevo_audit_factors`、`alphaevo_allocate_portfolio` 等）及宪章/策略库 Resource。详情见 [SKILL.md](../SKILL.md)。
 
-### 4. Fork 即用 GitHub Actions 每日自进化 + 自动推送（零服务器成本）
-1. Fork 本仓库并启用 Actions。
-2. 按需在仓库 Secrets 中填入任意推送渠道：`ALPHAEVO_FEISHU_WEBHOOK`（飞书）、`ALPHAEVO_WECOM_WEBHOOK`（企微）、`ALPHAEVO_DINGTALK_WEBHOOK`（钉钉）、`ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`、`ALPHAEVO_DISCORD_WEBHOOK`、`ALPHAEVO_SLACK_WEBHOOK` 或通用 `ALPHAEVO_WEBHOOK_URL`。
-3. [arena-daily.yml](../.github/workflows/arena-daily.yml) 每个工作日自动跑多策略自进化、校验影子账本哈希链、输出 `index.html` 与 Step Summary，并向你的群聊推送日报。
+### 4. Fork 即部署 GitHub Pages 进化观测站 + 自动推送（零服务器成本）
+1. Fork 本仓库并启用 Actions；如需在线站点，在仓库 `Settings -> Pages` 中选择 **GitHub Actions** 即可发布交互式进化观测站。
+2. 按需在仓库 Secrets 中填入推送渠道：`ALPHAEVO_FEISHU_WEBHOOK`（飞书）、`ALPHAEVO_WECOM_WEBHOOK`（企微）、`ALPHAEVO_DINGTALK_WEBHOOK`（钉钉）、`ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`、`ALPHAEVO_DISCORD_WEBHOOK`、`ALPHAEVO_SLACK_WEBHOOK` 或通用 `ALPHAEVO_WEBHOOK_URL`。
+3. [arena-daily.yml](../.github/workflows/arena-daily.yml) 每个工作日自动运行多策略自我进化与过拟合处决审计、发布交互式观测站网页，并向你的群聊推送结果摘要。
 
 ## 🧭 为什么是 AlphaEvo：竞品对比
 
@@ -465,7 +467,7 @@ pip install -e ".[dev]"           # 开发环境
 - [x] Phase 5: 真实验证 — 实盘数据回测 + 真实 LLM 进化验证
 - [x] Phase 6: 股票递归自我进化（RSI）与前瞻影子账本 — `TrialLedger` + DSR、零信号对照、PIT 探针、MAP-Elites、异构评审与双时态承诺追踪
 - [x] Phase 7: 市场环境自适应多策略风控配权与不可变数据包 — `RegimeAdaptiveAllocator`、`DataBundleStore`、`runs rerun-official` 与 `EvolutionPipeline` 统一收敛
-- [ ] Phase 8: Web UI 仪表盘
+- [x] Phase 8: 进化观测站、交互 Web Studio 与 Agent 生态 — 零依赖 `alphaevo web` + SSE 实时流 (`/api/rsi/stream`)、对抗辩论卡片、进化家谱树与 K 线买卖点复盘 SVG、过拟合坟场 `alphaevo arena`、`alphaevo mcp` + `SKILL.md`、7 渠道推送及 Docker / GitHub Pages 自动部署
 
 ## 🤝 参与贡献
 

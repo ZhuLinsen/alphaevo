@@ -18,7 +18,12 @@ from alphaevo.rsi.council import (
     ProsecutorAudit,
     infer_model_family,
 )
-from alphaevo.rsi.engine import RSIRoundRow, RSIRunResult, StockRSIEngine
+from alphaevo.rsi.engine import (
+    DeliberationRecord,
+    RSIRoundRow,
+    RSIRunResult,
+    StockRSIEngine,
+)
 from alphaevo.rsi.mechanism import (
     HarnessVariant,
     MechanismEvaluator,
@@ -43,6 +48,7 @@ __all__ = [
     "CoSteerDecision",
     "CouncilDeliberation",
     "CouncilProposal",
+    "DeliberationRecord",
     "ExecutableScar",
     "FailureClusterId",
     "HarnessVariant",

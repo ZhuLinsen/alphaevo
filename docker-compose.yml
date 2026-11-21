@@ -1,0 +1,15 @@
+services:
+  alphaevo-studio:
+    build: .
+    container_name: alphaevo-studio
+    ports:
+      - "8765:8765"
+    environment:
+      ALPHAEVO_LLM_MODEL: ${ALPHAEVO_LLM_MODEL:-gemini/gemini-3.8-flash}
+      ALPHAEVO_API_KEY: ${ALPHAEVO_API_KEY:-}
+    volumes:
+      - alphaevo_data:/root/.alphaevo
+    restart: unless-stopped
+
+volumes:
+  alphaevo_data:

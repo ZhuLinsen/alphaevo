@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 
 from alphaevo.backtest.engine import BacktestEngine
 from alphaevo.core.config import BacktestConfig
-from alphaevo.evaluator.metrics import Evaluator
 from alphaevo.models.enums import MarketRegime, SamplingMethod
 from alphaevo.models.execution import SampleBatch
 from alphaevo.models.strategy import Strategy
@@ -274,6 +273,8 @@ class RegimeAdaptiveAllocator:
             date_range=(all_dates[0], all_dates[-1]),
             sampling_method=SamplingMethod.REPRESENTATIVE,
         )
+
+        from alphaevo.evaluator.metrics import Evaluator
 
         strat_rets: list[list[float]] = []
         standalone_stats: list[tuple[float, float, float, int]] = []

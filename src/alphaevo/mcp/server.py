@@ -82,6 +82,14 @@ _TOOLS: list[dict[str, Any]] = [
                 "holdout_pct": {"type": "number", "minimum": 0.0, "maximum": 0.4, "default": 0.0},
                 "portfolio_gate": {"type": "boolean", "default": False},
                 "live": {"type": "boolean", "default": False},
+                "proposer_model": {
+                    "type": "string",
+                    "description": "Optional LiteLLM proposer model (or 'heuristic')",
+                },
+                "prosecutor_model": {
+                    "type": "string",
+                    "description": "Optional adversarial LiteLLM prosecutor model (must differ in family from proposer when both are LLMs)",
+                },
             },
         },
     },
@@ -298,6 +306,8 @@ class AlphaEvoMCPServer:
                 holdout_pct=float(args.get("holdout_pct", 0.0)),
                 portfolio_gate=bool(args.get("portfolio_gate", False)),
                 live=args.get("live"),
+                proposer_model=args.get("proposer_model"),
+                prosecutor_model=args.get("prosecutor_model"),
             )
         if name == "alphaevo_null_audit":
             return self._run_null_audit(

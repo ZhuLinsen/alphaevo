@@ -33,7 +33,22 @@ class EvolutionNodeView(BaseModel):
     dsr_prob: float = 0.0
     null_passed: bool = False
     description: str = ""
+    veto_reasons: list[str] = Field(default_factory=list)
     yaml_diff: list[str] = Field(default_factory=list)
+
+
+class TradeReplayView(BaseModel):
+    """Executed trade with OHLC candle slice for interactive K-line replay."""
+
+    symbol: str
+    signal_date: str
+    exit_date: str | None = None
+    entry_price: float
+    exit_price: float | None = None
+    return_pct: float = 0.0
+    holding_days: int = 0
+    exit_reason: str = ""
+    bars: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ArenaStrategyEntry(BaseModel):
@@ -64,6 +79,9 @@ class ArenaStrategyEntry(BaseModel):
     shadow_chain_verified: bool = True
     equity_curve: list[EquityPoint] = Field(default_factory=list)
     evolution_nodes: list[EvolutionNodeView] = Field(default_factory=list)
+    deliberations: list[dict[str, Any]] = Field(default_factory=list)
+    veto_breakdown: dict[str, int] = Field(default_factory=dict)
+    trade_replays: list[TradeReplayView] = Field(default_factory=list)
     committee_verdicts: list[dict[str, Any]] = Field(default_factory=list)
     champion_yaml: str = ""
     baseline_yaml: str = ""
@@ -81,6 +99,9 @@ class ArenaSnapshot(BaseModel):
     total_strategies: int = 0
     total_promotions: int = 0
     total_vetoes: int = 0
+    total_deliberations: int = 0
+    total_prosecutor_vetoes: int = 0
+    veto_breakdown: dict[str, int] = Field(default_factory=dict)
     chain_verified: bool = True
     entries: list[ArenaStrategyEntry] = Field(default_factory=list)
     allocation_weights: dict[str, float] = Field(default_factory=dict)
@@ -93,4 +114,5 @@ __all__ = [
     "ArenaStrategyEntry",
     "EquityPoint",
     "EvolutionNodeView",
+    "TradeReplayView",
 ]

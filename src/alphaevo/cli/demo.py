@@ -1382,6 +1382,7 @@ def run_showcase(
         from alphaevo.strategy.dsl.serializer import StrategySerializer
 
         eq_points = ArenaRunner.compute_equity_curve(champion.trades, data)
+        replays = ArenaRunner.build_trade_replays(champion.trades, data)
         html_doc = render_run_html(
             run_id=run_id,
             manifest={
@@ -1395,6 +1396,7 @@ def run_showcase(
             strategy_yaml=StrategySerializer().to_yaml(champion.strategy),
             trades=[t.model_dump(mode="json") for t in champion.trades],
             equity_points=eq_points,
+            trade_replays=replays,
         )
         html_report_path = report_path.with_suffix(".html")
         html_report_path.write_text(html_doc, encoding="utf-8")

@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="960" height="540">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#090d16"/>
       <stop offset="100%" stop-color="#111827"/>
     </linearGradient>
     <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#10b981" stop-opacity="0.38"/>
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.34"/>
       <stop offset="100%" stop-color="#10b981" stop-opacity="0.02"/>
     </linearGradient>
     <linearGradient id="btn" x1="0" y1="0" x2="1" y2="1">
@@ -14,92 +14,121 @@
     </linearGradient>
   </defs>
 
-  <rect width="960" height="540" rx="18" fill="url(#bg)"/>
-  <rect x="16" y="16" width="928" height="508" rx="14" fill="#121826" stroke="#243047" stroke-width="1.5"/>
+  <rect width="960" height="560" rx="18" fill="url(#bg)"/>
+  <rect x="16" y="16" width="928" height="528" rx="14" fill="#121826" stroke="#243047" stroke-width="1.5"/>
 
   <!-- Topbar -->
   <rect x="16" y="16" width="928" height="52" rx="14" fill="#161f31"/>
   <circle cx="42" cy="42" r="6" fill="#ef4444"/>
   <circle cx="62" cy="42" r="6" fill="#f59e0b"/>
   <circle cx="82" cy="42" r="6" fill="#10b981"/>
-  <text x="108" y="47" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="700">AlphaEvo Research Studio &amp; Live Self-Evolving Arena</text>
+  <text x="108" y="47" fill="#e2e8f0" font-family="system-ui, -apple-system, sans-serif" font-size="14.5" font-weight="700">AlphaEvo Strategy Evolution Observatory, Web Studio &amp; Overfit Graveyard</text>
   <rect x="655" y="29" width="132" height="26" rx="13" fill="#0f172a" stroke="#10b981" stroke-opacity="0.5"/>
-  <text x="721" y="46" text-anchor="middle" fill="#10b981" font-family="monospace" font-size="11" font-weight="700">SHA-256 VERIFIED</text>
+  <text x="721" y="46" text-anchor="middle" fill="#10b981" font-family="monospace" font-size="11" font-weight="700">LIVE SSE + L0 TRUTH</text>
   <rect x="798" y="29" width="128" height="26" rx="13" fill="url(#btn)"/>
   <text x="862" y="46" text-anchor="middle" fill="#041016" font-family="system-ui, sans-serif" font-size="11" font-weight="800">alphaevo web / mcp</text>
 
   <!-- KPI Row -->
-  <g transform="translate(36, 86)">
-    <rect width="166" height="66" rx="10" fill="#182235" stroke="#243047"/>
-    <text x="14" y="24" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">CHAMPION SCORE</text>
-    <text x="14" y="50" fill="#10b981" font-family="system-ui, sans-serif" font-size="22" font-weight="800">6.6% -&gt; 65.9%</text>
+  <g transform="translate(36, 82)">
+    <rect width="166" height="58" rx="10" fill="#182235" stroke="#243047"/>
+    <text x="14" y="22" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">CHAMPION SCORE</text>
+    <text x="14" y="46" fill="#10b981" font-family="system-ui, sans-serif" font-size="20" font-weight="800">6.6% -&gt; 65.9%</text>
   </g>
-  <g transform="translate(216, 86)">
-    <rect width="166" height="66" rx="10" fill="#182235" stroke="#243047"/>
-    <text x="14" y="24" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">AVG TRADE RETURN</text>
-    <text x="14" y="50" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="22" font-weight="800">+2.94%</text>
+  <g transform="translate(216, 82)">
+    <rect width="166" height="58" rx="10" fill="#182235" stroke="#243047"/>
+    <text x="14" y="22" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">OVERFIT GRAVEYARD</text>
+    <text x="14" y="46" fill="#ef4444" font-family="system-ui, sans-serif" font-size="20" font-weight="800">DSR + Null Kills</text>
   </g>
-  <g transform="translate(396, 86)">
-    <rect width="166" height="66" rx="10" fill="#182235" stroke="#243047"/>
-    <text x="14" y="24" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">NULL / DSR GATE</text>
-    <text x="14" y="50" fill="#38bdf8" font-family="system-ui, sans-serif" font-size="22" font-weight="800">0 False Promo</text>
+  <g transform="translate(396, 82)">
+    <rect width="166" height="58" rx="10" fill="#182235" stroke="#243047"/>
+    <text x="14" y="22" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">COUNCIL DEBATE</text>
+    <text x="14" y="46" fill="#38bdf8" font-family="system-ui, sans-serif" font-size="18.5" font-weight="800">Proposer vs Critic</text>
   </g>
-  <g transform="translate(576, 86)">
-    <rect width="166" height="66" rx="10" fill="#182235" stroke="#243047"/>
-    <text x="14" y="24" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">BACKTEST SPEEDUP</text>
-    <text x="14" y="50" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="22" font-weight="800">28.9x O(N)</text>
+  <g transform="translate(576, 82)">
+    <rect width="166" height="58" rx="10" fill="#182235" stroke="#243047"/>
+    <text x="14" y="22" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">EXECUTION ENGINE</text>
+    <text x="14" y="46" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="20" font-weight="800">28.9x O(N)</text>
   </g>
-  <g transform="translate(756, 86)">
-    <rect width="168" height="66" rx="10" fill="#182235" stroke="#243047"/>
-    <text x="14" y="24" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">PROMOTION CLOCK</text>
-    <text x="14" y="50" fill="#f59e0b" font-family="system-ui, sans-serif" font-size="19" font-weight="800">Shadow T+5/10/20</text>
+  <g transform="translate(756, 82)">
+    <rect width="168" height="58" rx="10" fill="#182235" stroke="#243047"/>
+    <text x="14" y="22" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10" font-weight="600">PROMOTION CLOCK</text>
+    <text x="14" y="46" fill="#f59e0b" font-family="system-ui, sans-serif" font-size="18.5" font-weight="800">Shadow T+5/10/20</text>
   </g>
 
-  <!-- Left Card: Equity Chart -->
-  <rect x="36" y="170" width="520" height="226" rx="12" fill="#0e1421" stroke="#243047"/>
-  <text x="52" y="194" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="13" font-weight="700">Daily MTM Equity vs Equal-Weight Benchmark</text>
-  <text x="355" y="194" fill="#10b981" font-family="monospace" font-size="11">Strategy 1.64x</text>
-  <text x="456" y="194" fill="#64748b" font-family="monospace" font-size="11">Bench 1.18x</text>
+  <!-- Panel 1: Evolution Lineage Tree -->
+  <rect x="36" y="156" width="436" height="156" rx="12" fill="#0e1421" stroke="#243047"/>
+  <text x="52" y="179" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700">1. Evolution Lineage Tree (v1 -&gt; v7 Champion)</text>
+  <rect x="52" y="216" width="84" height="52" rx="8" fill="#0c2233" stroke="#38bdf8"/>
+  <text x="60" y="234" fill="#38bdf8" font-family="monospace" font-size="9.5" font-weight="700">R0 BASE</text>
+  <text x="60" y="250" fill="#e2e8f0" font-family="monospace" font-size="9.5">rsi_v1 (0 sig)</text>
+  <path d="M 136 242 C 154 242, 154 218, 172 218" fill="none" stroke="#10b981" stroke-width="2"/>
+  <rect x="172" y="192" width="86" height="52" rx="8" fill="#07291f" stroke="#10b981"/>
+  <text x="180" y="210" fill="#10b981" font-family="monospace" font-size="9.5" font-weight="700">R1 KEEP</text>
+  <text x="180" y="226" fill="#e2e8f0" font-family="monospace" font-size="9.5">AND-&gt;OR 22.1%</text>
+  <path d="M 258 218 C 274 218, 274 268, 290 268" fill="none" stroke="#ef4444" stroke-dasharray="4,3" stroke-width="2"/>
+  <rect x="290" y="244" width="84" height="50" rx="8" fill="#2b0d12" stroke="#ef4444"/>
+  <text x="298" y="262" fill="#ef4444" font-family="monospace" font-size="9.5" font-weight="700">R2 VETO</text>
+  <text x="298" y="278" fill="#fca5a5" font-family="monospace" font-size="9">Null p=0.41</text>
+  <path d="M 258 218 C 310 218, 326 218, 376 218" fill="none" stroke="#10b981" stroke-width="2"/>
+  <rect x="376" y="192" width="84" height="52" rx="8" fill="#07291f" stroke="#10b981"/>
+  <text x="384" y="210" fill="#10b981" font-family="monospace" font-size="9.5" font-weight="700">R7 CHAMP</text>
+  <text x="384" y="226" fill="#e2e8f0" font-family="monospace" font-size="9.5">65.9% DSR OK</text>
 
-  <line x1="56" y1="226" x2="536" y2="226" stroke="#1e293b" stroke-dasharray="3,3"/>
-  <line x1="56" y1="276" x2="536" y2="276" stroke="#1e293b" stroke-dasharray="3,3"/>
-  <line x1="56" y1="326" x2="536" y2="326" stroke="#1e293b" stroke-dasharray="3,3"/>
-  <line x1="56" y1="368" x2="536" y2="368" stroke="#1e293b"/>
+  <!-- Panel 2: Trade K-Line Replay Inspector -->
+  <rect x="488" y="156" width="436" height="156" rx="12" fill="#0e1421" stroke="#243047"/>
+  <text x="504" y="179" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700">2. Trade K-Line Replay Inspector (BUY / EXIT Markers)</text>
+  <rect x="596" y="190" width="176" height="106" fill="#10b981" fill-opacity="0.09"/>
+  <line x1="510" y1="268" x2="900" y2="268" stroke="#38bdf8" stroke-dasharray="4,3"/>
+  <line x1="510" y1="214" x2="900" y2="214" stroke="#10b981" stroke-dasharray="4,3"/>
+  <!-- Candles -->
+  <line x1="536" y1="242" x2="536" y2="274" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="530" y="248" width="12" height="18" rx="1" fill="#ef4444"/>
+  <line x1="572" y1="252" x2="572" y2="282" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="566" y="256" width="12" height="16" rx="1" fill="#ef4444"/>
+  <line x1="608" y1="248" x2="608" y2="278" stroke="#10b981" stroke-width="1.5"/>
+  <rect x="602" y="254" width="12" height="14" rx="1" fill="#10b981"/>
+  <circle cx="608" cy="268" r="4.5" fill="#38bdf8"/>
+  <text x="608" y="288" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="9.5" font-weight="700">BUY</text>
+  <line x1="652" y1="236" x2="652" y2="262" stroke="#10b981" stroke-width="1.5"/>
+  <rect x="646" y="240" width="12" height="16" rx="1" fill="#10b981"/>
+  <line x1="696" y1="224" x2="696" y2="250" stroke="#10b981" stroke-width="1.5"/>
+  <rect x="690" y="228" width="12" height="16" rx="1" fill="#10b981"/>
+  <line x1="740" y1="206" x2="740" y2="236" stroke="#10b981" stroke-width="1.5"/>
+  <rect x="734" y="212" width="12" height="18" rx="1" fill="#10b981"/>
+  <circle cx="740" cy="214" r="4.5" fill="#10b981"/>
+  <text x="740" y="201" text-anchor="middle" fill="#10b981" font-family="monospace" font-size="9.5" font-weight="700">EXIT (TP)</text>
+  <line x1="788" y1="212" x2="788" y2="240" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="782" y="218" width="12" height="14" rx="1" fill="#ef4444"/>
 
-  <polygon points="56,368 56,348 110,335 164,342 218,312 272,294 326,304 380,268 434,248 488,232 536,214 536,368" fill="url(#area)"/>
-  <polyline fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="5,4" points="56,348 110,342 164,350 218,334 272,330 326,336 380,322 434,316 488,308 536,298"/>
-  <polyline fill="none" stroke="#10b981" stroke-width="3" points="56,348 110,335 164,342 218,312 272,294 326,304 380,268 434,248 488,232 536,214"/>
-  <circle cx="536" cy="214" r="5" fill="#10b981"/>
+  <!-- Panel 3: Adversarial Council Debate Cards -->
+  <rect x="36" y="326" width="436" height="128" rx="12" fill="#0e1421" stroke="#243047"/>
+  <text x="52" y="349" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700">3. Adversarial Council Debate (Proposer vs. Prosecutor)</text>
+  <rect x="52" y="362" width="196" height="76" rx="8" fill="#162033" stroke="#243047"/>
+  <text x="62" y="381" fill="#38bdf8" font-family="monospace" font-size="10.5" font-weight="700">Proposer (Mutation)</text>
+  <text x="62" y="399" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="10">Unlock AND stack + switch</text>
+  <text x="62" y="415" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="10">MA20 support to MA60 trend</text>
+  <text x="62" y="431" fill="#10b981" font-family="monospace" font-size="9.5">+ entry.logic: and -&gt; or</text>
+  <rect x="260" y="362" width="196" height="76" rx="8" fill="#162033" stroke="#243047"/>
+  <text x="270" y="381" fill="#f59e0b" font-family="monospace" font-size="10.5" font-weight="700">Prosecutor &amp; L0 Verdict</text>
+  <text x="270" y="399" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="10">Check Pinned Scars, DSR,</text>
+  <text x="270" y="415" fill="#cbd5e1" font-family="system-ui, sans-serif" font-size="10">Null Control &amp; Min Signals</text>
+  <text x="270" y="431" fill="#10b981" font-family="monospace" font-size="9.5">APPROVED -&gt; KEEP (65.9%)</text>
 
-  <!-- Right Card: Evolution Ratchet -->
-  <rect x="572" y="170" width="352" height="226" rx="12" fill="#0e1421" stroke="#243047"/>
-  <text x="588" y="194" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="13" font-weight="700">RSI Keep / Revert / Veto Ratchet</text>
+  <!-- Panel 4: Overfit Graveyard Breakdown -->
+  <rect x="488" y="326" width="436" height="128" rx="12" fill="#0e1421" stroke="#243047"/>
+  <text x="504" y="349" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700">4. Overfit Graveyard Breakdown (Vetoes by Gate)</text>
+  <text x="504" y="373" fill="#94a3b8" font-family="monospace" font-size="10.5">null_control / shuffled worlds</text>
+  <rect x="720" y="363" width="184" height="10" rx="5" fill="#0f172a"/>
+  <rect x="720" y="363" width="142" height="10" rx="5" fill="#ef4444"/>
+  <text x="504" y="399" fill="#94a3b8" font-family="monospace" font-size="10.5">dsr_gate / multiple-testing</text>
+  <rect x="720" y="389" width="184" height="10" rx="5" fill="#0f172a"/>
+  <rect x="720" y="389" width="110" height="10" rx="5" fill="#f59e0b"/>
+  <text x="504" y="425" fill="#94a3b8" font-family="monospace" font-size="10.5">prosecutor_veto / pinned_scars</text>
+  <rect x="720" y="415" width="184" height="10" rx="5" fill="#0f172a"/>
+  <rect x="720" y="415" width="76" height="10" rx="5" fill="#38bdf8"/>
 
-  <rect x="588" y="208" width="320" height="40" rx="8" fill="#182235" stroke="#243047"/>
-  <text x="600" y="226" fill="#e2e8f0" font-family="monospace" font-size="11" font-weight="700">R0 rsi_reversion_v1 (0 signals)</text>
-  <text x="600" y="241" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">Committee flagged over-confirmed AND gates</text>
-  <rect x="838" y="218" width="60" height="20" rx="10" fill="#1e293b"/>
-  <text x="868" y="232" text-anchor="middle" fill="#f59e0b" font-family="monospace" font-size="10" font-weight="700">BASE</text>
-
-  <rect x="588" y="256" width="320" height="40" rx="8" fill="#182235" stroke="#10b981" stroke-opacity="0.45"/>
-  <text x="600" y="274" fill="#e2e8f0" font-family="monospace" font-size="11" font-weight="700">R1 entry.logic and -&gt; or (22.1%)</text>
-  <text x="600" y="289" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">79 signals · DSR &amp; Null Control PASS</text>
-  <rect x="838" y="266" width="60" height="20" rx="10" fill="#064e3b"/>
-  <text x="868" y="280" text-anchor="middle" fill="#10b981" font-family="monospace" font-size="10" font-weight="700">KEEP</text>
-
-  <rect x="588" y="304" width="320" height="40" rx="8" fill="#182235" stroke="#ef4444" stroke-opacity="0.45"/>
-  <text x="600" y="322" fill="#e2e8f0" font-family="monospace" font-size="11" font-weight="700">R2 noisy_cand (shuffled p=0.41)</text>
-  <text x="600" y="337" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">Blocked by L0 NullSignalController</text>
-  <rect x="838" y="314" width="60" height="20" rx="10" fill="#7f1d1d"/>
-  <text x="868" y="328" text-anchor="middle" fill="#fca5a5" font-family="monospace" font-size="10" font-weight="700">VETO</text>
-
-  <rect x="588" y="352" width="320" height="34" rx="8" fill="#182235" stroke="#38bdf8" stroke-opacity="0.5"/>
-  <text x="600" y="373" fill="#38bdf8" font-family="monospace" font-size="11" font-weight="700">R7 rsi_reversion_v7 Champion -&gt; 65.9% 🏆</text>
-
-  <!-- Bottom Bar: Governance, Risk Budget & Ecosystem -->
-  <rect x="36" y="410" width="888" height="92" rx="12" fill="#0e1421" stroke="#243047"/>
-  <text x="54" y="434" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="13" font-weight="700">Zero-Bypass L0 Truth · Causal Risk Budget · Native AI Agent MCP &amp; Daily Push</text>
-  <text x="54" y="458" fill="#94a3b8" font-family="monospace" font-size="11.5">• Web Studio: alphaevo web        • Live Arena HTML: alphaevo arena run --notify</text>
-  <text x="54" y="479" fill="#94a3b8" font-family="monospace" font-size="11.5">• Agent MCP: alphaevo mcp         • Factor Audit:    alphaevo factor audit / prune</text>
-  <text x="54" y="497" fill="#64748b" font-family="system-ui, sans-serif" font-size="10">Research &amp; educational software only. Historical backtests veto weak ideas; forward shadow ledgers govern promotion.</text>
+  <!-- Bottom Bar -->
+  <rect x="36" y="468" width="888" height="60" rx="12" fill="#0e1421" stroke="#243047"/>
+  <text x="54" y="492" fill="#e2e8f0" font-family="system-ui, sans-serif" font-size="12.5" font-weight="700">Independent Open-Source Strategy Self-Evolution Lab · Web Studio · Live Arena · Agent MCP · Docker</text>
+  <text x="54" y="513" fill="#64748b" font-family="system-ui, sans-serif" font-size="10.5">Research &amp; educational software only — historical backtests veto weak ideas; forward shadow ledgers govern promotion.</text>
 </svg>
