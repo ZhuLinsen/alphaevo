@@ -69,6 +69,15 @@ _SECRET_KEYS = {
     "dsa_path",
     "base_url",
     "adanos_base_url",
+    "notify",
+    "feishu_webhook",
+    "wecom_webhook",
+    "dingtalk_webhook",
+    "telegram_bot_token",
+    "telegram_chat_id",
+    "discord_webhook",
+    "slack_webhook",
+    "webhook_url",
 }
 
 _RUN_ARTIFACTS_SCHEMA = """

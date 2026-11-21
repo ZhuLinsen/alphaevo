@@ -4,18 +4,19 @@
 
 # 🧬 AlphaEvo
 
-**An Open-Source Recursive Self-Improvement (RSI) Agent for Stock Strategy Research**
+**An Open-Source Self-Evolving Equity Strategy Research Studio, Live Arena & Anti-Delusion RSI Engine**
 
-*Diagnose, mutate, falsify, and shadow-verify equity strategies with a full evidence trail*
+*Go from plain-language trading idea -> YAML DSL -> self-evolving AI loop -> falsification gates -> shareable HTML & bitemporal shadow verification*
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/alphaevo?style=social)](https://github.com/ZhuLinsen/alphaevo/stargazers)
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Ready-10b981.svg)](SKILL.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[**Overview**](#-overview) · [**Core Capabilities**](#-core-capabilities) · [**Quick Start**](#-quick-start) · [**Architecture**](#-architecture) · [**Validation**](#-real-world-validation-april-10-2026) · [**CLI**](#-cli-commands)
+[**Studio & Arena**](#-visual-research-studio--live-arena) · [**Why AlphaEvo**](#-why-alphaevo) · [**4 Ways to Start**](#-4-zero-friction-ways-to-start) · [**MCP & Skill**](#-3-connect-to-claude-code-openclaw-cursor-codex-or-antigravity-native-mcp--skillmd) · [**CLI**](#-cli-commands)
 
 [English](README.md) | [中文](docs/README_CN.md)
 
@@ -23,9 +24,65 @@
 
 ---
 
-## ✨ Overview
+## ✨ Why AlphaEvo
 
-AlphaEvo is a self-evolving stock strategy research agent. It turns a readable YAML strategy into a disciplined recursive self-improvement (RSI) loop: backtest, diagnose failure, propose a controlled mutation or new factor, stress-test against overfitting, and keep the full evidence trail.
+Most open-source AI finance projects stop at **one-shot LLM stock chatter**, **opaque Python code generation**, or **overfitted backtest curves**.
+
+**AlphaEvo treats trading strategies as inspectable, falsifiable research assets** stored as human-readable **YAML DSLs**:
+
+1. **Draft & Evolve Transparently**: Turn plain English/Chinese ideas into readable YAML rules (`triggers`, `guards`, `exit.triggers`), mutate one lever at a time, and inspect exact YAML diffs across generations.
+2. **Enforce Anti-Delusion Falsification**: A zero-bypass `EvaluationKernel` couples **O(N) 28.9× vectorized daily MTM backtesting**, `TrialLedger` **Deflated Sharpe Ratio (DSR)**, cross-sectional **shuffled-return Null Controls**, **Locked Holdout Vault**, and **runtime Point-in-Time (PIT) leakage probes**.
+3. **Separate Search from Promotion**: Historical backtests can *only veto*; promotion requires chronological commitments in a **SHA-256 hash-chained Forward Shadow Ledger** (`T+5` / `T+10` / `T+20`).
+4. **Ship Ready-to-Use Interfaces**: Zero-dep local **Web Studio** (`alphaevo web`), self-contained single-file **Live Arena HTML dashboards** (`alphaevo arena run`), **Fork-and-Run daily GitHub Actions + 7-channel push alerts**, and a native **STDIO MCP server** (`alphaevo mcp` + `SKILL.md`).
+
+<p align="center" id="visual-research-studio--live-arena">
+  <img src="sources/alphaevo_studio_preview.svg" alt="AlphaEvo Web Research Studio & Live Self-Evolving Arena" width="820">
+</p>
+
+## ⚡ 4 Zero-Friction Ways to Start
+
+### 1. Local Web Research Studio (Zero Extra Dependencies)
+```bash
+git clone https://github.com/ZhuLinsen/alphaevo.git && cd alphaevo
+pip install -e .
+alphaevo web
+```
+Draft strategies in plain language, inspect SVG equity/drawdown curves, run RSI evolution ratchets, simulate the SHA-256 Shadow Ledger, audit factors, and allocate multi-strategy risk budgets in your browser (`http://127.0.0.1:8765`).
+
+### 2. Live Self-Evolving Arena & Shareable HTML Report (30s, No Key Required)
+```bash
+alphaevo showcase                       # 30s bundled snapshot evolution (writes report.md + report.html)
+alphaevo arena run --rounds 2           # Multi-strategy Arena -> reports/arena/index.html + digest.md
+```
+
+### 3. Connect to Claude Code, OpenClaw, Cursor, Codex, or Antigravity (Native MCP + `SKILL.md`)
+```json
+{
+  "mcpServers": {
+    "alphaevo": { "command": "alphaevo", "args": ["mcp"] }
+  }
+}
+```
+Exposes 9 research tools (`alphaevo_draft_strategy`, `alphaevo_evaluate_strategy`, `alphaevo_evolve_rsi`, `alphaevo_null_audit`, `alphaevo_shadow_simulate`, `alphaevo_audit_factors`, `alphaevo_allocate_portfolio`, etc.) plus `alphaevo://program` and `alphaevo://strategies` resources. See [SKILL.md](SKILL.md).
+
+### 4. Fork & Run Daily Autonomous Arena + Push Alerts (Free Cloud via GitHub Actions)
+1. Fork this repository and enable **GitHub Actions** (`Settings` -> `Actions`).
+2. Optionally add Secrets (`ALPHAEVO_FEISHU_WEBHOOK`, `ALPHAEVO_WECOM_WEBHOOK`, `ALPHAEVO_DINGTALK_WEBHOOK`, `ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`, `ALPHAEVO_DISCORD_WEBHOOK`, `ALPHAEVO_SLACK_WEBHOOK`, `ALPHAEVO_WEBHOOK_URL`, `ALPHAEVO_API_KEY`).
+3. [arena-daily.yml](.github/workflows/arena-daily.yml) automatically evolves strategies on weekdays, verifies the shadow hash chain, posts `digest.md` to Step Summary, uploads interactive `index.html`, and notifies your channels.
+
+## 🧭 Why AlphaEvo vs. Alternatives
+
+| Dimension | Traditional Backtesters (`Backtrader` / `VectorBT`) | Multi-Agent Trading (`TradingAgents` / `ai-hedge-fund`) | Code Auto-Research (`RD-Agent` / `autoresearch`) | **AlphaEvo** |
+|-----------|----------------------------------------------------|-----------------------------------------------------------|----------------------------------------------------|--------------|
+| **Unit of Evolution** | Manual Python scripts | Ephemeral chat/agent votes | Arbitrary Python code patches | **Readable YAML DSL + L2 AST/PIT-safe factors** |
+| **Multiple-Testing & Null Control** | DIY | None by default | Single holdout metric | **`EvaluationKernel` + `TrialLedger` DSR + Shuffled Null Worlds + Locked Holdout** |
+| **Forward Verification** | Manual paper script | Replay / episodic calls | Offline split only | **SHA-256 Bitemporal Shadow Ledger (`T+5/10/20`, `N_eff`, `HALTED` trips)** |
+| **Out-of-Box UI & Agent Hub** | Library only | Terminal / per-project scripts | Server / heavy setup | **Stdlib `alphaevo web`, single-file HTML Arena/Run reports, `alphaevo mcp` + `SKILL.md`** |
+| **Portfolio & Factor Governance** | External libraries | Basic sizing | Manual factor cleanup | **Causal `RegimeAdaptiveAllocator` + OOS/PIT `FactorGovernanceEngine`** |
+
+---
+
+### Real-World Benchmark Snapshot
 
 To keep self-evolution honest on noisy equity data, AlphaEvo separates **fast offline hypothesis search** from **slow forward promotion**: historical backtests can only veto weak candidates, while a bitemporal forward shadow ledger tracks out-of-sample commitments (`T+5` / `T+10` / `T+20`) before any promotion.
 
@@ -69,7 +126,8 @@ Different data windows and protocols should not be ranked directly; the snapshot
 | Alpha Factory Lifecycle Governance | **Implemented** | OOS IC/IR decay auditing, PIT re-probing, pairwise redundancy pruning & strategy lineage (`alphaevo factor audit/prune`) |
 | Heterogeneous CLI / LiteLLM Multi-Model Council | **Implemented** | Deterministic general heuristic fallback when API keys unavailable |
 | Event/News & Sector Context Indicators (L2/L3) | **Experimental** | Degrades to price/volume proxy or static snapshot with explicit warnings |
-| Web UI Dashboard | **Planned** | Next-stage web research workspace |
+| Web UI Dashboard (`alphaevo web`) & Live Arena | **Implemented** | Zero-dep stdlib HTTP Research Studio, inline SVG/HTML Arena & single-file run reports + 7-channel webhook notifier |
+| Native AI Agent Integration (`alphaevo mcp` & `SKILL.md`) | **Implemented** | Stdlib JSON-RPC 2.0 STDIO MCP server + agent charter resources for Claude Code, OpenClaw, Cursor & Codex |
 
 ## 🚀 Quick Start
 
@@ -326,11 +384,16 @@ data_manager = DataManager([DSAAdapter(dsa_path="/path/to/dsa")])
 ## 📊 CLI Commands
 
 ```bash
-alphaevo showcase                 # Real-data 30s snapshot showcase (no API key)
+alphaevo web                       # Zero-dependency local Web Research Studio (http://127.0.0.1:8765)
+alphaevo arena run --rounds 2     # Multi-strategy Live Arena -> single-file interactive index.html + notify
+alphaevo arena notify-test        # Dry-run or test Feishu/WeCom/DingTalk/Telegram/Discord/Slack alerts
+alphaevo mcp                      # STDIO MCP JSON-RPC 2.0 server for AI coding/research agents
+alphaevo showcase                 # Real-data 30s snapshot showcase (report.md + report.html, no API key)
 alphaevo demo --real              # Real data demo without API key
 alphaevo data bundle create       # Freeze & SHA-256 hash market data into an immutable bundle
 alphaevo run <id> --bundle <bid>  # Run full loop on an immutable verified bundle
 alphaevo runs list                # Inspect indexed run/evolve/optimize/rsi artifacts
+alphaevo runs html <run_id>       # Export any immutable run as standalone single-file HTML
 alphaevo runs rerun-official <id> --bundle <bid>  # Verify candidate under official_v1
 alphaevo runs compare <r1> <r2>   # Compare immutable manifests & strategy YAML diffs
 alphaevo portfolio allocate <s1> <s2>  # Causal regime-adaptive multi-strategy risk budget

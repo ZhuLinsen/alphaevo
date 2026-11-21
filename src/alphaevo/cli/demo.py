@@ -1376,7 +1376,34 @@ def run_showcase(
         run_id=run_id,
         write_docs=write_docs,
     )
+    html_report_path: Path | None = None
+    try:
+        from alphaevo.arena import ArenaRunner, render_run_html
+        from alphaevo.strategy.dsl.serializer import StrategySerializer
+
+        eq_points = ArenaRunner.compute_equity_curve(champion.trades, data)
+        html_doc = render_run_html(
+            run_id=run_id,
+            manifest={
+                "effective_protocol": "full_research_v1",
+                "strategy": {
+                    "id": champion.strategy.meta.id,
+                    "version": champion.strategy.meta.version,
+                },
+            },
+            evaluation=champion.evaluation.model_dump(mode="json"),
+            strategy_yaml=StrategySerializer().to_yaml(champion.strategy),
+            trades=[t.model_dump(mode="json") for t in champion.trades],
+            equity_points=eq_points,
+        )
+        html_report_path = report_path.with_suffix(".html")
+        html_report_path.write_text(html_doc, encoding="utf-8")
+    except Exception:
+        html_report_path = None
+
     console.print(f"\n📄 Showcase report saved to: {report_path}")
+    if html_report_path is not None:
+        console.print(f"🌐 Interactive HTML report saved to: {html_report_path}")
     if docs_path is not None:
         console.print(f"📄 Docs showcase report updated: {docs_path}")
 

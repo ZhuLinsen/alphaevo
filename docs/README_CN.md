@@ -4,18 +4,19 @@
 
 # 🧬 AlphaEvo
 
-**一个面向股票投研的递归自我进化（RSI）策略研究引擎**
+**开源股票策略自进化研究工作台、Live Arena 竞技场与防幻觉 RSI 引擎**
 
-*让股票策略经历诊断、改写、防幻觉检验与前瞻影子验证，而不是只生成一份 YAML*
+*一句话策略想法 → 可读 YAML DSL → 递归自我进化 → 零信号/DSR 防伪 → 单文件交互 HTML 战报与双时态前瞻影子验真*
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/alphaevo?style=social)](https://github.com/ZhuLinsen/alphaevo/stargazers)
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
+[![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Ready-10b981.svg)](../SKILL.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](../Dockerfile)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
 
-[**项目概览**](#-项目概览) · [**核心能力**](#-核心能力) · [**快速开始**](#-快速开始) · [**架构**](#-系统架构) · [**真实验证**](#-真实验证结果2026-年-4-月-10-日) · [**CLI 命令**](#-cli-命令一览)
+[**Studio 与竞技场**](#-研究工作台与-live-arena) · [**竞品对比**](#-为什么是-alphaevo竞品对比) · [**4 种零门槛用法**](#-4-种零门槛上手方式) · [**MCP 与 Agent**](#-3-一行接入-claude-code--openclaw--cursor--codex原生-mcp--skillmd) · [**CLI 命令**](#-cli-命令一览)
 
 [English](../README.md) | [中文](README_CN.md)
 
@@ -25,7 +26,63 @@
 
 ## ✨ 项目概览
 
-AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的研究与递归自我进化（RSI）闭环：回测、失败归因、结构化改写或因子合成、再次验证并保留完整证据链。
+大多数 AI 股票开源项目停留在 **一次性聊天荐股**、**黑盒代码生成** 或 **只在历史回测里自嗨过拟合**。
+
+AlphaEvo 把股票策略变成**可读、可微调、可证伪、可前瞻追踪**的研究资产：
+
+1. **可视、可控的结构化进化**：把自然语言策略想法编译成可执行 YAML DSL（`triggers` / `guards` / `exit.triggers`），每轮只改控制变量，完整保留 YAML Diff 与研究委员会审讯记录。
+2. **零绕过 L0 真相核**：统一由 `EvaluationKernel` 串联 **28.9× 向量化 Daily MTM 回测**、只追加 `TrialLedger` 与 **DSR 多重检验惩罚**、跨截面 **洗牌噪声零信号对照**、物理隔离 `LockedHoldoutVault` 及 **因子运行时 PIT 泄露探针**。
+3. **快慢双时钟分离**：**历史回测只负责否决**，真正晋升必须经受 **SHA-256 哈希链前瞻影子账本**（`T+5` / `T+10` / `T+20`、聚类有效样本 $N_{\text{eff}}$ 与回撤熔断）的检验。
+4. **开箱即用产品入口**：内置零额外依赖本地 **Web 研究工作台**（`alphaevo web`）、单文件可分享交互式 **Live Arena HTML 看板**（`alphaevo arena run`）、**Fork 即用的 GitHub Actions 每日自进化 + 7 渠道推送**，以及原生 **MCP Server**（`alphaevo mcp` + `SKILL.md`）。
+
+<p align="center" id="研究工作台与-live-arena">
+  <img src="../sources/alphaevo_studio_preview.svg" alt="AlphaEvo Web Research Studio & Live Arena" width="820">
+</p>
+
+## ⚡ 4 种零门槛上手方式
+
+### 1. 本地 Web 研究工作台（零额外前端/后端依赖）
+```bash
+git clone https://github.com/ZhuLinsen/alphaevo.git && cd alphaevo
+pip install -e .
+alphaevo web
+```
+浏览器打开 `http://127.0.0.1:8765` 即可：一句话起草策略 YAML、运行 `EvaluationKernel` 并查看交互 SVG 净值/回撤曲线、一键触发 Stock RSI 多轮进化并对照 Diff、跑前瞻影子账本仿真、执行因子 OOS/PIT 审计与因果风险配权。
+
+### 2. Live Self-Evolving Arena & 单文件交互 HTML 战报（30 秒无需 Key）
+```bash
+alphaevo showcase                       # 30 秒真实快照进化闭环（同时生成 report.md 与 report.html）
+alphaevo arena run --rounds 2           # 多策略自进化竞技场 -> reports/arena/index.html + digest.md
+```
+
+### 3. 一行接入 Claude Code / OpenClaw / Cursor / Codex（原生 MCP + `SKILL.md`）
+```json
+{
+  "mcpServers": {
+    "alphaevo": { "command": "alphaevo", "args": ["mcp"] }
+  }
+}
+```
+开箱提供 9 个标准化研究工具（`alphaevo_draft_strategy`、`alphaevo_evaluate_strategy`、`alphaevo_evolve_rsi`、`alphaevo_null_audit`、`alphaevo_shadow_simulate`、`alphaevo_audit_factors`、`alphaevo_allocate_portfolio` 等）及宪章/策略库 Resource。详情见 [SKILL.md](../SKILL.md)。
+
+### 4. Fork 即用 GitHub Actions 每日自进化 + 自动推送（零服务器成本）
+1. Fork 本仓库并启用 Actions。
+2. 按需在仓库 Secrets 中填入任意推送渠道：`ALPHAEVO_FEISHU_WEBHOOK`（飞书）、`ALPHAEVO_WECOM_WEBHOOK`（企微）、`ALPHAEVO_DINGTALK_WEBHOOK`（钉钉）、`ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`、`ALPHAEVO_DISCORD_WEBHOOK`、`ALPHAEVO_SLACK_WEBHOOK` 或通用 `ALPHAEVO_WEBHOOK_URL`。
+3. [arena-daily.yml](../.github/workflows/arena-daily.yml) 每个工作日自动跑多策略自进化、校验影子账本哈希链、输出 `index.html` 与 Step Summary，并向你的群聊推送日报。
+
+## 🧭 为什么是 AlphaEvo：竞品对比
+
+| 维度 | 传统回测库 (`Backtrader` / `VectorBT`) | 多智能体分析 (`TradingAgents` / `ai-hedge-fund`) | 代码自动研发 (`RD-Agent` / `autoresearch`) | **AlphaEvo** |
+|------|----------------------------------------|---------------------------------------------------|--------------------------------------------|--------------|
+| **进化对象** | 手写 Python 脚本 | 一次性聊天/角色投票 | 任意 Python 代码改写 | **人类可读 YAML DSL + AST/PIT 校验因子** |
+| **防多重检验与自嗨** | 需手写 | 默认无系统性防过拟合门槛 | 单一 Holdout 指标 | **`EvaluationKernel` + `TrialLedger` DSR + 洗牌零信号审讯 + 锁定 Holdout** |
+| **前瞻真实性** | 手工维护实盘脚本 | 情景重放 / 离线分析 | 离线时间切分 | **SHA-256 双时态前瞻影子账本（`T+5/10/20`、$N_{\text{eff}}$ 与自动熔断）** |
+| **产品形态与 Agent 生态** | 仅 Python 库 | 命令行 / 各自脚本 | 较重工程环境 | **内置零依赖 `alphaevo web`、单文件交互 HTML 战报、`alphaevo mcp` + `SKILL.md`** |
+| **组合与因子治理** | 需外部拼装 | 基础仓位建议 | 手工筛因子 | **严格因果 `RegimeAdaptiveAllocator` + OOS/PIT `FactorGovernanceEngine`** |
+
+---
+
+### 真实数据对照基准
 
 针对股票投研低信噪比、多重检验过拟合与隐式未来函数等痛点，AlphaEvo 将 **快时钟离线进化探索** 与 **慢时钟前瞻验证** 分离：**历史回测只负责否决，前瞻样本外影子账本才决定晋升**。每次探索都受不可变 L0 真相核（`TrialLedger` + Deflated Sharpe Ratio、零信号对照、运行时 Point-in-Time 泄露探针）和双时态前瞻影子账本约束。
 
@@ -69,7 +126,8 @@ AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的�
 | 动态因子全生命周期治理 (`factor audit/prune`) | **已实现 (Implemented)** | 样本外 IC/IR 衰变检验、PIT 重探针、高相关冗余识别与自动退役（含策略引用血缘） |
 | 异构多模型议会 (CLI / LiteLLM 审讯) | **已实现 (Implemented)** | 无 Key 时退化为策略无关通用启发式探索 |
 | L2/L3 事件新闻与板块情绪指标 | **实验性 (Experimental)** | 缺少外部馈送时自动降级并记录静态上下文警示 (`static_context_warnings`) |
-| Web UI 研究工作台面板 | **规划中 (Planned)** | 路线图下一阶段 |
+| Web 研究工作台与 Live Arena (`web` / `arena`) | **已实现 (Implemented)** | 零依赖本地 Web Studio、单文件可分享 HTML 竞技场/运行报告及 7 渠道定时推送 |
+| AI Agent 原生接入 (`alphaevo mcp` / `SKILL.md`) | **已实现 (Implemented)** | 标准 STDIO JSON-RPC 2.0 MCP 服务，无缝接入 Claude Code / OpenClaw / Cursor / Codex |
 
 ## 🚀 快速开始
 
@@ -261,8 +319,12 @@ params:
 ## 📊 CLI 命令一览
 
 ```bash
-# 体验与初始化
-alphaevo showcase                         # 内置真实快照 30 秒完整进化演示（无需 Key）
+# 体验与工作台
+alphaevo web                              # 启动零依赖本地 Web 研究工作台 (http://127.0.0.1:8765)
+alphaevo arena run --rounds 2             # 运行多策略 Live Arena 并导出单文件交互 HTML（支持 --notify）
+alphaevo arena notify-test                # 校验飞书/企微/钉钉/Telegram/Discord/Slack 推送配置
+alphaevo mcp                              # 启动面向 AI Agent 的 STDIO MCP 服务
+alphaevo showcase                         # 内置真实快照 30 秒完整进化演示（生成 report.md + report.html）
 alphaevo demo --real                      # 无需 LLM 的真实数据 demo
 alphaevo init                             # 交互式初始化配置
 
@@ -278,6 +340,7 @@ alphaevo data bundle create --name us_snap
 alphaevo run <strategy_id> --bundle <bundle_id> --protocol full_research_v1
                                           # 基于不可变数据包跑完整研究闭环并落盘 provenance 工件
 alphaevo runs list / show / compare       # 检索与对比不可变 run artifact 清单及策略差异
+alphaevo runs html <run_id>               # 将任意不可变运行产物导出为单文件交互 HTML 战报
 alphaevo runs rerun-official <id> --bundle <bundle_id>
                                           # 在官方验证数据包上按 official_v1 协议复评
 alphaevo portfolio allocate <s1> <s2>     # 多策略因果市场状态自适应风险预算分配
