@@ -248,6 +248,23 @@ class AlphaEvoWebService:
         clean_key = (api_key or "").strip() or None
         return HeterogeneousCouncil(config=cfg, api_key=clean_key)
 
+    def diagnose_strategy(
+        self,
+        *,
+        strategy_id: str | None = None,
+        strategy_yaml: str | None = None,
+        live: bool | None = None,
+    ) -> dict[str, Any]:
+        """Measure per-condition structural pass rates without consuming L0 trials."""
+        from alphaevo.rsi.diagnostics import analyze_entry_bottlenecks
+
+        strategy = self._resolve_input_strategy(
+            strategy_id=strategy_id, strategy_yaml=strategy_yaml
+        )
+        market_data, _src, _repro, _mut = self._load_market_data(live=live)
+        report = analyze_entry_bottlenecks(strategy, market_data)
+        return report.model_dump(mode="json")
+
     def run_rsi(
         self,
         *,
@@ -257,6 +274,7 @@ class AlphaEvoWebService:
         holdout_pct: float = 0.0,
         portfolio_gate: bool = False,
         live: bool | None = None,
+        enable_l2: bool = True,
         proposer_model: str | None = None,
         prosecutor_model: str | None = None,
         api_key: str | None = None,
@@ -268,12 +286,15 @@ class AlphaEvoWebService:
         from alphaevo.arena.html_renderer import (
             render_equity_svg,
             render_evolution_tree_svg,
+            render_map_elites_svg,
             render_trade_kline_svg,
         )
         from alphaevo.arena.runner import ArenaRunner
         from alphaevo.models.enums import RSILevel
+        from alphaevo.rsi.diagnostics import analyze_entry_bottlenecks
         from alphaevo.rsi.engine import StockRSIEngine
         from alphaevo.rsi.program import RSICharter
+        from alphaevo.rsi.trajectory import build_rsi_trajectory
         from alphaevo.strategy.dsl.serializer import StrategySerializer
         from alphaevo.truth.kernel import EvaluationKernel
 
@@ -282,14 +303,18 @@ class AlphaEvoWebService:
             strategy_id=strategy_id, strategy_yaml=strategy_yaml
         )
         market_data, _src, _repro, _mut = self._load_market_data(live=live)
+        bottleneck = analyze_entry_bottlenecks(strategy, market_data)
 
+        allowed_levels = (
+            [RSILevel.L1_STRATEGY, RSILevel.L2_FACTOR] if enable_l2 else [RSILevel.L1_STRATEGY]
+        )
         charter = RSICharter(
             name=f"web_rsi_{strategy.meta.id}",
             seed_strategy_id=strategy.meta.id,
-            allowed_levels=[RSILevel.L1_STRATEGY],
+            allowed_levels=allowed_levels,
             max_rounds=max(1, min(6, rounds)),
-            max_candidates_per_round=2,
-            max_trials_budget=max(8, rounds * 8 + 4),
+            max_candidates_per_round=3,
+            max_trials_budget=max(10, rounds * 10 + 4),
             min_signals=min(15, self.config.backtest.min_data_days),
             require_null_control=True,
             null_permutations=25,
@@ -348,6 +373,17 @@ class AlphaEvoWebService:
             }
             for r in rows_json
         ]
+        map_cells = [
+            {
+                "regime_bucket": cell.niche.regime_bucket,
+                "style_bucket": cell.niche.style_bucket,
+                "horizon_bucket": cell.niche.horizon_bucket,
+                "strategy_id": cell.strategy_id,
+                "fitness_score": round(float(cell.fitness_score), 4),
+            }
+            for cell in res.archive_summary.cells
+        ]
+        traj_export = build_rsi_trajectory(res)
         return {
             "seed_strategy_id": strategy.meta.id,
             "champion_id": res.champion_id,
@@ -360,12 +396,65 @@ class AlphaEvoWebService:
             "rows": rows_json,
             "deliberations": [d.model_dump(mode="json") for d in res.deliberations],
             "veto_breakdown": dict(res.veto_breakdown),
+            "persisted_factors": list(res.persisted_factors),
+            "map_elites_cells": map_cells,
+            "map_elites_svg": render_map_elites_svg(map_cells),
+            "bottleneck_report": bottleneck.model_dump(mode="json"),
+            "dpo_pairs": [p.model_dump(mode="json") for p in traj_export.dpo_pairs],
             "evolution_tree_svg": render_evolution_tree_svg(tree_nodes),
             "trade_replays": replay_items,
             "champion_yaml": champ_yaml,
             "yaml_diff": yaml_diff,
             "equity_curve": [p.model_dump(mode="json") for p in eq_points],
             "equity_svg": render_equity_svg(eq_points),
+        }
+
+    def run_mechanism_ab(
+        self,
+        *,
+        strategy_id: str | None = None,
+        strategy_yaml: str | None = None,
+        rounds: int = 2,
+        cutoffs: list[float] | None = None,
+        live: bool | None = None,
+    ) -> dict[str, Any]:
+        """Run paired chronological L3 Meta-RSI harness comparison (naive vs strict L0+Scars+L2)."""
+        from alphaevo.models.enums import RSILevel
+        from alphaevo.rsi.mechanism import HarnessVariant, MechanismEvaluator
+
+        strategy = self._resolve_input_strategy(
+            strategy_id=strategy_id, strategy_yaml=strategy_yaml
+        )
+        market_data, _src, _repro, _mut = self._load_market_data(live=live)
+        baseline_var = HarnessVariant(
+            variant_id="naive_off",
+            name="Unconstrained (No Null Control / No Scars)",
+            require_null_control=False,
+            enable_pinned_scars=False,
+            complexity_limit=8,
+            min_signal_gate=5,
+            allowed_levels=[RSILevel.L1_STRATEGY],
+        )
+        candidate_var = HarnessVariant(
+            variant_id="l0_scars_l2",
+            name="Full L0 Null + Pinned Scars + L2 Co-STEER",
+            require_null_control=True,
+            enable_pinned_scars=True,
+            complexity_limit=8,
+            min_signal_gate=15,
+            allowed_levels=[RSILevel.L1_STRATEGY, RSILevel.L2_FACTOR],
+        )
+        rep = MechanismEvaluator().evaluate_ab(
+            strategy,
+            market_data,
+            baseline_variant=baseline_var,
+            candidate_variant=candidate_var,
+            max_rounds=max(1, min(4, rounds)),
+            cutoff_ratios=cutoffs or [0.55, 0.70],
+        )
+        return {
+            "result": rep.model_dump(mode="json"),
+            "markdown": MechanismEvaluator.render_markdown(rep),
         }
 
     def list_runs(self, limit: int = 30) -> dict[str, Any]:
@@ -668,6 +757,7 @@ def create_web_server(
                         holdout_pct=float(body.get("holdout_pct", 0.0)),
                         portfolio_gate=bool(body.get("portfolio_gate", False)),
                         live=body.get("live"),
+                        enable_l2=bool(body.get("enable_l2", True)),
                         proposer_model=body.get("proposer_model"),
                         prosecutor_model=body.get("prosecutor_model"),
                         api_key=body.get("api_key"),
@@ -717,6 +807,16 @@ def create_web_server(
                         ),
                     )
                     return
+                if path == "/api/strategies/diagnose":
+                    self._send_json(
+                        HTTPStatus.OK,
+                        service.diagnose_strategy(
+                            strategy_id=body.get("strategy_id"),
+                            strategy_yaml=body.get("strategy_yaml"),
+                            live=body.get("live"),
+                        ),
+                    )
+                    return
                 if path == "/api/runs":
                     self._send_json(
                         HTTPStatus.OK,
@@ -738,6 +838,7 @@ def create_web_server(
                             holdout_pct=float(body.get("holdout_pct", 0.0)),
                             portfolio_gate=bool(body.get("portfolio_gate", False)),
                             live=body.get("live"),
+                            enable_l2=bool(body.get("enable_l2", True)),
                             proposer_model=body.get("proposer_model"),
                             prosecutor_model=body.get("prosecutor_model"),
                             api_key=body.get("api_key"),
@@ -746,6 +847,24 @@ def create_web_server(
                     return
                 if path == "/api/rsi/stream":
                     self._stream_rsi(body)
+                    return
+                if path == "/api/rsi/mechanism-ab":
+                    raw_cutoffs = body.get("cutoffs")
+                    parsed_cutoffs = (
+                        [float(x) for x in raw_cutoffs]
+                        if isinstance(raw_cutoffs, list) and raw_cutoffs
+                        else None
+                    )
+                    self._send_json(
+                        HTTPStatus.OK,
+                        service.run_mechanism_ab(
+                            strategy_id=body.get("strategy_id"),
+                            strategy_yaml=body.get("strategy_yaml"),
+                            rounds=int(body.get("rounds", 2)),
+                            cutoffs=parsed_cutoffs,
+                            live=body.get("live"),
+                        ),
+                    )
                     return
                 if path == "/api/shadow/simulate":
                     self._send_json(

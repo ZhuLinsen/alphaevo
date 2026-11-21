@@ -53,9 +53,9 @@
 | **Pattern Library** | `src/alphaevo/strategy/library/` | 跨策略可复用模式提取与注入 |
 | **L0 Truth Kernel** | `src/alphaevo/truth/` | `EvaluationKernel` 共享评估内核、`LockedHoldoutVault`、组合硬否决门禁、`TrialLedger`、DSR、两层 Null Control、运行时 PIT 探针 |
 | **Forward Shadow Ledger** | `src/alphaevo/forward/` | 双时态 `as_of` 提交、SHA-256 哈希链、T+5/10/20 归因与非对称晋升/熔断状态机 |
-| **RSI Engine (L1/L2/L3)** | `src/alphaevo/rsi/` | 收敛至 `EvaluationKernel` 的 `program.md` 棘轮、MAP-Elites、Co-STEER 盲区路由（`FactorStore` 落库）、异构模型议会 (`DeliberationRecord` + `on_event` 实时流)、机制 AB 进化 |
-| **Live Arena & HTML** | `src/alphaevo/arena/` | 策略进化观测站与过拟合坟场 (`ArenaRunner`)、进化树/交易 K 线/净值零 CDN 单文件交互式 SVG/HTML 战报渲染 |
-| **Web Studio** | `src/alphaevo/web/` | 零额外依赖本地 HTTP 研究工作台 (`AlphaEvoWebService` + `/api/rsi/stream` SSE 实时流 + 会话级议会辩论/K 线复盘 SPA) |
+| **RSI Engine (L1/L2/L3)** | `src/alphaevo/rsi/` | 收敛至 `EvaluationKernel` 的 `program.md` 棘轮、结构化条件瓶颈诊断 (`diagnostics.py`)、DPO 演化轨迹导出 (`trajectory.py`)、MAP-Elites、Co-STEER 盲区路由（`FactorStore` 落库）、异构模型议会 (`DeliberationRecord` + `on_event` 实时流)、机制 AB 进化 |
+| **Live Arena & HTML** | `src/alphaevo/arena/` | 策略进化观测站与过拟合坟场 (`ArenaRunner`)、进化树/MAP-Elites 3×3 网格/交易 K 线/净值零 CDN 单文件交互式 SVG/HTML 战报渲染 |
+| **Web Studio** | `src/alphaevo/web/` | 零额外依赖本地 HTTP 研究工作台 (`AlphaEvoWebService` + `/api/rsi/stream` SSE 实时流 + 条件瓶颈 X 射线 + L3 机制 AB 实验 + DPO 导出 SPA) |
 | **MCP Server** | `src/alphaevo/mcp/` | 标准 STDIO JSON-RPC 2.0 MCP 服务（配合根目录 `SKILL.md` 供 AI Agent 调用） |
 | **Notifier** | `src/alphaevo/notify/` | 零依赖多渠道推送（飞书 / 企微 / 钉钉 / Telegram / Discord / Slack / Webhook） |
 

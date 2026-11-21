@@ -49,7 +49,7 @@ alphaevo web
 # Or run via Docker in one command:
 # docker compose up --build
 ```
-Open `http://127.0.0.1:8765` to draft YAML strategies from plain language, stream round-by-round Stock RSI evolution over SSE (`/api/rsi/stream`), inspect **Proposer vs. Prosecutor debate cards**, view **Evolution Lineage Trees** & **Overfit Graveyard** veto bars, replay executed trades on **OHLC K-line charts**, simulate the SHA-256 Shadow Ledger, audit factors, and allocate risk budgets.
+Open `http://127.0.0.1:8765` to draft YAML strategies from plain language, X-Ray entry condition pass-rate bottlenecks (`POST /api/strategies/diagnose`), stream round-by-round Stock RSI evolution over SSE (`/api/rsi/stream`) with **L2 Co-STEER PIT-safe factor synthesis**, inspect **Proposer vs. Prosecutor debate cards**, explore the **3×3 MAP-Elites Behavioral Niche Archive**, view **Evolution Lineage Trees** & **Overfit Graveyard** veto bars, export **DPO preference pairs**, replay trades on **OHLC K-line charts**, run **L3 Meta-RSI Harness A/B calibration**, and allocate causal risk budgets.
 
 ### 2. Evolution Observatory, Overfit Graveyard & HTML Reports (30s, No Key Required)
 ```bash
@@ -65,7 +65,7 @@ alphaevo arena run --rounds 2           # Strategy Evolution Observatory -> repo
   }
 }
 ```
-Exposes 9 research tools (`alphaevo_draft_strategy`, `alphaevo_evaluate_strategy`, `alphaevo_evolve_rsi`, `alphaevo_null_audit`, `alphaevo_shadow_simulate`, `alphaevo_audit_factors`, `alphaevo_allocate_portfolio`, etc.) plus `alphaevo://program` and `alphaevo://strategies` resources. See [SKILL.md](SKILL.md).
+Exposes 11 research tools (`alphaevo_draft_strategy`, `alphaevo_diagnose_bottlenecks`, `alphaevo_evaluate_strategy`, `alphaevo_evolve_rsi`, `alphaevo_mechanism_ab`, `alphaevo_null_audit`, `alphaevo_shadow_simulate`, `alphaevo_audit_factors`, `alphaevo_allocate_portfolio`, etc.) plus `alphaevo://program` and `alphaevo://strategies` resources. See [SKILL.md](SKILL.md).
 
 ### 4. Fork & Deploy GitHub Pages Evolution Observatory + Push Alerts (Free Cloud via Actions)
 1. Fork this repository, enable **GitHub Actions**, and optionally enable **GitHub Pages -> GitHub Actions** (`Settings -> Pages`) to publish `https://<owner>.github.io/<repo>/`.

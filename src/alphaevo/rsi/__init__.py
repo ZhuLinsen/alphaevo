@@ -18,6 +18,11 @@ from alphaevo.rsi.council import (
     ProsecutorAudit,
     infer_model_family,
 )
+from alphaevo.rsi.diagnostics import (
+    ConditionPassRate,
+    StrategyBottleneckReport,
+    analyze_entry_bottlenecks,
+)
 from alphaevo.rsi.engine import (
     DeliberationRecord,
     RSIRoundRow,
@@ -39,6 +44,13 @@ from alphaevo.rsi.qd_archive import (
     NicheCoord,
     classify_niche,
 )
+from alphaevo.rsi.trajectory import (
+    DPOPreferencePair,
+    RSITrajectoryExport,
+    RSITrajectoryStep,
+    build_rsi_trajectory,
+    export_rsi_trajectory,
+)
 
 __all__ = [
     "ArchiveCell",
@@ -46,8 +58,10 @@ __all__ = [
     "BlindSpotCluster",
     "BlindSpotMiner",
     "CoSteerDecision",
+    "ConditionPassRate",
     "CouncilDeliberation",
     "CouncilProposal",
+    "DPOPreferencePair",
     "DeliberationRecord",
     "ExecutableScar",
     "FailureClusterId",
@@ -66,9 +80,15 @@ __all__ = [
     "RSICharter",
     "RSIRoundRow",
     "RSIRunResult",
+    "RSITrajectoryExport",
+    "RSITrajectoryStep",
     "ScarRegistry",
     "StockRSIEngine",
+    "StrategyBottleneckReport",
+    "analyze_entry_bottlenecks",
+    "build_rsi_trajectory",
     "classify_niche",
+    "export_rsi_trajectory",
     "infer_model_family",
     "parse_rsi_program",
 ]

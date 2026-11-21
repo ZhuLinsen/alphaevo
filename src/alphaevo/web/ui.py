@@ -185,10 +185,15 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
           </div>
         </details>
         <div class="row">
+          <button class="btn secondary" id="btn-diagnose" onclick="diagnoseBottlenecks()">X-Ray Bottlenecks</button>
           <button class="btn" id="btn-run" onclick="runBacktest()">Run EvaluationKernel</button>
           <button class="btn" id="btn-rsi" onclick="runRSI()">Stream Stock RSI Evolution</button>
+          <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;color:var(--text)">
+            <input id="enable-l2" type="checkbox" checked style="width:auto;margin:0" /> L2 Co-STEER Factors
+          </label>
           <span id="lab-status" class="status-msg"></span>
         </div>
+        <div id="bottleneck-box" style="margin-top:10px"></div>
         <div id="live-feed" class="live-feed">Live SSE stream idle. Click "Stream Stock RSI Evolution" to watch round-by-round ratchets &amp; vetoes.</div>
       </div>
 
@@ -199,6 +204,11 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
         <div id="lab-chart" style="margin-top:10px"></div>
         <div id="lab-verdicts" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px"></div>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>MAP-Elites Behavioral Niche Archive <span style="color:var(--muted);font-size:12px;font-weight:400">(3×3 Regime × Holding Horizon Grid · L2 Factors: <span id="lab-l2-factors">none</span>)</span></h2>
+      <div id="lab-map-elites" style="color:var(--muted);font-size:13px">Run Stock RSI Evolution to populate regime × style × horizon behavioral niches.</div>
     </div>
 
     <div class="grid">
@@ -228,9 +238,12 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
         </div>
       </div>
       <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <h2 style="margin:0">Champion YAML &amp; Diff</h2>
-          <button class="btn secondary" id="btn-load-champ" onclick="loadChampionYaml()" disabled>Load Champion into Editor</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <h2 style="margin:0">Champion YAML, Diff &amp; DPO Flywheel</h2>
+          <div style="display:flex;gap:8px">
+            <button class="btn secondary" id="btn-export-dpo" onclick="downloadDpoPairs()" disabled>Download DPO Pairs (.jsonl)</button>
+            <button class="btn secondary" id="btn-load-champ" onclick="loadChampionYaml()" disabled>Load Champion into Editor</button>
+          </div>
         </div>
         <pre id="lab-diff">No evolution diff yet.</pre>
       </div>
@@ -287,6 +300,13 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
         <div id="alloc-box" style="color:var(--muted);font-size:13px">Click "Allocate Core Strategies" to run causal inverse-vol, regime haircut &amp; correlation penalty allocation.</div>
       </div>
     </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+        <h2 style="margin:0">L3 Meta-RSI Harness A/B Calibration Lab</h2>
+        <button class="btn" id="btn-mech-ab" onclick="runMechanismAB()">Run L3 Harness A/B (Naive vs L0+Scars+L2)</button>
+      </div>
+      <div id="mech-ab-box" style="color:var(--muted);font-size:13px">Compare Unconstrained vs Full L0+Pinned Scars+L2 harnesses across chronological OOS cutoffs (zero lookahead).</div>
+    </div>
   </div>
 </div>
 
@@ -295,6 +315,7 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
 <script>
 let LAST_CHAMPION_YAML = "";
 let LAST_REPLAYS = [];
+let LAST_DPO_PAIRS = [];
 
 async function api(url, method="GET", body=null) {
   const opts = { method, headers: { "Content-Type": "application/json" } };
@@ -377,6 +398,41 @@ function renderDebates(deliberations) {
     const vetoes = (d.veto_reasons || []).length ? ` · Failed: ${d.veto_reasons.map(esc).join(", ")}` : "";
     return `<div class="node"><div class="node-top"><span>Round ${d.round_num} · ${esc(d.candidate_strategy_id || d.parent_strategy_id)}</span><span class="badge ${cls}">${esc(d.l0_outcome).toUpperCase()}</span></div><div class="debate-vs"><div class="debate-side"><strong>Proposer (${esc(d.proposer_family)})</strong><br>${esc(d.rationale)}<br><span style="color:var(--cyan)">${(d.proposed_changes || []).map(esc).join(" | ")}</span></div><div class="debate-side"><strong>Prosecutor (${esc(d.prosecutor_family)})</strong><br>${objs}<br><span style="color:var(--muted)">Signals ${d.signals ?? "-"} · DSR ${d.dsr_probability != null ? (d.dsr_probability*100).toFixed(0)+"%" : "-"}${vetoes}</span></div></div></div>`;
   }).join("");
+}
+function renderBottleneckReport(rep) {
+  const box = document.getElementById("bottleneck-box");
+  if (!rep || !(rep.conditions || []).length) {
+    box.innerHTML = "";
+    return;
+  }
+  const bars = rep.conditions.map((c) => {
+    const pct = Math.max(2, Math.min(100, (c.pass_rate || 0) * 100));
+    const col = c.pass_rate < 0.10 ? "var(--red)" : (c.pass_rate < 0.25 ? "var(--amber)" : "var(--green)");
+    return `<div style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;font-size:11.5px"><span><code>[${esc(c.group)}] ${esc(c.indicator)} ${esc(c.op)} ${esc(c.value)}</code></span><span style="color:${col};font-weight:600">${(c.pass_rate*100).toFixed(1)}% (${c.passed_bars}/${c.total_bars})</span></div><div class="bar-track"><div style="background:${col};height:100%;width:${pct.toFixed(1)}%"></div></div></div>`;
+  }).join("");
+  box.innerHTML = `<div class="node"><div class="node-top"><span>Structural Entry X-Ray (logic=${esc(rep.entry_logic)})</span><span class="badge">${(rep.combined_pass_rate*100).toFixed(2)}% combined</span></div><div class="node-meta" style="margin-bottom:8px">${esc(rep.diagnosis_summary)}</div>${bars}</div>`;
+}
+async function diagnoseBottlenecks() {
+  const yaml = document.getElementById("yaml-editor").value;
+  const status = document.getElementById("lab-status");
+  status.textContent = "X-raying condition pass rates...";
+  try {
+    const rep = await api("/api/strategies/diagnose", "POST", { strategy_yaml: yaml });
+    renderBottleneckReport(rep);
+    status.textContent = "Bottleneck X-ray complete (0 trials spent).";
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+  }
+}
+function downloadDpoPairs() {
+  if (!LAST_DPO_PAIRS.length) return;
+  const jsonl = LAST_DPO_PAIRS.map((p) => JSON.stringify(p)).join("\\n") + "\\n";
+  const blob = new Blob([jsonl], { type: "application/x-ndjson" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "alphaevo_rsi_dpo_pairs.jsonl";
+  a.click();
+  URL.revokeObjectURL(url);
 }
 function loadChampionYaml() {
   if (!LAST_CHAMPION_YAML) return;
@@ -461,6 +517,10 @@ function applyRsiResult(res) {
     ["Kernel Intact", res.kernel_intact ? "YES" : "NO"],
   ]);
   document.getElementById("lab-tree").innerHTML = res.evolution_tree_svg || "";
+  document.getElementById("lab-map-elites").innerHTML = res.map_elites_svg || "";
+  const l2List = res.persisted_factors || [];
+  document.getElementById("lab-l2-factors").textContent = l2List.length ? l2List.join(", ") : "none";
+  if (res.bottleneck_report) renderBottleneckReport(res.bottleneck_report);
   document.getElementById("lab-chart").innerHTML = res.equity_svg || "";
   document.getElementById("lab-verdicts").innerHTML = "";
   renderVetoBars(res.veto_breakdown || {});
@@ -473,11 +533,14 @@ function applyRsiResult(res) {
   document.getElementById("rsi-rounds-box").innerHTML = `<table><thead><tr><th>Rd</th><th>ID</th><th>Status</th><th>Signals</th><th>Win%</th><th>DSR</th><th>Null</th><th>Change</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
   document.getElementById("lab-diff").innerHTML = renderColoredDiff(res.yaml_diff, res.champion_yaml);
   LAST_CHAMPION_YAML = res.champion_yaml || "";
+  LAST_DPO_PAIRS = res.dpo_pairs || [];
   document.getElementById("btn-load-champ").disabled = !LAST_CHAMPION_YAML;
+  document.getElementById("btn-export-dpo").disabled = !LAST_DPO_PAIRS.length;
 }
 async function runRSI() {
   const yaml = document.getElementById("yaml-editor").value;
   const rounds = Number(document.getElementById("rsi-rounds").value || 2);
+  const enable_l2 = Boolean(document.getElementById("enable-l2").checked);
   const proposer_model = document.getElementById("proposer-model").value.trim() || null;
   const prosecutor_model = document.getElementById("prosecutor-model").value.trim() || null;
   const api_key = document.getElementById("session-api-key").value || null;
@@ -497,6 +560,7 @@ async function runRSI() {
       body: JSON.stringify({
         strategy_yaml: yaml,
         rounds,
+        enable_l2,
         proposer_model,
         prosecutor_model,
         api_key,
@@ -598,6 +662,17 @@ async function allocatePortfolio() {
   const sel = Array.from(document.getElementById("strategy-select").options).slice(0, 3).map(o => o.value);
   const res = await api("/api/portfolio/allocate", "POST", { strategy_ids: sel });
   box.innerHTML = `<pre>${esc(res.markdown || JSON.stringify(res, null, 2))}</pre>`;
+}
+async function runMechanismAB() {
+  const box = document.getElementById("mech-ab-box");
+  const sid = document.getElementById("strategy-select").value || "rsi_reversion_v1";
+  box.textContent = `Running chronological L3 Meta-RSI calibration on ${sid}...`;
+  try {
+    const res = await api("/api/rsi/mechanism-ab", "POST", { strategy_id: sid, rounds: 2 });
+    box.innerHTML = `<pre>${esc(res.markdown || JSON.stringify(res, null, 2))}</pre>`;
+  } catch (e) {
+    box.textContent = `Error: ${e.message}`;
+  }
 }
 initStudio();
 </script>

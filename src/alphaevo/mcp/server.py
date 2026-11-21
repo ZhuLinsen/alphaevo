@@ -82,6 +82,11 @@ _TOOLS: list[dict[str, Any]] = [
                 "holdout_pct": {"type": "number", "minimum": 0.0, "maximum": 0.4, "default": 0.0},
                 "portfolio_gate": {"type": "boolean", "default": False},
                 "live": {"type": "boolean", "default": False},
+                "enable_l2": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Enable L2 Co-STEER PIT-verified dynamic factor synthesis",
+                },
                 "proposer_model": {
                     "type": "string",
                     "description": "Optional LiteLLM proposer model (or 'heuristic')",
@@ -90,6 +95,35 @@ _TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional adversarial LiteLLM prosecutor model (must differ in family from proposer when both are LLMs)",
                 },
+            },
+        },
+    },
+    {
+        "name": "alphaevo_diagnose_bottlenecks",
+        "description": "X-ray structural pass rates per entry trigger/condition/guard/filter without peeking at future returns or consuming L0 trials.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy_id": {"type": "string"},
+                "strategy_yaml": {"type": "string"},
+                "live": {"type": "boolean", "default": False},
+            },
+        },
+    },
+    {
+        "name": "alphaevo_mechanism_ab",
+        "description": "Run L3 Meta-RSI paired harness AB comparison (Unconstrained vs L0+Pinned Scars+L2) across chronological out-of-sample cutoffs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy_id": {"type": "string"},
+                "strategy_yaml": {"type": "string"},
+                "rounds": {"type": "integer", "minimum": 1, "maximum": 4, "default": 2},
+                "cutoffs": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                },
+                "live": {"type": "boolean", "default": False},
             },
         },
     },
@@ -298,6 +332,12 @@ class AlphaEvoMCPServer:
                 live=args.get("live"),
                 protocol=str(args.get("protocol", "full_research_v1")),
             )
+        if name == "alphaevo_diagnose_bottlenecks":
+            return self.service.diagnose_strategy(
+                strategy_id=args.get("strategy_id"),
+                strategy_yaml=args.get("strategy_yaml"),
+                live=args.get("live"),
+            )
         if name == "alphaevo_evolve_rsi":
             return self.service.run_rsi(
                 strategy_id=args.get("strategy_id"),
@@ -306,8 +346,23 @@ class AlphaEvoMCPServer:
                 holdout_pct=float(args.get("holdout_pct", 0.0)),
                 portfolio_gate=bool(args.get("portfolio_gate", False)),
                 live=args.get("live"),
+                enable_l2=bool(args.get("enable_l2", True)),
                 proposer_model=args.get("proposer_model"),
                 prosecutor_model=args.get("prosecutor_model"),
+            )
+        if name == "alphaevo_mechanism_ab":
+            raw_cutoffs = args.get("cutoffs")
+            cutoffs = (
+                [float(x) for x in raw_cutoffs]
+                if isinstance(raw_cutoffs, list) and raw_cutoffs
+                else None
+            )
+            return self.service.run_mechanism_ab(
+                strategy_id=args.get("strategy_id"),
+                strategy_yaml=args.get("strategy_yaml"),
+                rounds=int(args.get("rounds", 2)),
+                cutoffs=cutoffs,
+                live=args.get("live"),
             )
         if name == "alphaevo_null_audit":
             return self._run_null_audit(

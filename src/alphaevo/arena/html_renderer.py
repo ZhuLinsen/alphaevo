@@ -356,6 +356,87 @@ def render_evolution_tree_svg(
     )
 
 
+def render_map_elites_svg(
+    cells: Sequence[dict[str, Any]],
+    *,
+    width: int = 640,
+    height: int = 190,
+) -> str:
+    """Render an inline 3x3 SVG Quality-Diversity niche grid (regime x holding horizon)."""
+    regimes = [
+        ("bull_trend", "Bull Trend"),
+        ("range_reversal", "Range / Reversal"),
+        ("defensive_volatile", "Defensive / Vol"),
+    ]
+    horizons = [
+        ("short_1_5d", "Short 1-5d"),
+        ("swing_6_15d", "Swing 6-15d"),
+        ("position_16d_plus", "Position 16d+"),
+    ]
+    best_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for cell in cells:
+        r_b = str(cell.get("regime_bucket", ""))
+        h_b = str(cell.get("horizon_bucket", ""))
+        if not r_b or not h_b:
+            continue
+        prev = best_by_key.get((r_b, h_b))
+        if prev is None or float(cell.get("fitness_score", 0.0) or 0.0) > float(
+            prev.get("fitness_score", 0.0) or 0.0
+        ):
+            best_by_key[(r_b, h_b)] = cell
+
+    pad_l, pad_t, pad_r, pad_b = 118, 28, 12, 12
+    col_w = (width - pad_l - pad_r) / 3.0
+    row_h = (height - pad_t - pad_b) / 3.0
+
+    parts: list[str] = [
+        f'<svg viewBox="0 0 {width} {height}" class="chart-svg" role="img" aria-label="MAP-Elites Archive">',
+        f'<rect width="{width}" height="{height}" rx="12" fill="#0f172a"/>',
+    ]
+    for c_idx, (_hk, h_lbl) in enumerate(horizons):
+        cx = round(pad_l + (c_idx + 0.5) * col_w, 2)
+        parts.append(
+            f'<text x="{cx}" y="18" text-anchor="middle" fill="#94a3b8" '
+            f'font-size="10.5" font-weight="600">{html.escape(h_lbl)}</text>'
+        )
+
+    for r_idx, (r_key, r_lbl) in enumerate(regimes):
+        y0 = round(pad_t + r_idx * row_h + 3, 2)
+        cy = round(pad_t + (r_idx + 0.5) * row_h + 3, 2)
+        parts.append(
+            f'<text x="{pad_l - 8}" y="{cy}" text-anchor="end" fill="#cbd5e1" '
+            f'font-size="10.5" font-weight="600">{html.escape(r_lbl)}</text>'
+        )
+        for c_idx, (h_key, _hl) in enumerate(horizons):
+            x0 = round(pad_l + c_idx * col_w + 4, 2)
+            bw = round(col_w - 8, 2)
+            bh = round(row_h - 6, 2)
+            niche_cell = best_by_key.get((r_key, h_key))
+            if niche_cell is None:
+                parts.append(
+                    f'<rect x="{x0}" y="{y0}" width="{bw}" height="{bh}" rx="7" '
+                    'fill="#0b111e" stroke="#1e293b" stroke-dasharray="3,3"/>'
+                    f'<text x="{round(x0 + bw / 2, 2)}" y="{round(y0 + bh / 2 + 3, 2)}" '
+                    'text-anchor="middle" fill="#475569" font-size="9.5">Empty Niche</text>'
+                )
+            else:
+                fit = max(0.0, min(1.0, float(niche_cell.get("fitness_score", 0.0) or 0.0)))
+                alpha = round(0.18 + 0.50 * fit, 2)
+                sid = str(niche_cell.get("strategy_id", ""))
+                short_sid = sid if len(sid) <= 16 else ("..." + sid[-13:])
+                style = str(niche_cell.get("style_bucket", ""))
+                parts.append(
+                    f'<rect x="{x0}" y="{y0}" width="{bw}" height="{bh}" rx="7" '
+                    f'fill="rgba(16,185,129,{alpha})" stroke="#10b981" stroke-width="1.3"/>'
+                    f'<text x="{round(x0 + 8, 2)}" y="{round(y0 + 17, 2)}" fill="#e2e8f0" '
+                    f'font-size="10" font-weight="700">{html.escape(short_sid)}</text>'
+                    f'<text x="{round(x0 + 8, 2)}" y="{round(y0 + 32, 2)}" fill="#a7f3d0" '
+                    f'font-size="9.5">{html.escape(style)} · Fit {fit * 100:.1f}%</text>'
+                )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 _BASE_CSS = """
 :root {
   --bg: #0b0f17;
@@ -467,6 +548,7 @@ def render_arena_html(snapshot: ArenaSnapshot) -> str:
         d = entry.model_dump(mode="json")
         d["equity_svg"] = render_equity_svg(entry.equity_curve)
         d["tree_svg"] = render_evolution_tree_svg(entry.evolution_nodes)
+        d["map_elites_svg"] = render_map_elites_svg(entry.map_elites_cells)
         replay_items: list[dict[str, Any]] = []
         for tr in entry.trade_replays:
             tr_d = tr.model_dump(mode="json")
@@ -479,6 +561,9 @@ def render_arena_html(snapshot: ArenaSnapshot) -> str:
     first_svg = entries_payload[0]["equity_svg"] if entries_payload else render_equity_svg([])
     first_tree = (
         entries_payload[0]["tree_svg"] if entries_payload else render_evolution_tree_svg([])
+    )
+    first_qd = (
+        entries_payload[0]["map_elites_svg"] if entries_payload else render_map_elites_svg([])
     )
     market_lbl = html.escape(snapshot.market_label)
     data_src = html.escape(snapshot.data_source)
@@ -597,6 +682,11 @@ def render_arena_html(snapshot: ArenaSnapshot) -> str:
     </div>
   </div>
 
+  <div class="card">
+    <h2>MAP-Elites Behavioral Niche Archive <span style="color:var(--muted);font-size:12px;font-weight:400">(Regime × Holding Horizon Quality-Diversity grid · L2 Factors: <span id="detail-l2-factors">none</span>)</span></h2>
+    <div id="detail-map-elites">{first_qd}</div>
+  </div>
+
   <div class="grid-2">
     <div class="card">
       <h2>Adversarial Council Debate (Proposer vs. Prosecutor)</h2>
@@ -675,6 +765,9 @@ function selectEntry(idx) {{
     tr.classList.toggle("active", Number(tr.dataset.idx) === idx);
   }});
   document.getElementById("detail-tree").innerHTML = e.tree_svg || "";
+  document.getElementById("detail-map-elites").innerHTML = e.map_elites_svg || "";
+  const l2List = (e.synthesized_factors || []);
+  document.getElementById("detail-l2-factors").textContent = l2List.length ? l2List.join(", ") : "none";
   document.getElementById("detail-title").textContent = `${{e.champion_id}} — Daily MTM Equity vs Benchmark`;
   document.getElementById("detail-chart").innerHTML = e.equity_svg || "";
   const verdictsEl = document.getElementById("detail-verdicts");
@@ -891,6 +984,7 @@ __all__ = [
     "render_arena_html",
     "render_equity_svg",
     "render_evolution_tree_svg",
+    "render_map_elites_svg",
     "render_run_html",
     "render_trade_kline_svg",
 ]

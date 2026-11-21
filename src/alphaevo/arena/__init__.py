@@ -4,6 +4,7 @@ from alphaevo.arena.html_renderer import (
     render_arena_html,
     render_equity_svg,
     render_evolution_tree_svg,
+    render_map_elites_svg,
     render_run_html,
     render_trade_kline_svg,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "render_arena_html",
     "render_equity_svg",
     "render_evolution_tree_svg",
+    "render_map_elites_svg",
     "render_run_html",
     "render_trade_kline_svg",
 ]

@@ -88,6 +88,9 @@ def arena_run(
     dry_run_notify: bool = typer.Option(
         False, "--dry-run-notify", help="Preview notification delivery without network POSTs"
     ),
+    l2: bool = typer.Option(
+        True, "--l2/--no-l2", help="Enable L2 Co-STEER PIT-verified factor discovery"
+    ),
 ) -> None:
     """Run multi-strategy RSI evolution, shadow verification & generate an interactive HTML Arena."""
     from alphaevo.arena import ArenaRunner, render_arena_html
@@ -141,6 +144,7 @@ def arena_run(
         shadow_dir=Path(shadow_dir) if shadow_dir else None,
         market_label=market_label,
         data_source=data_source,
+        enable_l2_factors=l2,
     )
 
     out_path = Path(output_dir)

@@ -38,6 +38,7 @@ class BlindSpotCluster(BaseModel):
     severity: Literal["high", "medium", "low"]
     evidence: str
     suggested_action: str
+    bottleneck_hint: str = ""
 
 
 class CoSteerDecision(BaseModel):
@@ -117,6 +118,46 @@ def compute(df, idx):
     if std <= 1e-8:
         return 0.0
     return (float(vols.iloc[-1]) - float(vols.mean())) / std
+""".strip(),
+    ),
+    OfflineFactorTemplate(
+        name="trend_alignment_slope_20d",
+        description="20-day normalized moving-average slope filtering counter-trend knife catches",
+        op=">=",
+        threshold=-0.01,
+        code="""
+import numpy as np
+
+def compute(df, idx):
+    if idx < 19:
+        return 0.0
+    closes = df["close"].iloc[idx - 19 : idx + 1].astype(float)
+    ma_now = float(closes.mean())
+    half_prev = float(closes.iloc[:10].mean())
+    half_curr = float(closes.iloc[10:].mean())
+    if ma_now <= 1e-8:
+        return 0.0
+    return (half_curr - half_prev) / ma_now
+""".strip(),
+    ),
+    OfflineFactorTemplate(
+        name="downside_vol_ratio_10d",
+        description="10-day downside vs total return volatility ratio filtering asymmetric panic bars",
+        op="<=",
+        threshold=0.78,
+        code="""
+import numpy as np
+
+def compute(df, idx):
+    if idx < 10:
+        return 0.5
+    closes = df["close"].iloc[idx - 10 : idx + 1].astype(float).to_numpy()
+    rets = np.diff(closes) / np.maximum(1e-6, closes[:-1])
+    total_energy = float(np.sum(np.square(rets)))
+    if total_energy <= 1e-12:
+        return 0.5
+    down_energy = float(np.sum(np.square(np.minimum(0.0, rets))))
+    return float(np.sqrt(down_energy / total_energy))
 """.strip(),
     ),
 )
@@ -335,6 +376,7 @@ class BlindSpotMiner:
 
         should_try_l2 = (
             RSILevel.L2_FACTOR in allowed_levels
+            and evaluation.overall.signal_count >= 10
             and sample_df is not None
             and len(sample_df) >= 15
             and (
@@ -371,7 +413,13 @@ class BlindSpotMiner:
                         )
                     )
                     persisted = True
-                target_field = "entry.guards" if strategy.entry.triggers else "entry.conditions"
+                if strategy.entry.triggers:
+                    target_field = "entry.guards"
+                elif strategy.entry.logic == "or":
+                    # Hard-filter factors belong in entry.filters so OR triggers don't become looser.
+                    target_field = "entry.filters"
+                else:
+                    target_field = "entry.conditions"
                 change = StrategyChange(
                     change_type=ChangeType.ADD_CONDITION,
                     target=target_field,

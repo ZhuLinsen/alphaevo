@@ -260,6 +260,7 @@ class ArenaRunner:
         shadow_dir: Path | None = None,
         market_label: str = "US Snapshot",
         data_source: str = "bundled_snapshot",
+        enable_l2_factors: bool = True,
         seed: int = 42,
     ) -> ArenaSnapshot:
         """Evaluate, self-evolve, shadow-simulate, and allocate across *strategies*."""
@@ -309,10 +310,15 @@ class ArenaRunner:
             )
             baseline_score = float(base_outcome.evaluation.confidence_score)
 
+            allowed_lvls = (
+                [RSILevel.L1_STRATEGY, RSILevel.L2_FACTOR]
+                if enable_l2_factors
+                else [RSILevel.L1_STRATEGY]
+            )
             charter = RSICharter(
                 name=f"arena_{base_strat.meta.id}",
                 seed_strategy_id=base_strat.meta.id,
-                allowed_levels=[RSILevel.L1_STRATEGY],
+                allowed_levels=allowed_lvls,
                 max_rounds=max(1, rounds),
                 max_candidates_per_round=2,
                 max_trials_budget=max(10, rounds * 8 + 4),
@@ -486,6 +492,17 @@ class ArenaRunner:
                     evolution_nodes=nodes,
                     deliberations=[d.model_dump(mode="json") for d in rsi_res.deliberations],
                     veto_breakdown=dict(rsi_res.veto_breakdown),
+                    map_elites_cells=[
+                        {
+                            "regime_bucket": cell.niche.regime_bucket,
+                            "style_bucket": cell.niche.style_bucket,
+                            "horizon_bucket": cell.niche.horizon_bucket,
+                            "strategy_id": cell.strategy_id,
+                            "fitness_score": round(float(cell.fitness_score), 4),
+                        }
+                        for cell in rsi_res.archive_summary.cells
+                    ],
+                    synthesized_factors=list(rsi_res.persisted_factors),
                     trade_replays=trade_replays,
                     committee_verdicts=verdicts_json,
                     champion_yaml=champ_yaml,
@@ -557,6 +574,9 @@ class ArenaRunner:
             total_vetoes=total_vetoes,
             total_deliberations=total_deliberations,
             total_prosecutor_vetoes=total_prosecutor_vetoes,
+            total_l2_factors_synthesized=len(
+                {fname for e in entries for fname in e.synthesized_factors}
+            ),
             veto_breakdown=snapshot_veto_breakdown,
             chain_verified=all_chains_verified,
             entries=entries,
