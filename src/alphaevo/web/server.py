@@ -122,6 +122,23 @@ class AlphaEvoWebService:
             "yaml": StrategySerializer().to_yaml(strategy),
         }
 
+    def save_strategy(self, *, strategy_yaml: str) -> dict[str, Any]:
+        """Validate and persist a YAML DSL strategy into SQLite StrategyStore."""
+        from alphaevo.strategy.dsl.parser import StrategyParser
+        from alphaevo.strategy.store import StrategyStore
+
+        if not strategy_yaml.strip():
+            raise ValueError("strategy_yaml cannot be empty")
+        strategy = StrategyParser().parse_yaml(strategy_yaml)
+        StrategyStore(self.config.db_path).save(strategy)
+        return {
+            "strategy_id": strategy.meta.id,
+            "name": strategy.meta.name,
+            "version": strategy.meta.version,
+            "market": strategy.meta.market.value,
+            "saved": True,
+        }
+
     def run_strategy(
         self,
         *,
@@ -321,10 +338,20 @@ class AlphaEvoWebService:
             locked_holdout_pct=holdout_pct,
             require_portfolio_gate=portfolio_gate,
         )
+        l2_llm = (
+            proposer_model.strip()
+            if proposer_model
+            and proposer_model.strip()
+            and not proposer_model.strip().lower().startswith("heuristic")
+            else None
+        )
         engine = StockRSIEngine(
             db_path=self.config.db_path,
             backtest_config=self.config.backtest,
             council=council,
+            enable_crossover=True,
+            l2_llm_model=l2_llm,
+            l2_api_key=(api_key or "").strip() or None,
         )
         res = engine.run(
             strategy,
@@ -367,6 +394,7 @@ class AlphaEvoWebService:
                 "round_num": r["round_num"],
                 "strategy_id": r["strategy_id"],
                 "parent_id": r.get("parent_id"),
+                "secondary_parent_id": r.get("secondary_parent_id"),
                 "status": r["status"],
                 "score": r["fitness_score"],
                 "dsr_probability": r["dsr_probability"],
@@ -397,6 +425,8 @@ class AlphaEvoWebService:
             "deliberations": [d.model_dump(mode="json") for d in res.deliberations],
             "veto_breakdown": dict(res.veto_breakdown),
             "persisted_factors": list(res.persisted_factors),
+            "crossovers_tried": res.crossovers_tried,
+            "crossovers_kept": res.crossovers_kept,
             "map_elites_cells": map_cells,
             "map_elites_svg": render_map_elites_svg(map_cells),
             "bottleneck_report": bottleneck.model_dump(mode="json"),
@@ -455,6 +485,37 @@ class AlphaEvoWebService:
         return {
             "result": rep.model_dump(mode="json"),
             "markdown": MechanismEvaluator.render_markdown(rep),
+        }
+
+    def run_benchmark(
+        self,
+        *,
+        strategy_ids: list[str] | None = None,
+        rounds: int = 2,
+        holdout_pct: float = 0.20,
+        live: bool | None = None,
+        run_null_audit: bool = True,
+    ) -> dict[str, Any]:
+        """Run multi-strategy Baseline vs L1 vs L1+L2+Crossover ablation benchmark."""
+        from alphaevo.cli.commands.arena import _load_arena_strategies
+        from alphaevo.rsi.benchmark import render_benchmark_markdown, run_evolution_benchmark
+
+        refs = ",".join(strategy_ids) if strategy_ids else None
+        strategies = _load_arena_strategies(refs, self.config)
+        market_data, src_lbl, _repro, _mut = self._load_market_data(live=live)
+        rep = run_evolution_benchmark(
+            strategies,
+            market_data,
+            rounds=max(1, min(4, rounds)),
+            locked_holdout_pct=max(0.0, min(0.4, holdout_pct)),
+            run_null_audit=run_null_audit,
+            null_worlds=1,
+            data_source=src_lbl,
+            backtest_config=self.config.backtest,
+        )
+        return {
+            "result": rep.model_dump(mode="json"),
+            "markdown": render_benchmark_markdown(rep),
         }
 
     def list_runs(self, limit: int = 30) -> dict[str, Any]:
@@ -817,6 +878,12 @@ def create_web_server(
                         ),
                     )
                     return
+                if path == "/api/strategies/save":
+                    self._send_json(
+                        HTTPStatus.OK,
+                        service.save_strategy(strategy_yaml=str(body.get("strategy_yaml", ""))),
+                    )
+                    return
                 if path == "/api/runs":
                     self._send_json(
                         HTTPStatus.OK,
@@ -863,6 +930,24 @@ def create_web_server(
                             rounds=int(body.get("rounds", 2)),
                             cutoffs=parsed_cutoffs,
                             live=body.get("live"),
+                        ),
+                    )
+                    return
+                if path == "/api/rsi/benchmark":
+                    raw_sids = body.get("strategy_ids")
+                    sids_list = (
+                        [str(s) for s in raw_sids]
+                        if isinstance(raw_sids, list) and raw_sids
+                        else None
+                    )
+                    self._send_json(
+                        HTTPStatus.OK,
+                        service.run_benchmark(
+                            strategy_ids=sids_list,
+                            rounds=int(body.get("rounds", 2)),
+                            holdout_pct=float(body.get("holdout_pct", 0.20)),
+                            live=body.get("live"),
+                            run_null_audit=bool(body.get("run_null_audit", True)),
                         ),
                     )
                     return

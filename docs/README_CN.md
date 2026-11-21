@@ -12,6 +12,7 @@
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
+[![Observatory](https://img.shields.io/badge/Live%20Observatory-GitHub%20Pages-0ea5e9.svg)](https://zhulinsen.github.io/alphaevo/)
 [![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Ready-10b981.svg)](../SKILL.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](../Dockerfile)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](../CONTRIBUTING.md)
@@ -65,10 +66,11 @@ alphaevo arena run --rounds 2           # 策略进化观测站 -> reports/arena
   }
 }
 ```
-开箱提供 11 个标准化研究工具（`alphaevo_draft_strategy`、`alphaevo_diagnose_bottlenecks`、`alphaevo_evaluate_strategy`、`alphaevo_evolve_rsi`、`alphaevo_mechanism_ab`、`alphaevo_null_audit`、`alphaevo_shadow_simulate`、`alphaevo_audit_factors`、`alphaevo_allocate_portfolio` 等）及宪章/策略库 Resource。详情见 [SKILL.md](../SKILL.md)。
+开箱提供 12 个标准化研究工具（`alphaevo_draft_strategy`、`alphaevo_diagnose_bottlenecks`、`alphaevo_evaluate_strategy`、`alphaevo_evolve_rsi`、`alphaevo_mechanism_ab`、`alphaevo_benchmark_strategies`、`alphaevo_null_audit`、`alphaevo_shadow_simulate`、`alphaevo_audit_factors`、`alphaevo_allocate_portfolio` 等）及宪章/策略库 Resource。详情见 [SKILL.md](../SKILL.md)。
 
-### 4. Fork 即部署 GitHub Pages 进化观测站 + 自动推送（零服务器成本）
-1. Fork 本仓库并启用 Actions；如需在线站点，在仓库 `Settings -> Pages` 中选择 **GitHub Actions** 即可发布交互式进化观测站。
+### 4. 在线 GitHub Pages 进化观测站 + Fork 即用定时推送（零服务器成本）
+- **在线公共观测站**: [`https://zhulinsen.github.io/alphaevo/`](https://zhulinsen.github.io/alphaevo/)
+1. Fork 本仓库并启用 Actions；在仓库 `Settings -> Pages` 中选择 **GitHub Actions** 即可发布交互式进化观测站。
 2. 按需在仓库 Secrets 中填入推送渠道：`ALPHAEVO_FEISHU_WEBHOOK`（飞书）、`ALPHAEVO_WECOM_WEBHOOK`（企微）、`ALPHAEVO_DINGTALK_WEBHOOK`（钉钉）、`ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`、`ALPHAEVO_DISCORD_WEBHOOK`、`ALPHAEVO_SLACK_WEBHOOK` 或通用 `ALPHAEVO_WEBHOOK_URL`。
 3. [arena-daily.yml](../.github/workflows/arena-daily.yml) 每个工作日自动运行多策略自我进化与过拟合处决审计、发布交互式观测站网页，并向你的群聊推送结果摘要。
 
@@ -354,6 +356,8 @@ alphaevo evolve <strategy_id> --method llm --rounds 3 --output reports/
 # 股票递归进化（RSI）、L0 真相核与前瞻影子账本
 alphaevo rsi run <id> --holdout-pct 0.20 --portfolio-gate --enroll-shadow
                                           # 按研究宪章运行 L1/L2 Stock RSI 闭环并可选隔离 Holdout 与入账
+alphaevo rsi benchmark --rounds 2 --holdout-pct 0.20
+                                          # Baseline vs L1 vs L1+L2+语义交叉 可复现消融基准
 alphaevo rsi null-audit <id>              # 洗牌噪声零假晋升审讯
 alphaevo rsi mechanism-ab <id> --cutoffs 0.55,0.70  # L3 多切分点机理核配对 AB 评测
 alphaevo shadow simulate <id>             # 滚动双时态前瞻影子承诺与晋升/熔断仿真

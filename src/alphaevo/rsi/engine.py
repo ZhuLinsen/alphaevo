@@ -27,6 +27,7 @@ from alphaevo.reflection.experience import ExperienceRecord, ExperienceStore
 from alphaevo.reflection.mutator import StrategyMutator
 from alphaevo.rsi.co_steer import BlindSpotMiner, ScarRegistry
 from alphaevo.rsi.council import HeterogeneousCouncil
+from alphaevo.rsi.crossover import SemanticCrossoverBreeder
 from alphaevo.rsi.diagnostics import analyze_entry_bottlenecks
 from alphaevo.rsi.program import RSICharter
 from alphaevo.rsi.qd_archive import ArchiveSummary, MAPElitesArchive
@@ -58,6 +59,7 @@ class DeliberationRecord(BaseModel):
 
     round_num: int
     parent_strategy_id: str
+    secondary_parent_id: str | None = None
     candidate_strategy_id: str | None = None
     proposer_model: str
     proposer_family: str
@@ -91,6 +93,7 @@ class RSIRoundRow(BaseModel):
     round_num: int
     strategy_id: str
     parent_id: str | None = None
+    secondary_parent_id: str | None = None
     level: RSILevel
     signals: int
     win_rate: float
@@ -132,6 +135,8 @@ class RSIRunResult(BaseModel):
     portfolio_verdict: PortfolioGateVerdict | None = None
     enrolled_in_shadow: bool = False
     persisted_factors: list[str] = Field(default_factory=list)
+    crossovers_tried: int = 0
+    crossovers_kept: int = 0
     run_id: str | None = None
     tsv_path: Path | None = None
     report_path: Path | None = None
@@ -229,8 +234,11 @@ class StockRSIEngine:
         db_path: str | Path = "~/.alphaevo/alphaevo.db",
         complexity_limit: int = 8,
         enable_pinned_scars: bool = True,
+        enable_crossover: bool = True,
         council: HeterogeneousCouncil | None = None,
         backtest_config: BacktestConfig | None = None,
+        l2_llm_model: str | None = None,
+        l2_api_key: str | None = None,
     ) -> None:
         self._db_path = db_path
         self._backtest_config = backtest_config or BacktestConfig(min_data_days=15)
@@ -250,12 +258,18 @@ class StockRSIEngine:
         )
         self._scar_registry = ScarRegistry(path=scar_path)
         self._enable_pinned_scars = enable_pinned_scars
+        self._enable_crossover = enable_crossover
+        self._breeder = SemanticCrossoverBreeder(complexity_limit=complexity_limit)
         self._critic = SelfCritic(
             experience_store=self._experience_store,
             complexity_limit=complexity_limit,
         )
         self._council = council or HeterogeneousCouncil(critic=self._critic)
-        self._miner = BlindSpotMiner(factor_store=self._factor_store)
+        self._miner = BlindSpotMiner(
+            factor_store=self._factor_store,
+            llm_model=l2_llm_model,
+            api_key=l2_api_key,
+        )
         self._null_ctrl = NullSignalController()
         self._evaluator = Evaluator()
         self._kernel = EvaluationKernel(
@@ -382,6 +396,8 @@ class StockRSIEngine:
         kept_rounds = 0
         promotions = 0
         scars_created = 0
+        crossovers_tried = 0
+        crossovers_kept = 0
         persisted_factors: list[str] = []
         next_version = seed_strategy.meta.version + 1
         seen_hashes: set[str] = {_structural_strategy_hash(seed_strategy)}
@@ -431,20 +447,99 @@ class StockRSIEngine:
                 bottleneck=bottleneck,
             )
 
-            approved = []
-            for d in raw_deliberations:
-                prop = d.proposal
-                aud = d.audit
+            # Pair council proposals with semantic genetic crossover offspring when archive has >=2 elites
+            candidate_specs: list[
+                tuple[
+                    str,
+                    str,
+                    str,
+                    list[StrategyChange],
+                    Any,
+                    Strategy | None,
+                    str | None,
+                ]
+            ] = [
+                (
+                    d.proposal.proposer_model,
+                    d.proposal.proposer_family,
+                    d.proposal.rationale,
+                    d.proposal.changes,
+                    d.audit,
+                    None,
+                    None,
+                )
+                for d in raw_deliberations
+            ]
+
+            if self._enable_crossover and (stagnant_l1 >= 1 or rnd >= 2):
+                elites = [
+                    e for e in archive.select_elites(10) if e.strategy_id != parent_strategy.meta.id
+                ]
+                if elites:
+                    p_exit = parent_strategy.exit.model_dump(mode="json")
+                    elites.sort(
+                        key=lambda e: (
+                            0 if e.strategy.exit.model_dump(mode="json") != p_exit else 1,
+                            -e.fitness_score,
+                        )
+                    )
+                    sec_elite = elites[0]
+                    for xover in self._breeder.breed(
+                        parent_strategy, sec_elite.strategy, max_children=1
+                    ):
+                        if not xover.summary_changes:
+                            continue
+                        x_aud = self._council.audit_changes(
+                            parent_strategy,
+                            parent_eval,
+                            xover.summary_changes,
+                            blind_spot=steer.cluster,
+                            bottleneck=bottleneck,
+                            mission_notes=cfg.mission_notes,
+                        )
+                        candidate_specs.append(
+                            (
+                                self._council.config.proposer.model,
+                                self._council.config.proposer.family,
+                                xover.rationale,
+                                xover.summary_changes,
+                                x_aud,
+                                xover.child_strategy,
+                                xover.secondary_parent_id,
+                            )
+                        )
+
+            approved: list[
+                tuple[
+                    str,
+                    str,
+                    str,
+                    list[StrategyChange],
+                    Any,
+                    Strategy | None,
+                    str | None,
+                ]
+            ] = []
+            for (
+                p_model,
+                p_fam,
+                p_rat,
+                p_changes,
+                aud,
+                prebuilt_strat,
+                sec_parent,
+            ) in candidate_specs:
                 change_strs = [
-                    f"{c.target}: {c.from_value} -> {c.to_value} ({c.reason})" for c in prop.changes
+                    f"{c.target}: {c.from_value} -> {c.to_value} ({c.reason})" for c in p_changes
                 ]
                 if not aud.approved:
                     vetoed_rec = DeliberationRecord(
                         round_num=rnd,
                         parent_strategy_id=parent_strategy.meta.id,
-                        proposer_model=prop.proposer_model,
-                        proposer_family=prop.proposer_family,
-                        rationale=prop.rationale,
+                        secondary_parent_id=sec_parent,
+                        proposer_model=p_model,
+                        proposer_family=p_fam,
+                        rationale=p_rat,
                         proposed_changes=change_strs,
                         prosecutor_model=aud.prosecutor_model,
                         prosecutor_family=aud.prosecutor_family,
@@ -465,7 +560,9 @@ class StockRSIEngine:
                         }
                     )
                 else:
-                    approved.append(d)
+                    approved.append(
+                        (p_model, p_fam, p_rat, p_changes, aud, prebuilt_strat, sec_parent)
+                    )
 
             if not approved:
                 veto_row = RSIRoundRow(
@@ -509,19 +606,17 @@ class StockRSIEngine:
             ) = None
             round_approved_records: list[DeliberationRecord] = []
 
-            for delib in approved:
-                prop = delib.proposal
-                aud = delib.audit
-                changes = prop.changes
+            for p_model, p_fam, p_rat, changes, aud, prebuilt_strat, sec_parent in approved:
                 change_strs = [
                     f"{c.target}: {c.from_value} -> {c.to_value} ({c.reason})" for c in changes
                 ]
                 cand_rec = DeliberationRecord(
                     round_num=rnd,
                     parent_strategy_id=parent_strategy.meta.id,
-                    proposer_model=prop.proposer_model,
-                    proposer_family=prop.proposer_family,
-                    rationale=prop.rationale,
+                    secondary_parent_id=sec_parent,
+                    proposer_model=p_model,
+                    proposer_family=p_fam,
+                    rationale=p_rat,
                     proposed_changes=change_strs,
                     prosecutor_model=aud.prosecutor_model,
                     prosecutor_family=aud.prosecutor_family,
@@ -545,14 +640,17 @@ class StockRSIEngine:
                     )
                     else RSILevel.L1_STRATEGY
                 )
-                try:
-                    cand_strategy = mutator.mutate(parent_strategy, changes, atomic=True)
-                except Exception:
-                    cand_rec.l0_outcome = "mutation_failed"
-                    cand_rec.veto_reasons = ["mutation_failed"]
-                    deliberations.append(cand_rec)
-                    round_approved_records.append(cand_rec)
-                    continue
+                if prebuilt_strat is not None:
+                    cand_strategy = prebuilt_strat.model_copy(deep=True)
+                else:
+                    try:
+                        cand_strategy = mutator.mutate(parent_strategy, changes, atomic=True)
+                    except Exception:
+                        cand_rec.l0_outcome = "mutation_failed"
+                        cand_rec.veto_reasons = ["mutation_failed"]
+                        deliberations.append(cand_rec)
+                        round_approved_records.append(cand_rec)
+                        continue
 
                 cand_id = f"{family_id}_v{next_version}"
                 cand_strategy.meta.id = cand_id
@@ -566,6 +664,8 @@ class StockRSIEngine:
                     round_approved_records.append(cand_rec)
                     continue
                 seen_hashes.add(shash)
+                if prebuilt_strat is not None:
+                    crossovers_tried += 1
 
                 cand_outcome = self._eval_with_kernel(
                     strategy=cand_strategy,
@@ -778,6 +878,8 @@ class StockRSIEngine:
                 best_rec.veto_reasons = best_reasons
 
             best_rec.l0_outcome = status
+            if best_rec.secondary_parent_id and status in {"keep", "stepping_stone"}:
+                crossovers_kept += 1
             for rec in round_approved_records:
                 if rec is best_rec:
                     if status == "revert" and rec.veto_reasons:
@@ -796,6 +898,7 @@ class StockRSIEngine:
                 round_num=rnd,
                 strategy_id=cand_strat.meta.id,
                 parent_id=parent_strategy.meta.id,
+                secondary_parent_id=best_rec.secondary_parent_id,
                 level=lvl,
                 signals=cand_eval.overall.signal_count,
                 win_rate=cand_eval.overall.win_rate,
@@ -871,6 +974,8 @@ class StockRSIEngine:
             portfolio_verdict=verified_champion_outcome.portfolio_verdict,
             enrolled_in_shadow=enrolled_in_shadow,
             persisted_factors=persisted_factors,
+            crossovers_tried=crossovers_tried,
+            crossovers_kept=crossovers_kept,
         )
 
         if output_dir is not None:
@@ -992,7 +1097,7 @@ class StockRSIEngine:
             f"- Champion Strategy: `{result.champion_id}`",
             f"- Trial Family ID: `{result.trial_family_id}` (Total Trials Counted: {result.total_trials_recorded})",
             f"- L0 Truth Kernel Intact: **{result.kernel_intact}** (`{result.kernel_hash_before}`)",
-            f"- Kept Rounds: {result.kept_rounds} | Promotions (L0-Verified): {result.promotions} | Distilled Pinned Scars: {result.scars_created}",
+            f"- Kept Rounds: {result.kept_rounds} | Promotions (L0-Verified): {result.promotions} | Distilled Pinned Scars: {result.scars_created} | Crossovers Kept: {result.crossovers_kept}/{result.crossovers_tried}",
             f"- MAP-Elites Niches Occupied: {result.archive_summary.total_cells_occupied}",
             "",
             "## Evolution Ratchet Ledger",

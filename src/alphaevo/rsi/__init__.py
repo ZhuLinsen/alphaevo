@@ -1,5 +1,12 @@
 """L1 + L2 + L3 Recursive Self-Improvement (RSI) Engine for Stock Research."""
 
+from alphaevo.rsi.benchmark import (
+    AblationArmMetrics,
+    BenchmarkStrategyRow,
+    EvolutionBenchmarkReport,
+    render_benchmark_markdown,
+    run_evolution_benchmark,
+)
 from alphaevo.rsi.co_steer import (
     BlindSpotCluster,
     BlindSpotMiner,
@@ -17,6 +24,11 @@ from alphaevo.rsi.council import (
     ModelSpec,
     ProsecutorAudit,
     infer_model_family,
+)
+from alphaevo.rsi.crossover import (
+    CrossoverCandidate,
+    CrossoverOperator,
+    SemanticCrossoverBreeder,
 )
 from alphaevo.rsi.diagnostics import (
     ConditionPassRate,
@@ -53,16 +65,21 @@ from alphaevo.rsi.trajectory import (
 )
 
 __all__ = [
+    "AblationArmMetrics",
     "ArchiveCell",
     "ArchiveSummary",
+    "BenchmarkStrategyRow",
     "BlindSpotCluster",
     "BlindSpotMiner",
     "CoSteerDecision",
     "ConditionPassRate",
     "CouncilDeliberation",
     "CouncilProposal",
+    "CrossoverCandidate",
+    "CrossoverOperator",
     "DPOPreferencePair",
     "DeliberationRecord",
+    "EvolutionBenchmarkReport",
     "ExecutableScar",
     "FailureClusterId",
     "HarnessVariant",
@@ -83,6 +100,7 @@ __all__ = [
     "RSITrajectoryExport",
     "RSITrajectoryStep",
     "ScarRegistry",
+    "SemanticCrossoverBreeder",
     "StockRSIEngine",
     "StrategyBottleneckReport",
     "analyze_entry_bottlenecks",
@@ -91,4 +109,6 @@ __all__ = [
     "export_rsi_trajectory",
     "infer_model_family",
     "parse_rsi_program",
+    "render_benchmark_markdown",
+    "run_evolution_benchmark",
 ]

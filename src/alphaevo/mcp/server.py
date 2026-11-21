@@ -187,6 +187,20 @@ _TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "alphaevo_benchmark_strategies",
+        "description": "Run reproducible Baseline vs L1-only vs L1+L2+Semantic Crossover ablation benchmark with locked holdout and Tier-2 Null Audit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strategy_ids": {"type": "array", "items": {"type": "string"}},
+                "rounds": {"type": "integer", "minimum": 1, "maximum": 4, "default": 2},
+                "holdout_pct": {"type": "number", "minimum": 0.0, "maximum": 0.4, "default": 0.20},
+                "live": {"type": "boolean", "default": False},
+                "run_null_audit": {"type": "boolean", "default": True},
+            },
+        },
+    },
 ]
 
 _RESOURCES: list[dict[str, str]] = [
@@ -385,6 +399,18 @@ class AlphaEvoMCPServer:
             return self.service.allocate_portfolio(strategy_ids=sids, live=args.get("live"))
         if name == "alphaevo_list_runs":
             return self.service.list_runs(limit=int(args.get("limit", 20)))
+        if name == "alphaevo_benchmark_strategies":
+            raw_sids = args.get("strategy_ids")
+            bench_sids: list[str] | None = (
+                [str(s) for s in raw_sids] if isinstance(raw_sids, list) and raw_sids else None
+            )
+            return self.service.run_benchmark(
+                strategy_ids=bench_sids,
+                rounds=int(args.get("rounds", 2)),
+                holdout_pct=float(args.get("holdout_pct", 0.20)),
+                live=args.get("live"),
+                run_null_audit=bool(args.get("run_null_audit", True)),
+            )
         raise ValueError(f"Unknown MCP tool: {name}")
 
     def _run_null_audit(
