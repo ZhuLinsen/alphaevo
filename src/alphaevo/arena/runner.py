@@ -25,6 +25,7 @@ from alphaevo.models.enums import RSILevel
 from alphaevo.models.execution import TradeSignal
 from alphaevo.models.strategy import Strategy
 from alphaevo.research_committee import ResearchCommittee
+from alphaevo.rsi.council import HeterogeneousCouncil
 from alphaevo.rsi.engine import StockRSIEngine
 from alphaevo.rsi.program import RSICharter
 from alphaevo.strategy.dsl.serializer import StrategySerializer
@@ -42,9 +43,16 @@ class ArenaRunner:
         *,
         backtest_config: BacktestConfig | None = None,
         db_path: str | Path = ":memory:",
+        council: HeterogeneousCouncil | None = None,
+        l2_llm_model: str | None = None,
+        l2_api_key: str | None = None,
     ) -> None:
         self._bt_config = backtest_config or BacktestConfig()
         self._db_path = db_path
+        self._council = council
+        self._l2_llm_model = l2_llm_model
+        # Transient session credential only; never stored in snapshots or disk.
+        self._l2_api_key = l2_api_key
         self._serializer = StrategySerializer()
         self._committee = ResearchCommittee()
 
@@ -261,6 +269,7 @@ class ArenaRunner:
         market_label: str = "US Snapshot",
         data_source: str = "bundled_snapshot",
         enable_l2_factors: bool = True,
+        enable_crossover: bool = True,
         seed: int = 42,
     ) -> ArenaSnapshot:
         """Evaluate, self-evolve, shadow-simulate, and allocate across *strategies*."""
@@ -288,6 +297,10 @@ class ArenaRunner:
         rsi_engine = StockRSIEngine(
             db_path=self._db_path,
             backtest_config=self._bt_config,
+            council=self._council,
+            enable_crossover=enable_crossover,
+            l2_llm_model=self._l2_llm_model,
+            l2_api_key=self._l2_api_key,
         )
 
         entries: list[ArenaStrategyEntry] = []
@@ -389,6 +402,7 @@ class ArenaRunner:
                         strategy_id=row.strategy_id,
                         parent_id=row.parent_id
                         or (base_strat.meta.id if row.round_num > 0 else None),
+                        secondary_parent_id=row.secondary_parent_id,
                         status=row.status,
                         level=row.level.value,
                         score=round(float(row.fitness_score), 4),
@@ -503,6 +517,7 @@ class ArenaRunner:
                         for cell in rsi_res.archive_summary.cells
                     ],
                     synthesized_factors=list(rsi_res.persisted_factors),
+                    crossovers_kept=int(rsi_res.crossovers_kept),
                     trade_replays=trade_replays,
                     committee_verdicts=verdicts_json,
                     champion_yaml=champ_yaml,
@@ -577,6 +592,7 @@ class ArenaRunner:
             total_l2_factors_synthesized=len(
                 {fname for e in entries for fname in e.synthesized_factors}
             ),
+            total_crossovers_kept=sum(e.crossovers_kept for e in entries),
             veto_breakdown=snapshot_veto_breakdown,
             chain_verified=all_chains_verified,
             entries=entries,
@@ -598,6 +614,8 @@ class ArenaRunner:
                 f"L0 Promotions: **{snapshot.total_promotions}** | "
                 f"Overfit / Prosecutor Vetoes: **{snapshot.total_vetoes}** "
                 f"(Prosecutor: {snapshot.total_prosecutor_vetoes}) | "
+                f"L2 Factors: **{snapshot.total_l2_factors_synthesized}** | "
+                f"Crossovers Kept: **{snapshot.total_crossovers_kept}** | "
                 f"Shadow Hash Chain: **{'VERIFIED' if snapshot.chain_verified else 'FAILED'}**"
             ),
             "",

@@ -17,6 +17,7 @@ class RSITrajectoryStep(BaseModel):
 
     round_num: int
     parent_strategy_id: str
+    secondary_parent_id: str | None = None
     candidate_strategy_id: str | None = None
     proposer_model: str
     proposer_family: str
@@ -71,6 +72,7 @@ def build_rsi_trajectory(result: RSIRunResult) -> RSITrajectoryExport:
         RSITrajectoryStep(
             round_num=d.round_num,
             parent_strategy_id=d.parent_strategy_id,
+            secondary_parent_id=d.secondary_parent_id,
             candidate_strategy_id=d.candidate_strategy_id,
             proposer_model=d.proposer_model,
             proposer_family=d.proposer_family,

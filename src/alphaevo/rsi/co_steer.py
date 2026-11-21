@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import numpy as np
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -47,6 +51,7 @@ class CoSteerDecision(BaseModel):
     chosen_level: RSILevel
     cluster: BlindSpotCluster
     synthesized_factor_name: str | None = None
+    synthesized_via: Literal["llm", "offline_template"] | None = None
     pit_verified: bool = False
     persisted_to_store: bool = False
     proposed_changes: list[StrategyChange] = Field(default_factory=list)
@@ -160,7 +165,93 @@ def compute(df, idx):
     return float(np.sqrt(down_energy / total_energy))
 """.strip(),
     ),
+    OfflineFactorTemplate(
+        name="close_location_value_5d",
+        description="5-day average close location value measuring close-near-high accumulation strength",
+        op=">=",
+        threshold=-0.15,
+        code="""
+import numpy as np
+
+def compute(df, idx):
+    if idx < 5:
+        return 0.0
+    sub = df.iloc[idx - 4 : idx + 1]
+    high = sub["high"].astype(float).to_numpy()
+    low = sub["low"].astype(float).to_numpy()
+    close = sub["close"].astype(float).to_numpy()
+    span = np.maximum(1e-6, high - low)
+    clv = (2.0 * close - high - low) / span
+    return float(np.mean(clv))
+""".strip(),
+    ),
+    OfflineFactorTemplate(
+        name="atr_expansion_ratio_14d",
+        description="5-day vs 14-day true-range expansion ratio filtering parabolic exhaustion spikes",
+        op="<=",
+        threshold=1.35,
+        code="""
+import numpy as np
+
+def compute(df, idx):
+    if idx < 14:
+        return 1.0
+    sub = df.iloc[idx - 14 : idx + 1]
+    high = sub["high"].astype(float).to_numpy()
+    low = sub["low"].astype(float).to_numpy()
+    close = sub["close"].astype(float).to_numpy()
+    prev_c = close[:-1]
+    tr = np.maximum(
+        high[1:] - low[1:],
+        np.maximum(np.abs(high[1:] - prev_c), np.abs(low[1:] - prev_c)),
+    )
+    atr14 = float(np.mean(tr[-14:]))
+    if atr14 <= 1e-8:
+        return 1.0
+    atr5 = float(np.mean(tr[-5:]))
+    return atr5 / atr14
+""".strip(),
+    ),
 )
+
+
+def _select_ordered_templates(cluster_id: FailureClusterId) -> list[OfflineFactorTemplate]:
+    """Order PIT-safe L2 factor templates to target the diagnosed failure cluster."""
+    by_name = {t.name: t for t in _OFFLINE_FACTOR_TEMPLATES}
+    priority_map: dict[FailureClusterId, tuple[str, ...]] = {
+        "whipsaw_stopout_in_chop": (
+            "intraday_range_compression_10d",
+            "downside_vol_ratio_10d",
+            "atr_expansion_ratio_14d",
+            "pullback_efficiency_5d",
+        ),
+        "weak_payoff_tail": (
+            "trend_alignment_slope_20d",
+            "close_location_value_5d",
+            "volume_impulse_z5",
+            "intraday_range_compression_10d",
+        ),
+        "missing_discriminatory_factor": (
+            "pullback_efficiency_5d",
+            "close_location_value_5d",
+            "trend_alignment_slope_20d",
+            "atr_expansion_ratio_14d",
+        ),
+        "zero_signal_lockout": ("pullback_efficiency_5d",),
+        "healthy_refinement": ("close_location_value_5d", "trend_alignment_slope_20d"),
+    }
+    ordered: list[OfflineFactorTemplate] = []
+    seen: set[str] = set()
+    for name in priority_map.get(cluster_id, ()):
+        tmpl = by_name.get(name)
+        if tmpl is not None and name not in seen:
+            ordered.append(tmpl)
+            seen.add(name)
+    for tmpl in _OFFLINE_FACTOR_TEMPLATES:
+        if tmpl.name not in seen:
+            ordered.append(tmpl)
+            seen.add(tmpl.name)
+    return ordered
 
 
 class ExecutableScar(BaseModel):
@@ -283,17 +374,151 @@ class ScarRegistry:
 
 
 class BlindSpotMiner:
-    """Clusters failure trades and steers L1 DSL evolution vs L2 factor discovery."""
+    """Clusters failure trades and steers L1 DSL evolution vs hybrid L2 factor discovery."""
 
     def __init__(
         self,
         *,
         sandbox: FactorSandbox | None = None,
         factor_store: FactorStore | None = None,
+        llm_model: str | None = None,
+        api_key: str | None = None,
+        synthesizer: Any | None = None,
     ) -> None:
         self._sandbox = sandbox or FactorSandbox(timeout_seconds=10)
         self._factor_store = factor_store
+        # Transient LLM synthesizer settings only; never persisted or logged.
+        self._llm_model = (llm_model or "").strip() or None
+        self._api_key = (api_key or "").strip() or None
+        self._synthesizer = synthesizer
         self._pit_cache: dict[str, bool] = {}
+        self._failed_llm_factors: set[str] = set()
+
+    def _calibrate_causal_threshold(
+        self,
+        code: str,
+        sample_df: pd.DataFrame,
+        expected_direction: Literal["positive", "negative"],
+    ) -> tuple[Literal[">=", "<="], float] | None:
+        """Calibrate causal factor gate threshold purely from sample distribution."""
+        res = self._sandbox.execute(code, sample_df, verify_pit=False)
+        if not res.success or not res.values:
+            return None
+        start_idx = min(20, len(res.values) // 3)
+        vals = [float(v) for v in res.values[start_idx:] if math.isfinite(float(v))]
+        if len(vals) < 10:
+            return None
+        arr = np.asarray(vals, dtype=float)
+        if float(np.std(arr)) <= 1e-8:
+            return None
+        if expected_direction == "negative":
+            return "<=", round(float(np.quantile(arr, 0.65)), 4)
+        return ">=", round(float(np.quantile(arr, 0.35)), 4)
+
+    @staticmethod
+    def _run_maybe_async(maybe_coro: Any) -> Any:
+        if not inspect.isawaitable(maybe_coro):
+            return maybe_coro
+
+        async def _consume(awaitable_obj: Any) -> Any:
+            return await awaitable_obj
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_consume(maybe_coro))
+        # Running inside an active event loop; execute awaitable in a worker thread.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _consume(maybe_coro)).result(timeout=45)
+
+    def _try_llm_synthesize(
+        self,
+        cluster: BlindSpotCluster,
+        used_indicators: set[str],
+        sample_df: pd.DataFrame,
+    ) -> tuple[str, str, str, Literal[">=", "<="], float, str] | None:
+        """Attempt PIT-verified LLM factor synthesis, returning None on any failure."""
+        synth = self._synthesizer
+        if synth is None:
+            if not self._llm_model or self._llm_model.lower().startswith("heuristic"):
+                return None
+            try:
+                from alphaevo.alpha_factory.synthesizer import FactorSynthesizer
+                from alphaevo.core.config import ConfigManager
+                from alphaevo.core.llm import LLMClient
+
+                cfg = ConfigManager().load()
+                cfg.llm.model = self._llm_model
+                eff_key = self._api_key or ConfigManager().get_llm_api_key()
+                if not eff_key:
+                    return None
+                synth = FactorSynthesizer(LLMClient(cfg.llm, api_key=eff_key))
+            except Exception:
+                return None
+
+        context = (
+            f"Failure cluster={cluster.cluster_id}: {cluster.evidence}. "
+            f"Bottleneck: {cluster.bottleneck_hint or 'none'}. "
+            f"Goal: {cluster.suggested_action}"
+        )
+        try:
+            hypotheses = self._run_maybe_async(
+                synth.generate(
+                    context=context,
+                    existing_factors=sorted(used_indicators),
+                    failed_attempts=sorted(self._failed_llm_factors),
+                    max_candidates=2,
+                )
+            )
+        except Exception:
+            return None
+
+        if not hypotheses:
+            return None
+
+        for hyp in hypotheses:
+            fname = str(getattr(hyp, "name", "")).strip()
+            code = str(getattr(hyp, "code", "")).strip()
+            desc = str(getattr(hyp, "description", "")).strip() or fname
+            direction_raw = str(getattr(hyp, "expected_direction", "positive")).strip().lower()
+            direction: Literal["positive", "negative"] = (
+                "negative" if direction_raw == "negative" else "positive"
+            )
+            if (
+                not fname
+                or len(fname) > 64
+                or not fname.isidentifier()
+                or fname in used_indicators
+                or fname in self._failed_llm_factors
+                or not code
+            ):
+                if fname:
+                    self._failed_llm_factors.add(fname)
+                continue
+
+            ok_ast, _ast_err = self._sandbox.validate_code(code)
+            if not ok_ast:
+                self._failed_llm_factors.add(fname)
+                continue
+
+            code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+            if code_hash not in self._pit_cache:
+                self._pit_cache[code_hash] = self._sandbox.probe_pit(code, sample_df).passed
+            if not self._pit_cache[code_hash]:
+                self._failed_llm_factors.add(fname)
+                continue
+
+            calibrated = self._calibrate_causal_threshold(code, sample_df, direction)
+            if calibrated is None:
+                self._failed_llm_factors.add(fname)
+                continue
+
+            op_val, thresh_val = calibrated
+            return fname, desc, code, op_val, thresh_val, "llm"
+
+        return None
 
     def diagnose_blind_spot(
         self,
@@ -387,28 +612,62 @@ class BlindSpotMiner:
         )
 
         if should_try_l2 and sample_df is not None:
-            for template in _OFFLINE_FACTOR_TEMPLATES:
-                if template.name in used_indicators:
-                    continue
-                code_hash = hashlib.sha256(template.code.encode("utf-8")).hexdigest()
-                if code_hash not in self._pit_cache:
-                    self._pit_cache[code_hash] = self._sandbox.probe_pit(
-                        template.code, sample_df
-                    ).passed
-                if not self._pit_cache[code_hash]:
-                    continue
+            chosen: (
+                tuple[
+                    str,
+                    str,
+                    str,
+                    Literal["<", "<=", ">", ">="],
+                    float,
+                    Literal["llm", "offline_template"],
+                ]
+                | None
+            ) = None
+            llm_candidate = self._try_llm_synthesize(cluster, used_indicators, sample_df)
+            if llm_candidate is not None:
+                chosen = (
+                    llm_candidate[0],
+                    llm_candidate[1],
+                    llm_candidate[2],
+                    llm_candidate[3],
+                    llm_candidate[4],
+                    "llm",
+                )
+            else:
+                for template in _select_ordered_templates(cluster.cluster_id):
+                    if template.name in used_indicators:
+                        continue
+                    code_hash = hashlib.sha256(template.code.encode("utf-8")).hexdigest()
+                    if code_hash not in self._pit_cache:
+                        self._pit_cache[code_hash] = self._sandbox.probe_pit(
+                            template.code, sample_df
+                        ).passed
+                    if not self._pit_cache[code_hash]:
+                        continue
+                    chosen = (
+                        template.name,
+                        template.description,
+                        template.code,
+                        template.op,
+                        template.threshold,
+                        "offline_template",
+                    )
+                    break
+
+            if chosen is not None:
+                f_name, f_desc, f_code, f_op, f_thresh, via = chosen
                 IndicatorRegistry.register_dynamic(
-                    template.name,
-                    cast("IndicatorFn", _build_indicator_fn(template.code, self._sandbox)),
+                    f_name,
+                    cast("IndicatorFn", _build_indicator_fn(f_code, self._sandbox)),
                 )
                 persisted = False
                 if self._factor_store is not None:
                     self._factor_store.save(
                         FactorRecord(
-                            name=template.name,
-                            description=template.description,
-                            rationale=f"Co-STEER L2 ({cluster.cluster_id}): {cluster.evidence}",
-                            code=template.code,
+                            name=f_name,
+                            description=f_desc,
+                            rationale=f"Co-STEER L2 ({cluster.cluster_id}, via={via}): {cluster.evidence}",
+                            code=f_code,
                             status="active",
                         )
                     )
@@ -425,16 +684,17 @@ class BlindSpotMiner:
                     target=target_field,
                     from_value=None,
                     to_value={
-                        "indicator": template.name,
-                        "op": template.op,
-                        "value": template.threshold,
+                        "indicator": f_name,
+                        "op": f_op,
+                        "value": f_thresh,
                     },
-                    reason=(f"Co-STEER L2 factor ({cluster.cluster_id}): {template.description}"),
+                    reason=f"Co-STEER L2 factor ({cluster.cluster_id}): {f_desc}",
                 )
                 return CoSteerDecision(
                     chosen_level=RSILevel.L2_FACTOR,
                     cluster=cluster,
-                    synthesized_factor_name=template.name,
+                    synthesized_factor_name=f_name,
+                    synthesized_via=via,
                     pit_verified=True,
                     persisted_to_store=persisted,
                     proposed_changes=[change],

@@ -108,6 +108,63 @@ class CouncilDeliberation(BaseModel):
     audit: ProsecutorAudit
 
 
+def _format_diagnostic_context(
+    strategy: Strategy,
+    evaluation: EvaluationReport,
+    *,
+    blind_spot: BlindSpotCluster | None = None,
+    bottleneck: StrategyBottleneckReport | None = None,
+    mission_notes: str = "",
+    scars: list[Any] | None = None,
+) -> str:
+    """Format compact bottleneck, failure-cluster, and pinned-scar telemetry for prompts."""
+    ov = evaluation.overall
+    sl = strategy.exit.stop_loss
+    tp = strategy.exit.take_profit
+    lines = [
+        (
+            f"Strategy={strategy.meta.id} (logic={strategy.entry.logic}, "
+            f"hold={strategy.exit.max_holding_days}d, SL={sl.type}:{sl.value or sl.multiplier}, "
+            f"TP={tp.type}:{tp.value or tp.trigger_pct})"
+        ),
+        (
+            f"Metrics: signals={ov.signal_count}, win_rate={ov.win_rate:.1%}, "
+            f"avg_ret={ov.avg_return:.2%}, max_dd={ov.max_drawdown:.1%}, "
+            f"sharpe={ov.sharpe_ratio:.2f}, overfit={evaluation.anti_overfit.is_overfit}"
+        ),
+    ]
+    if bottleneck is not None:
+        weakest = sorted(bottleneck.conditions, key=lambda c: c.pass_rate)[:3]
+        weak_txt = (
+            ", ".join(f"{c.group}.{c.indicator}({c.pass_rate:.1%})" for c in weakest) or "none"
+        )
+        tightest = (
+            f"{bottleneck.tightest_bottleneck.group}.{bottleneck.tightest_bottleneck.indicator}"
+            if bottleneck.tightest_bottleneck is not None
+            else "none"
+        )
+        lines.append(
+            f"Bottleneck X-Ray: tightest={tightest}, "
+            f"combined_pass={bottleneck.combined_pass_rate:.2%}, weakest=[{weak_txt}] | "
+            f"{bottleneck.diagnosis_summary[:180]}"
+        )
+    if blind_spot is not None:
+        lines.append(
+            f"Blind Spot Cluster: {blind_spot.cluster_id} ({blind_spot.severity}) — "
+            f"{blind_spot.evidence[:160]} | Action: {blind_spot.suggested_action[:140]}"
+        )
+    if scars:
+        scar_txt = "; ".join(
+            f"[{getattr(s, 'forbidden_change_type', '*')}:{getattr(s, 'target_pattern', '')}] "
+            f"{getattr(s, 'failure_mechanism', '')[:70]}"
+            for s in scars[:5]
+        )
+        lines.append(f"Active Pinned Scars (MUST NOT VIOLATE): {scar_txt}")
+    if mission_notes.strip():
+        lines.append(f"Charter Mission: {mission_notes.strip()[:220]}")
+    return "\n".join(lines)
+
+
 class HeterogeneousCouncil:
     """Proposes, audits, and filters mutations with adversarial model separation."""
 
@@ -160,11 +217,25 @@ class HeterogeneousCouncil:
 
         # Optional CLI / LLM proposal enrichment (gracefully falls back to heuristics)
         if p_spec.backend == "cli":
-            cli_prop = self._try_cli_proposer(strategy, evaluation, p_spec, mission_notes)
+            cli_prop = self._try_cli_proposer(
+                strategy,
+                evaluation,
+                p_spec,
+                mission_notes,
+                blind_spot=blind_spot,
+                bottleneck=bottleneck,
+            )
             if cli_prop is not None:
                 proposals.append(cli_prop)
         elif p_spec.backend == "litellm":
-            llm_prop = self._try_litellm_proposer(strategy, evaluation, p_spec)
+            llm_prop = self._try_litellm_proposer(
+                strategy,
+                evaluation,
+                p_spec,
+                blind_spot=blind_spot,
+                bottleneck=bottleneck,
+                mission_notes=mission_notes,
+            )
             if llm_prop is not None:
                 proposals.append(llm_prop)
 
@@ -193,18 +264,49 @@ class HeterogeneousCouncil:
                 continue
             seen.add(sig)
 
-            audit = self._run_prosecutor(strategy, evaluation, prop.changes)
+            audit = self._run_prosecutor(
+                strategy,
+                evaluation,
+                prop.changes,
+                blind_spot=blind_spot,
+                bottleneck=bottleneck,
+                mission_notes=mission_notes,
+            )
             deliberations.append(CouncilDeliberation(proposal=prop, audit=audit))
             if len([d for d in deliberations if d.audit.approved]) >= max_candidates:
                 break
 
         return deliberations
 
+    def audit_changes(
+        self,
+        strategy: Strategy,
+        evaluation: EvaluationReport,
+        changes: list[StrategyChange],
+        *,
+        blind_spot: BlindSpotCluster | None = None,
+        bottleneck: StrategyBottleneckReport | None = None,
+        mission_notes: str = "",
+    ) -> ProsecutorAudit:
+        """Audit an externally constructed candidate (e.g. genetic crossover) via Prosecutor."""
+        return self._run_prosecutor(
+            strategy,
+            evaluation,
+            changes,
+            blind_spot=blind_spot,
+            bottleneck=bottleneck,
+            mission_notes=mission_notes,
+        )
+
     def _run_prosecutor(
         self,
         strategy: Strategy,
         evaluation: EvaluationReport,
         changes: list[StrategyChange],
+        *,
+        blind_spot: BlindSpotCluster | None = None,
+        bottleneck: StrategyBottleneckReport | None = None,
+        mission_notes: str = "",
     ) -> ProsecutorAudit:
         """Audit candidate changes against SelfCritic, Pinned Scars, and Committee."""
         q_spec = self.config.prosecutor
@@ -219,14 +321,27 @@ class HeterogeneousCouncil:
         objections: list[str] = [f"{c.target}: {reason}" for c, reason in verdict.rejected]
         approved = len(verdict.approved) == len(changes)
 
+        diag_ctx = _format_diagnostic_context(
+            strategy,
+            evaluation,
+            blind_spot=blind_spot,
+            bottleneck=bottleneck,
+            mission_notes=mission_notes,
+            scars=self._critic._scars,
+        )
+
         # Optional adversarial LLM / CLI prosecutor veto check
         if approved and q_spec.backend == "cli":
-            cli_veto = self._try_cli_prosecutor(strategy, evaluation, changes, q_spec)
+            cli_veto = self._try_cli_prosecutor(
+                strategy, evaluation, changes, q_spec, diag_ctx=diag_ctx
+            )
             if cli_veto:
                 objections.extend(cli_veto)
                 approved = False
         elif approved and q_spec.backend == "litellm":
-            llm_veto = self._try_litellm_prosecutor(strategy, evaluation, changes, q_spec)
+            llm_veto = self._try_litellm_prosecutor(
+                strategy, evaluation, changes, q_spec, diag_ctx=diag_ctx
+            )
             if llm_veto:
                 objections.extend(llm_veto)
                 approved = False
@@ -669,12 +784,18 @@ class HeterogeneousCouncil:
         strategy: Strategy,
         evaluation: EvaluationReport,
         p_spec: ModelSpec,
+        *,
+        blind_spot: BlindSpotCluster | None = None,
+        bottleneck: StrategyBottleneckReport | None = None,
+        mission_notes: str = "",
     ) -> CouncilProposal | None:
-        """Optionally ask ReflectionAnalyzer/LiteLLM for one structured proposal."""
+        """Ask bottleneck-aware LiteLLM Proposer for structured changes; fallback cleanly."""
         try:
+            from alphaevo.backtest.indicators import IndicatorRegistry
             from alphaevo.core.config import ConfigManager
             from alphaevo.core.llm import LLMClient
             from alphaevo.reflection.analyzer import ReflectionAnalyzer
+            from alphaevo.strategy.dsl.serializer import StrategySerializer
 
             cfg = ConfigManager().load()
             cfg.llm.model = p_spec.model
@@ -682,6 +803,66 @@ class HeterogeneousCouncil:
             if not api_key:
                 return None
             llm = LLMClient(cfg.llm, api_key=api_key)
+
+            diag_ctx = _format_diagnostic_context(
+                strategy,
+                evaluation,
+                blind_spot=blind_spot,
+                bottleneck=bottleneck,
+                mission_notes=mission_notes,
+                scars=self._critic._scars,
+            )
+            tunables = ", ".join(p.target for p in strategy.params.tunable[:12]) or "none"
+            avail_inds = ", ".join(IndicatorRegistry.available()[:40])
+            yaml_excerpt = StrategySerializer().to_yaml(strategy)[:1600]
+            prompt = (
+                "You are an expert quantitative strategy Proposer inside an adversarial L0-grounded RSI loop.\n"
+                f"{diag_ctx}\n"
+                f"Tunable targets: {tunables}\n"
+                f"Sample available indicators: {avail_inds}\n"
+                f"Strategy YAML:\n```yaml\n{yaml_excerpt}\n```\n"
+                "Propose at most 3 high-signal changes attacking the diagnosed bottleneck or failure cluster.\n"
+                'Respond ONLY with JSON: {"rationale": "...", "changes": [{"change_type": '
+                '"tighten_filter|loosen_filter|add_condition|remove_condition|adjust_exit|change_logic", '
+                '"target": "...", "from_value": null, "to_value": ..., "reason": "..."}]}'
+            )
+            try:
+                parsed = llm.chat_json(
+                    [{"role": "user", "content": prompt}],
+                    model=p_spec.model,
+                    timeout=p_spec.timeout_seconds,
+                )
+                raw_changes = parsed.get("changes") if isinstance(parsed, dict) else None
+                parsed_changes: list[StrategyChange] = []
+                if isinstance(raw_changes, list):
+                    for item in raw_changes[:3]:
+                        if not isinstance(item, dict) or not item.get("target"):
+                            continue
+                        try:
+                            ctype = ChangeType(str(item["change_type"]).strip())
+                            parsed_changes.append(
+                                StrategyChange(
+                                    change_type=ctype,
+                                    target=str(item["target"]).strip(),
+                                    from_value=item.get("from_value"),
+                                    to_value=item.get("to_value"),
+                                    reason=str(item.get("reason", f"LiteLLM {p_spec.model}")),
+                                )
+                            )
+                        except Exception:
+                            continue
+                if parsed_changes:
+                    return CouncilProposal(
+                        proposer_model=p_spec.model,
+                        proposer_family=p_spec.family,
+                        rationale=str(parsed.get("rationale", "Diagnostic LiteLLM proposal")),
+                        changes=parsed_changes,
+                    )
+            except Exception as inner_exc:
+                logger.debug(
+                    "Diagnostic LiteLLM proposer fell back to ReflectionAnalyzer: %s", inner_exc
+                )
+
             ref = ReflectionAnalyzer(llm=llm).reflect(strategy, evaluation)
             if ref.proposed_changes:
                 return CouncilProposal(
@@ -694,21 +875,30 @@ class HeterogeneousCouncil:
             logger.debug("LiteLLM proposer fallback to heuristic: %s", exc)
         return None
 
-    @staticmethod
     def _try_cli_proposer(
+        self,
         strategy: Strategy,
         evaluation: EvaluationReport,
         p_spec: ModelSpec,
         mission_notes: str,
+        *,
+        blind_spot: BlindSpotCluster | None = None,
+        bottleneck: StrategyBottleneckReport | None = None,
     ) -> CouncilProposal | None:
         """Invoke optional local CLI agent (agy / codex) via safe list args."""
         tool = p_spec.cli_tool
         if tool not in {"agy", "codex"}:
             return None
+        diag_ctx = _format_diagnostic_context(
+            strategy,
+            evaluation,
+            blind_spot=blind_spot,
+            bottleneck=bottleneck,
+            mission_notes=mission_notes,
+            scars=self._critic._scars,
+        )
         prompt = (
-            f"Strategy {strategy.meta.id} signals={evaluation.overall.signal_count}, "
-            f"win_rate={evaluation.overall.win_rate:.2%}, avg_return={evaluation.overall.avg_return:.2%}. "
-            f"Mission: {mission_notes[:200]}. "
+            f"{diag_ctx}\n"
             "Respond ONLY with JSON object containing 'target', 'to_value', 'change_type', 'reason'."
         )
         cmd = (
@@ -756,13 +946,17 @@ class HeterogeneousCouncil:
         evaluation: EvaluationReport,
         changes: list[StrategyChange],
         q_spec: ModelSpec,
+        *,
+        diag_ctx: str = "",
     ) -> list[str]:
         """Optionally invoke adversarial CLI prosecutor; falls back cleanly on unavailability."""
         tool = q_spec.cli_tool
         if tool not in {"agy", "codex"}:
             return []
         change_desc = "; ".join(f"{c.change_type.value}:{c.target}->{c.to_value}" for c in changes)
+        ctx_line = f"{diag_ctx}\n" if diag_ctx else ""
         prompt = (
+            f"{ctx_line}"
             f"Audit proposed changes [{change_desc}] for strategy {strategy.meta.id} "
             f"(signals={evaluation.overall.signal_count}, overfit={evaluation.anti_overfit.is_overfit}). "
             'Respond JSON {"veto": bool, "reason": "..."}'
@@ -800,6 +994,8 @@ class HeterogeneousCouncil:
         evaluation: EvaluationReport,
         changes: list[StrategyChange],
         q_spec: ModelSpec,
+        *,
+        diag_ctx: str = "",
     ) -> list[str]:
         """Optionally invoke LiteLLM prosecutor; falls back cleanly when unconfigured."""
         try:
@@ -815,7 +1011,9 @@ class HeterogeneousCouncil:
             change_desc = "; ".join(
                 f"{c.change_type.value}:{c.target}->{c.to_value}" for c in changes
             )
+            ctx_line = f"{diag_ctx}\n" if diag_ctx else ""
             prompt = (
+                f"{ctx_line}"
                 f"You are an adversarial quantitative risk prosecutor. Audit changes [{change_desc}] "
                 f"for strategy {strategy.meta.id} (signals={evaluation.overall.signal_count}, "
                 f"avg_return={evaluation.overall.avg_return:.4f}, overfit={evaluation.anti_overfit.is_overfit}). "

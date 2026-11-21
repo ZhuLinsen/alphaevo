@@ -240,8 +240,9 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
           <h2 style="margin:0">Champion YAML, Diff &amp; DPO Flywheel</h2>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn secondary" id="btn-export-dpo" onclick="downloadDpoPairs()" disabled>Download DPO Pairs (.jsonl)</button>
+            <button class="btn secondary" id="btn-save-champion" onclick="saveChampionToStore()" disabled>Save Champion to Store</button>
             <button class="btn secondary" id="btn-load-champ" onclick="loadChampionYaml()" disabled>Load Champion into Editor</button>
           </div>
         </div>
@@ -306,6 +307,13 @@ footer { text-align: center; color: var(--muted); font-size: 12px; padding: 16px
         <button class="btn" id="btn-mech-ab" onclick="runMechanismAB()">Run L3 Harness A/B (Naive vs L0+Scars+L2)</button>
       </div>
       <div id="mech-ab-box" style="color:var(--muted);font-size:13px">Compare Unconstrained vs Full L0+Pinned Scars+L2 harnesses across chronological OOS cutoffs (zero lookahead).</div>
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+        <h2 style="margin:0">Ablation Benchmark (Baseline vs L1 vs L1+L2+Crossover)</h2>
+        <button class="btn" id="btn-benchmark" onclick="runAblationBenchmark()">Run Ablation Benchmark</button>
+      </div>
+      <div id="benchmark-box" style="color:var(--muted);font-size:13px">Measure locked-holdout performance across Baseline, L1-only, and L1+L2+Semantic Crossover plus Tier-2 Null Audit.</div>
     </div>
   </div>
 </div>
@@ -439,6 +447,20 @@ function loadChampionYaml() {
   document.getElementById("yaml-editor").value = LAST_CHAMPION_YAML;
   document.getElementById("lab-status").textContent = "Loaded champion YAML into editor.";
 }
+async function saveChampionToStore() {
+  const yamlText = LAST_CHAMPION_YAML || document.getElementById("yaml-editor").value;
+  if (!yamlText.trim()) return;
+  const status = document.getElementById("lab-status");
+  status.textContent = "Saving strategy to SQLite StrategyStore...";
+  try {
+    const res = await api("/api/strategies/save", "POST", { strategy_yaml: yamlText });
+    await initStudio();
+    document.getElementById("strategy-select").value = res.strategy_id;
+    status.textContent = `Saved ${res.strategy_id} (v${res.version}) to StrategyStore.`;
+  } catch (e) {
+    status.textContent = `Save error: ${e.message}`;
+  }
+}
 async function initStudio() {
   try {
     const data = await api("/api/strategies");
@@ -513,6 +535,7 @@ function applyRsiResult(res) {
     ["Champion", res.champion_id],
     ["Champ Score", `${(res.champion_score * 100).toFixed(1)}%`],
     ["Promotions", res.promotions],
+    ["Crossovers", `${res.crossovers_kept || 0}/${res.crossovers_tried || 0}`],
     ["Trials Recorded", res.total_trials_recorded],
     ["Kernel Intact", res.kernel_intact ? "YES" : "NO"],
   ]);
@@ -528,13 +551,15 @@ function applyRsiResult(res) {
   renderTradeReplays(res.trade_replays || []);
   const rowsHtml = (res.rows || []).map(r => {
     const cls = r.status === "keep" ? "pass" : ((r.status === "vetoed" || r.status === "revert") ? "fail" : "watch");
-    return `<tr><td>${r.round_num}</td><td>${esc(r.strategy_id)}</td><td><span class="badge ${cls}">${esc(r.status).toUpperCase()}</span></td><td>${r.signals}</td><td>${(r.win_rate*100).toFixed(1)}%</td><td>${(r.dsr_probability*100).toFixed(1)}%</td><td>${r.null_passed ? "PASS" : "FAIL"}</td><td>${esc(r.description)}</td></tr>`;
+    const xBadge = r.secondary_parent_id ? ` <span class="badge">x ${esc(r.secondary_parent_id)}</span>` : "";
+    return `<tr><td>${r.round_num}</td><td>${esc(r.strategy_id)}${xBadge}</td><td><span class="badge ${cls}">${esc(r.status).toUpperCase()}</span></td><td>${r.signals}</td><td>${(r.win_rate*100).toFixed(1)}%</td><td>${(r.dsr_probability*100).toFixed(1)}%</td><td>${r.null_passed ? "PASS" : "FAIL"}</td><td>${esc(r.description)}</td></tr>`;
   }).join("");
   document.getElementById("rsi-rounds-box").innerHTML = `<table><thead><tr><th>Rd</th><th>ID</th><th>Status</th><th>Signals</th><th>Win%</th><th>DSR</th><th>Null</th><th>Change</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
   document.getElementById("lab-diff").innerHTML = renderColoredDiff(res.yaml_diff, res.champion_yaml);
   LAST_CHAMPION_YAML = res.champion_yaml || "";
   LAST_DPO_PAIRS = res.dpo_pairs || [];
   document.getElementById("btn-load-champ").disabled = !LAST_CHAMPION_YAML;
+  document.getElementById("btn-save-champion").disabled = !LAST_CHAMPION_YAML;
   document.getElementById("btn-export-dpo").disabled = !LAST_DPO_PAIRS.length;
 }
 async function runRSI() {
@@ -669,6 +694,16 @@ async function runMechanismAB() {
   box.textContent = `Running chronological L3 Meta-RSI calibration on ${sid}...`;
   try {
     const res = await api("/api/rsi/mechanism-ab", "POST", { strategy_id: sid, rounds: 2 });
+    box.innerHTML = `<pre>${esc(res.markdown || JSON.stringify(res, null, 2))}</pre>`;
+  } catch (e) {
+    box.textContent = `Error: ${e.message}`;
+  }
+}
+async function runAblationBenchmark() {
+  const box = document.getElementById("benchmark-box");
+  box.textContent = "Running Baseline vs L1 vs L1+L2+Crossover ablation benchmark...";
+  try {
+    const res = await api("/api/rsi/benchmark", "POST", { rounds: 2, holdout_pct: 0.20 });
     box.innerHTML = `<pre>${esc(res.markdown || JSON.stringify(res, null, 2))}</pre>`;
   } catch (e) {
     box.textContent = `Error: ${e.message}`;

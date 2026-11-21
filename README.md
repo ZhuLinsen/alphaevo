@@ -12,6 +12,7 @@
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Observatory](https://img.shields.io/badge/Live%20Observatory-GitHub%20Pages-0ea5e9.svg)](https://zhulinsen.github.io/alphaevo/)
 [![MCP Ready](https://img.shields.io/badge/MCP-STDIO%20Ready-10b981.svg)](SKILL.md)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -65,10 +66,11 @@ alphaevo arena run --rounds 2           # Strategy Evolution Observatory -> repo
   }
 }
 ```
-Exposes 11 research tools (`alphaevo_draft_strategy`, `alphaevo_diagnose_bottlenecks`, `alphaevo_evaluate_strategy`, `alphaevo_evolve_rsi`, `alphaevo_mechanism_ab`, `alphaevo_null_audit`, `alphaevo_shadow_simulate`, `alphaevo_audit_factors`, `alphaevo_allocate_portfolio`, etc.) plus `alphaevo://program` and `alphaevo://strategies` resources. See [SKILL.md](SKILL.md).
+Exposes 12 research tools (`alphaevo_draft_strategy`, `alphaevo_diagnose_bottlenecks`, `alphaevo_evaluate_strategy`, `alphaevo_evolve_rsi`, `alphaevo_mechanism_ab`, `alphaevo_benchmark_strategies`, `alphaevo_null_audit`, `alphaevo_shadow_simulate`, `alphaevo_audit_factors`, `alphaevo_allocate_portfolio`, etc.) plus `alphaevo://program` and `alphaevo://strategies` resources. See [SKILL.md](SKILL.md).
 
-### 4. Fork & Deploy GitHub Pages Evolution Observatory + Push Alerts (Free Cloud via Actions)
-1. Fork this repository, enable **GitHub Actions**, and optionally enable **GitHub Pages -> GitHub Actions** (`Settings -> Pages`) to publish `https://<owner>.github.io/<repo>/`.
+### 4. Live Evolution Observatory (GitHub Pages) + Fork & Push Alerts (Free Cloud via Actions)
+- **Live Public Observatory**: [`https://zhulinsen.github.io/alphaevo/`](https://zhulinsen.github.io/alphaevo/)
+1. Fork this repository, enable **GitHub Actions**, and enable **GitHub Pages -> GitHub Actions** (`Settings -> Pages`) to publish `https://<owner>.github.io/<repo>/`.
 2. Optionally add Secrets (`ALPHAEVO_FEISHU_WEBHOOK`, `ALPHAEVO_WECOM_WEBHOOK`, `ALPHAEVO_DINGTALK_WEBHOOK`, `ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`, `ALPHAEVO_DISCORD_WEBHOOK`, `ALPHAEVO_SLACK_WEBHOOK`, `ALPHAEVO_WEBHOOK_URL`, `ALPHAEVO_API_KEY`).
 3. [arena-daily.yml](.github/workflows/arena-daily.yml) automatically evolves strategies on weekdays, builds the **Evolution Observatory & Overfit Graveyard** single-file dashboard, deploys to GitHub Pages (when enabled), posts `digest.md` to Step Summary, and notifies your channels.
 
@@ -401,6 +403,7 @@ alphaevo runs compare <r1> <r2>   # Compare immutable manifests & strategy YAML 
 alphaevo portfolio allocate <s1> <s2>  # Causal regime-adaptive multi-strategy risk budget
 alphaevo evolve <id> --method llm --rounds 3 --output reports/  # LLM-first evolution
 alphaevo rsi run <id> --holdout-pct 0.20 --portfolio-gate --enroll-shadow
+alphaevo rsi benchmark --rounds 2 --holdout-pct 0.20  # Baseline vs L1 vs L1+L2+Crossover ablation
 alphaevo rsi null-audit <id>      # Verify 0 false promotions under shuffled returns
 alphaevo rsi mechanism-ab <id> --cutoffs 0.55,0.70  # L3 multi-cutoff kernel mechanism audit
 alphaevo shadow simulate <id>     # Rolling bitemporal forward shadow ledger simulation
