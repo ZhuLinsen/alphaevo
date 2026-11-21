@@ -113,6 +113,7 @@ packages = ["src/alphaevo"]
 "strategies/builtin" = "alphaevo/_bundled/strategies/builtin"
 "examples/showcase_data" = "alphaevo/_bundled/showcase_data"
 "examples/rsi_stock_program.md" = "alphaevo/_bundled/rsi_stock_program.md"
+"SKILL.md" = "alphaevo/_bundled/SKILL.md"
 
 [tool.ruff]
 target-version = "py310"

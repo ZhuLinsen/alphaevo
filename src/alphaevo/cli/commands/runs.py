@@ -248,4 +248,54 @@ def runs_rerun_official(
         console.print(f"[yellow]Downgrade reason: {manifest.protocol_downgrade_reason}[/yellow]")
 
 
+@runs_app.command("html")
+def runs_html(
+    run_id: str = typer.Argument(..., help="Run ID to render as interactive standalone HTML"),
+    artifact_root: str = typer.Option(
+        "reports", "--artifact-root", "-a", help="Run artifacts root directory"
+    ),
+    output: str | None = typer.Option(
+        None, "--output", "-o", help="Optional HTML file output path"
+    ),
+) -> None:
+    """Export an immutable run artifact bundle as a self-contained single-file HTML report."""
+    import json
+    from pathlib import Path
+
+    from alphaevo.arena.html_renderer import render_run_html
+    from alphaevo.provenance.store import RunArtifactStore
+
+    config = _get_config()
+    store = RunArtifactStore(artifact_root=artifact_root, db_path=config.db_path)
+    manifest = store.get_manifest(run_id)
+    if manifest is None:
+        console.print(f"[red]Run manifest not found: {run_id}[/red]")
+        raise typer.Exit(1)
+
+    art_dir = Path(manifest.artifacts.artifact_dir)
+    eval_file = art_dir / manifest.artifacts.evaluation
+    strat_file = art_dir / manifest.artifacts.strategy_snapshot
+    trades_file = art_dir / manifest.artifacts.trades
+
+    evaluation = json.loads(eval_file.read_text(encoding="utf-8")) if eval_file.is_file() else {}
+    strategy_yaml = strat_file.read_text(encoding="utf-8") if strat_file.is_file() else ""
+    trades: list[dict[str, object]] = []
+    if trades_file.is_file():
+        for line in trades_file.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                trades.append(json.loads(line))
+
+    html_doc = render_run_html(
+        run_id=manifest.run_id,
+        manifest=manifest.model_dump(mode="json"),
+        evaluation=evaluation,
+        strategy_yaml=strategy_yaml,
+        trades=trades,
+    )
+    out_path = Path(output) if output else (art_dir / "report.html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html_doc, encoding="utf-8")
+    console.print(f"[green]✓ HTML report written to[/green] {out_path}")
+
+
 __all__ = ["runs_app"]

@@ -30,6 +30,7 @@ from alphaevo.cli.commands.analysis import (  # noqa: E402
     leaderboard_command,
     tree_command,
 )
+from alphaevo.cli.commands.arena import arena_app  # noqa: E402
 from alphaevo.cli.commands.config import config_app  # noqa: E402
 from alphaevo.cli.commands.data import data_app  # noqa: E402
 from alphaevo.cli.commands.evolution import (  # noqa: E402
@@ -40,10 +41,12 @@ from alphaevo.cli.commands.evolution import (  # noqa: E402
     run_command,
 )
 from alphaevo.cli.commands.factor import factor_app  # noqa: E402
+from alphaevo.cli.commands.mcp import mcp_command  # noqa: E402
 from alphaevo.cli.commands.portfolio import portfolio_app  # noqa: E402
 from alphaevo.cli.commands.rsi import rsi_app, shadow_app, truth_app  # noqa: E402
 from alphaevo.cli.commands.runs import runs_app  # noqa: E402
 from alphaevo.cli.commands.strategy import strategy_app  # noqa: E402
+from alphaevo.cli.commands.web import web_command  # noqa: E402
 
 app.add_typer(strategy_app, name="strategy")
 app.add_typer(factor_app, name="factor")
@@ -55,6 +58,7 @@ app.add_typer(shadow_app, name="shadow")
 app.add_typer(truth_app, name="truth")
 app.add_typer(runs_app, name="runs")
 app.add_typer(portfolio_app, name="portfolio")
+app.add_typer(arena_app, name="arena")
 
 # Top-level commands delegated to command modules
 app.command("run")(run_command)
@@ -65,6 +69,8 @@ app.command("evolve-curriculum")(evolve_curriculum_command)
 app.command("leaderboard")(leaderboard_command)
 app.command("compare")(compare_command)
 app.command("tree")(tree_command)
+app.command("web")(web_command)
+app.command("mcp")(mcp_command)
 
 # ── Init ───────────────────────────────────────────────────────────────
 

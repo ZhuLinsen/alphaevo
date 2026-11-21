@@ -54,6 +54,10 @@
 | **L0 Truth Kernel** | `src/alphaevo/truth/` | `EvaluationKernel` 共享评估内核、`LockedHoldoutVault`、组合硬否决门禁、`TrialLedger`、DSR、两层 Null Control、运行时 PIT 探针 |
 | **Forward Shadow Ledger** | `src/alphaevo/forward/` | 双时态 `as_of` 提交、SHA-256 哈希链、T+5/10/20 归因与非对称晋升/熔断状态机 |
 | **RSI Engine (L1/L2/L3)** | `src/alphaevo/rsi/` | 收敛至 `EvaluationKernel` 的 `program.md` 棘轮、MAP-Elites、Co-STEER 盲区路由（`FactorStore` 落库）、异构模型议会、机制 AB 进化 |
+| **Live Arena & HTML** | `src/alphaevo/arena/` | 多策略自进化竞技场 (`ArenaRunner`)、零 CDN 单文件交互式 SVG/HTML 战报渲染 |
+| **Web Studio** | `src/alphaevo/web/` | 零额外依赖本地 HTTP 研究工作台 (`AlphaEvoWebService` + SPA UI) |
+| **MCP Server** | `src/alphaevo/mcp/` | 标准 STDIO JSON-RPC 2.0 MCP 服务（配合根目录 `SKILL.md` 供 AI Agent 调用） |
+| **Notifier** | `src/alphaevo/notify/` | 零依赖多渠道推送（飞书 / 企微 / 钉钉 / Telegram / Discord / Slack / Webhook） |
 
 ### 关键入口
 
@@ -675,8 +679,16 @@ alphaevo leaderboard                  # 策略排行榜（默认 local scope）
 alphaevo compare <id1> <id2>          # 策略对比
 alphaevo runs list                    # 列出不可变 run / optimization / evolve artifact 索引
 alphaevo runs show <run_id>           # 查看 run provenance 与 artifact 路径
+alphaevo runs html <run_id>           # 导出任意 run 为单文件交互式 HTML 战报
 alphaevo runs compare <id1> <id2>     # 比较两个 run；不同 protocol 只诊断不排名
 alphaevo runs rerun-official <id> --bundle <bid>  # 在不可变数据包上按 official_v1 复评
+
+# 工作台、Live Arena、推送与 MCP Agent 服务
+alphaevo web                          # 启动零依赖本地 Web 研究工作台
+alphaevo arena run --rounds 2         # 运行多策略自进化竞技场并输出 index.html / digest.md
+alphaevo arena build-site             # 从 arena_snapshot.json 重新生成静态 HTML 站点
+alphaevo arena notify-test            # 检验飞书/企微/钉钉/Telegram/Discord/Slack 推送配置
+alphaevo mcp                          # 启动 STDIO JSON-RPC 2.0 MCP Agent 服务
 
 # 进化树
 alphaevo tree <strategy_id>           # 查看策略进化树

@@ -1,0 +1,53 @@
+name: Release & Wheel Verification
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build sdist & wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --outdir dist/
+      - name: Verify out-of-tree wheel CLI, Showcase & Arena
+        run: |
+          python -m venv /tmp/rel-venv
+          /tmp/rel-venv/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/rel-venv/bin/alphaevo --help
+          /tmp/rel-venv/bin/alphaevo version
+          /tmp/rel-venv/bin/alphaevo showcase
+          /tmp/rel-venv/bin/alphaevo arena run --rounds 1 --output-dir /tmp/rel-arena
+          /tmp/rel-venv/bin/alphaevo web --help
+          /tmp/rel-venv/bin/alphaevo mcp --help
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alphaevo-dist
+          path: dist/
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
+      - name: Publish to PyPI (when PYPI_API_TOKEN is configured)
+        if: startsWith(github.ref, 'refs/tags/v') && secrets.PYPI_API_TOKEN != ''
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install twine
+          python -m twine upload dist/*

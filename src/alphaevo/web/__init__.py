@@ -22,8 +22,11 @@ from alphaevo.web.contracts import (
     build_strategy_card,
     default_web_manifest,
 )
+from alphaevo.web.server import AlphaEvoWebService, create_web_server
+from alphaevo.web.ui import render_web_studio_html
 
 __all__ = [
+    "AlphaEvoWebService",
     "WebCapabilityFlags",
     "WebRouteSpec",
     "WebManifest",
@@ -38,10 +41,12 @@ __all__ = [
     "EvolutionRoundView",
     "EvolutionSessionView",
     "ResearchEventView",
+    "create_web_server",
     "default_web_manifest",
     "build_evaluation_summary",
     "build_strategy_card",
     "build_run_summary",
     "build_evolution_session",
     "build_research_feed",
+    "render_web_studio_html",
 ]

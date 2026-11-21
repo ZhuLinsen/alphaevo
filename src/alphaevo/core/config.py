@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -85,6 +85,26 @@ class RSIConfig(BaseModel):
     prosecutor_model: str | None = None
 
 
+class NotifyConfig(BaseModel):
+    """Push notification configuration (webhooks/tokens provided via env vars)."""
+
+    feishu_webhook: str | None = None
+    wecom_webhook: str | None = None
+    dingtalk_webhook: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    discord_webhook: str | None = None
+    slack_webhook: str | None = None
+    webhook_url: str | None = None
+
+    @field_validator("telegram_chat_id", mode="before")
+    @classmethod
+    def _coerce_chat_id(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value)
+
+
 class AppConfig(BaseModel):
     """Root configuration for AlphaEvo.
 
@@ -96,6 +116,7 @@ class AppConfig(BaseModel):
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     rsi: RSIConfig = Field(default_factory=RSIConfig)
+    notify: NotifyConfig = Field(default_factory=NotifyConfig)
     db_path: Path = Field(default_factory=lambda: Path.home() / ".alphaevo" / "alphaevo.db")
     strategies_dir: Path = Field(default_factory=lambda: Path.home() / ".alphaevo" / "strategies")
 
@@ -132,6 +153,14 @@ _ENV_MAP: dict[str, str] = {
     "ALPHAEVO_RSI_PROPOSER_MODEL": "rsi.proposer_model",
     "ALPHAEVO_RSI_PROSECUTOR_MODEL": "rsi.prosecutor_model",
     "ALPHAEVO_RSI_NULL_PERMUTATIONS": "rsi.null_permutations",
+    "ALPHAEVO_FEISHU_WEBHOOK": "notify.feishu_webhook",
+    "ALPHAEVO_WECOM_WEBHOOK": "notify.wecom_webhook",
+    "ALPHAEVO_DINGTALK_WEBHOOK": "notify.dingtalk_webhook",
+    "ALPHAEVO_TELEGRAM_BOT_TOKEN": "notify.telegram_bot_token",
+    "ALPHAEVO_TELEGRAM_CHAT_ID": "notify.telegram_chat_id",
+    "ALPHAEVO_DISCORD_WEBHOOK": "notify.discord_webhook",
+    "ALPHAEVO_SLACK_WEBHOOK": "notify.slack_webhook",
+    "ALPHAEVO_WEBHOOK_URL": "notify.webhook_url",
 }
 
 

@@ -1,0 +1,76 @@
+name: Live Self-Evolving Strategy Arena
+
+on:
+  schedule:
+    # Weekdays 09:30 UTC (after US/HK/CN sessions have completed data available)
+    - cron: "30 9 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: "RSI evolution rounds per strategy"
+        required: false
+        default: "2"
+      live:
+        description: "Fetch live market data (falls back gracefully to bundled snapshot)"
+        required: false
+        default: "true"
+        type: boolean
+      market:
+        description: "Live market preset: us or cn"
+        required: false
+        default: "us"
+      notify:
+        description: "Send digest to configured notification channels"
+        required: false
+        default: "true"
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  evolve-arena:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install AlphaEvo
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[data-yfinance,data-akshare]"
+      - name: Run Live Self-Evolving Arena
+        env:
+          ALPHAEVO_API_KEY: ${{ secrets.ALPHAEVO_API_KEY }}
+          ALPHAEVO_LLM_MODEL: ${{ vars.ALPHAEVO_LLM_MODEL || 'gemini/gemini-3.8-flash' }}
+          ALPHAEVO_FEISHU_WEBHOOK: ${{ secrets.ALPHAEVO_FEISHU_WEBHOOK }}
+          ALPHAEVO_WECOM_WEBHOOK: ${{ secrets.ALPHAEVO_WECOM_WEBHOOK }}
+          ALPHAEVO_DINGTALK_WEBHOOK: ${{ secrets.ALPHAEVO_DINGTALK_WEBHOOK }}
+          ALPHAEVO_TELEGRAM_BOT_TOKEN: ${{ secrets.ALPHAEVO_TELEGRAM_BOT_TOKEN }}
+          ALPHAEVO_TELEGRAM_CHAT_ID: ${{ secrets.ALPHAEVO_TELEGRAM_CHAT_ID }}
+          ALPHAEVO_DISCORD_WEBHOOK: ${{ secrets.ALPHAEVO_DISCORD_WEBHOOK }}
+          ALPHAEVO_SLACK_WEBHOOK: ${{ secrets.ALPHAEVO_SLACK_WEBHOOK }}
+          ALPHAEVO_WEBHOOK_URL: ${{ secrets.ALPHAEVO_WEBHOOK_URL }}
+        run: |
+          LIVE_FLAG=""
+          if [ "${{ github.event_name == 'schedule' || inputs.live == 'true' }}" = "true" ]; then
+            LIVE_FLAG="--live"
+          fi
+          NOTIFY_FLAG=""
+          if [ "${{ inputs.notify == 'true' || github.event_name == 'schedule' }}" = "true" ]; then
+            NOTIFY_FLAG="--notify"
+          fi
+          alphaevo arena run \
+            --rounds "${{ inputs.rounds || '2' }}" \
+            --market "${{ inputs.market || 'us' }}" \
+            $LIVE_FLAG \
+            $NOTIFY_FLAG \
+            --shadow-dir .alphaevo/shadow_ledger \
+            --output-dir site
+          cat site/digest.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Interactive Arena Dashboard Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alphaevo-arena-site
+          path: site/
