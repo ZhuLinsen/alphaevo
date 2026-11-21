@@ -127,6 +127,22 @@ def run_command(
     stress_window_top_k: int | None = typer.Option(
         None, "--stress-window-top-k", help="Stress window top-k"
     ),
+    protocol: str = typer.Option(
+        "full_research_v1",
+        "--protocol",
+        help="Evaluation protocol: fast_research_v1 | full_research_v1 | official_v1",
+    ),
+    bundle: str | None = typer.Option(
+        None,
+        "--bundle",
+        "-b",
+        help="Run against a SHA-256 verified immutable DataBundle ID",
+    ),
+    bundle_root: str = typer.Option(
+        "reports/bundles",
+        "--bundle-root",
+        help="Root directory storing immutable DataBundles",
+    ),
 ) -> None:
     """Run the full research loop: sample → backtest → evaluate → report."""
     overrides: dict = {}
@@ -199,7 +215,11 @@ def run_command(
             "date_range": dr,
             "report_dir": Path(report_dir),
             "on_progress": on_progress,
+            "protocol": protocol,
         }
+        if bundle is not None:
+            run_kwargs["data_bundle_id"] = bundle
+            run_kwargs["bundle_root"] = bundle_root
         if sampling_method is not None:
             run_kwargs["sampling_method"] = sampling_method
 
@@ -297,6 +317,10 @@ def run_command(
 
     if result.report_path:
         console.print(f"\n📄 Report saved to: {result.report_path}")
+    if getattr(result, "run_id", None):
+        console.print(
+            f"🧾 Provenance ID: [cyan]{result.run_id}[/cyan] ({getattr(result, 'artifact_dir', None)})"
+        )
 
 
 def _print_data_quality_summary(data_quality: object) -> None:
@@ -598,9 +622,11 @@ def optimize_command(
         render_param_optimization_report,
     )
     from alphaevo.orchestrator.pipeline import RunPipeline
+    from alphaevo.truth.ledger import TrialLedger
 
     pipeline = RunPipeline(config)
     pipeline.ensure_builtin_strategies()
+    trial_ledger = TrialLedger(config.db_path)
 
     with Progress(
         SpinnerColumn(),
@@ -665,6 +691,7 @@ def optimize_command(
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             except ValueError as e:
                 console.print(f"[red]Exit optimization failed: {e}[/red]")
@@ -705,6 +732,7 @@ def optimize_command(
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             except ValueError as e:
                 console.print(f"[red]Parameter optimization failed: {e}[/red]")
@@ -752,6 +780,7 @@ def optimize_command(
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             except ValueError as e:
                 console.print(f"[red]Joint optimization failed: {e}[/red]")
@@ -947,6 +976,52 @@ def optimize_command(
             "[yellow]No qualified candidate passed the configured gates; nothing saved.[/yellow]"
         )
 
+    if best is not None and baseline._data:
+        try:
+            import json as _json
+
+            from alphaevo.provenance.store import RunArtifactStore
+
+            manifest = RunArtifactStore(
+                artifact_root=out_path,
+                db_path=config.db_path,
+            ).save_run(
+                kind="optimize",
+                strategy=best.strategy,
+                evaluation=best.evaluation,
+                market_data=baseline._data,
+                config=config,
+                adapter_name=config.data.adapter,
+                requested_protocol="full_research_v1",
+                data_reproducibility="refetch_dependent",
+                data_mutability="mutable_provider",
+                initial_strategy=baseline.strategy,
+                extra_config={"objective": objective, "spaces": raw_spaces or ["default"]},
+            )
+            cand_lines = [
+                _json.dumps(
+                    {
+                        "candidate_id": c.candidate_id,
+                        "passed_gate": c.passed_gate,
+                        "changes": c.changes,
+                        "score": c.evaluation.confidence_score,
+                        "win_rate": c.evaluation.overall.win_rate,
+                        "avg_return": c.evaluation.overall.avg_return,
+                        "max_drawdown": c.evaluation.overall.max_drawdown,
+                        "signal_count": c.evaluation.overall.signal_count,
+                    },
+                    ensure_ascii=False,
+                )
+                for c in all_candidates
+            ]
+            (Path(manifest.artifacts.artifact_dir) / "candidates.jsonl").write_text(
+                ("\n".join(cand_lines) + "\n") if cand_lines else "",
+                encoding="utf-8",
+            )
+            console.print(f"🧾 Optimization Provenance ID: [cyan]{manifest.run_id}[/cyan]")
+        except Exception:
+            logger.debug("Optimize provenance save skipped", exc_info=True)
+
 
 def _print_best_optimization_candidate(candidate: Any, *, title: str) -> None:
     from alphaevo.optimizer.summary import format_best_candidate_console
@@ -1082,6 +1157,11 @@ def evolve_command(
     ),
     stress_window_top_k: int | None = typer.Option(
         None, "--stress-window-top-k", help="Stress window top-k"
+    ),
+    protocol: str = typer.Option(
+        "full_research_v1",
+        "--protocol",
+        help="Evaluation protocol: fast_research_v1 | full_research_v1 | official_v1",
     ),
 ) -> None:
     """Self-evolve a strategy through multi-round improvement."""
@@ -1343,6 +1423,63 @@ def evolve_command(
         strategy_id=strategy_id,
         out_path=out_path,
     )
+
+    if result.rounds:
+        try:
+            import json as _json
+
+            from alphaevo.provenance.contracts import ProtocolName
+            from alphaevo.provenance.store import RunArtifactStore
+
+            champ_round = next(
+                (r for r in result.rounds if r.strategy.meta.id == result.champion_id),
+                result.rounds[-1],
+            )
+            valid_protos = {"fast_research_v1", "full_research_v1", "official_v1"}
+            req_proto = cast(
+                "ProtocolName",
+                protocol if protocol in valid_protos else "full_research_v1",
+            )
+            manifest = RunArtifactStore(
+                artifact_root=out_path,
+                db_path=config.db_path,
+            ).save_run(
+                kind="evolve",
+                strategy=champ_round.strategy,
+                evaluation=champ_round.evaluation,
+                market_data=getattr(result, "_market_data", None) or {},
+                config=config,
+                adapter_name=config.data.adapter,
+                requested_protocol=req_proto,
+                data_reproducibility="refetch_dependent",
+                data_mutability="mutable_provider",
+                report_markdown=evo_md,
+                initial_strategy=result.rounds[0].strategy,
+                extra_config={"method": evo_method.value, "rounds": rounds},
+            )
+            round_lines = [
+                _json.dumps(
+                    {
+                        "round_num": r.round_num,
+                        "strategy_id": r.strategy.meta.id,
+                        "improved": r.improved,
+                        "score": r.evaluation.confidence_score,
+                        "win_rate": r.evaluation.overall.win_rate,
+                        "avg_return": r.evaluation.overall.avg_return,
+                        "max_drawdown": r.evaluation.overall.max_drawdown,
+                        "signal_count": r.evaluation.overall.signal_count,
+                    },
+                    ensure_ascii=False,
+                )
+                for r in result.rounds
+            ]
+            (Path(manifest.artifacts.artifact_dir) / "rounds.jsonl").write_text(
+                ("\n".join(round_lines) + "\n") if round_lines else "",
+                encoding="utf-8",
+            )
+            console.print(f"🧾 Evolution Provenance ID: [cyan]{manifest.run_id}[/cyan]")
+        except Exception:
+            logger.debug("Evolution provenance save skipped", exc_info=True)
 
     # Export trajectory data for training (JSONL + ShareGPT + preference pairs)
     _trajectory_files: list[str] = []

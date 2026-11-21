@@ -62,6 +62,7 @@ class JointOptimizer:
         max_walk_forward_gap: float | None = None,
         min_walk_forward_pass_rate: float | None = None,
         parallel_workers: int = 1,
+        trial_ledger: Any = None,
     ) -> ExitOptimizationResult:
         """Run exit/risk optimization on each seed and return one combined ranking."""
         normalized_objective = normalize_objective(objective)
@@ -90,6 +91,7 @@ class JointOptimizer:
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             )
 

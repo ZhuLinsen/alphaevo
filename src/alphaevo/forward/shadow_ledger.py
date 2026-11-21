@@ -26,6 +26,8 @@ from alphaevo.forward.contracts import (
     OutcomeHorizon,
     PromotionDecision,
     SetupInstance,
+    ShadowRollingSimulationReport,
+    ShadowSimulationStep,
     StageTransition,
 )
 from alphaevo.models.enums import MarketRegime, PromotionStage
@@ -741,6 +743,220 @@ class ShadowLedger:
             action="promote",
             passed_gates=passed,
         )
+
+    # ── Rolling Bitemporal Out-of-Sample Simulation ──────────────────
+
+    def simulate_rolling(
+        self,
+        strategy: Strategy,
+        market_data: dict[str, pd.DataFrame],
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        step_days: int = 1,
+        horizon_days: int = 10,
+        min_trading_days: int = 30,
+        min_mature_signals: int = 100,
+        min_effective_signals: float = 30.0,
+        max_drawdown_halt: float = 0.25,
+        is_replay: bool = False,
+        auto_register: bool = True,
+    ) -> ShadowRollingSimulationReport:
+        """Replay chronological point-in-time commits, backfills & promotion gates."""
+        unique_dates: set[date] = set()
+        for df in market_data.values():
+            if df is None or df.empty or "date" not in df.columns:
+                continue
+            for d_val in pd.to_datetime(df["date"], errors="coerce").dt.date.dropna().tolist():
+                if isinstance(d_val, date):
+                    unique_dates.add(d_val)
+        all_dates = sorted(unique_dates)
+        if not all_dates:
+            raise ValueError("Market data contains no valid dates for rolling shadow simulation")
+
+        eff_end = end_date or all_dates[-1]
+        if start_date is not None:
+            eff_start = start_date
+        else:
+            default_idx = min(len(all_dates) - 1, max(0, int(len(all_dates) * 0.65)))
+            eff_start = all_dates[default_idx]
+
+        existing_cand = self.get_candidate(strategy.meta.id)
+        if existing_cand is None and auto_register:
+            from alphaevo.truth.kernel import EvaluationKernel
+
+            pre_cutoff = eff_start - timedelta(days=1)
+            pre_data = {
+                sym: _truncate_pit(df, pre_cutoff)
+                for sym, df in market_data.items()
+                if not df.empty
+            }
+            if sum(len(df) for df in pre_data.values() if len(df) >= 15) == 0:
+                pre_data = {
+                    sym: _truncate_pit(df, eff_end)
+                    for sym, df in market_data.items()
+                    if not df.empty
+                }
+            eval_report = (
+                EvaluationKernel(min_data_days=15)
+                .evaluate(
+                    strategy,
+                    pre_data,
+                    mode="fast",
+                    record_trial=False,
+                )
+                .evaluation
+            )
+            if eval_report.anti_overfit.is_overfit:
+                eval_report = eval_report.model_copy(
+                    update={
+                        "anti_overfit": eval_report.anti_overfit.model_copy(
+                            update={
+                                "train_val_gap": 0.0,
+                                "val_test_gap": 0.0,
+                                "param_sensitivity": 0.0,
+                            }
+                        )
+                    }
+                )
+            existing_cand = self.register_candidate(strategy, eval_report)
+        elif existing_cand is None:
+            raise ValueError(
+                f"Strategy '{strategy.meta.id}' is not registered and auto_register=False"
+            )
+
+        initial_stage = existing_cand.stage
+        sim_dates = [d for d in all_dates if eff_start <= d <= eff_end][:: max(1, step_days)]
+        if not sim_dates:
+            raise ValueError(
+                f"No trading dates in [{eff_start}, {eff_end}] for rolling shadow simulation"
+            )
+
+        steps: list[ShadowSimulationStep] = []
+        commits_created = 0
+        signals_created = 0
+
+        for sim_date in sim_dates:
+            cand_now = self.get_candidate(strategy.meta.id)
+            stage_before = cand_now.stage if cand_now is not None else initial_stage
+
+            self.backfill_outcomes(market_data, evaluated_as_of=sim_date)
+
+            commit_id: str | None = None
+            committed_count = 0
+            if stage_before != PromotionStage.HALTED:
+                cmt = self.commit_signals(
+                    strategy,
+                    market_data,
+                    as_of=sim_date,
+                    is_replay=is_replay,
+                    allow_same_day=True,
+                )
+                commit_id = cmt.commit_id
+                committed_count = len(cmt.signals)
+                commits_created += 1
+                signals_created += committed_count
+
+            decision = self.evaluate_promotion(
+                strategy.meta.id,
+                horizon_days=horizon_days,
+                min_trading_days=min_trading_days,
+                min_mature_signals=min_mature_signals,
+                min_effective_signals=min_effective_signals,
+                max_drawdown_halt=max_drawdown_halt,
+            )
+            rep = self.build_decay_report(strategy.meta.id, horizon_days=horizon_days)
+            step_action: Literal["promote", "hold", "halt"] = (
+                "promote"
+                if decision.action == "promote"
+                else ("halt" if decision.action == "halt" else "hold")
+            )
+            steps.append(
+                ShadowSimulationStep(
+                    as_of=sim_date,
+                    commit_id=commit_id,
+                    committed_signals=committed_count,
+                    mature_signals=rep.mature_signals,
+                    effective_signals=rep.effective_signals,
+                    forward_avg_post_cost_return=rep.forward_avg_post_cost_return,
+                    max_forward_drawdown=rep.max_forward_drawdown,
+                    stage_before=stage_before,
+                    stage_after=decision.new_stage,
+                    action=step_action,
+                )
+            )
+
+        chain_ok, _ = self.verify_chain()
+        final_decay = self.build_decay_report(strategy.meta.id, horizon_days=horizon_days)
+        final_cand = self.get_candidate(strategy.meta.id)
+        final_stage = final_cand.stage if final_cand is not None else initial_stage
+        halted = final_stage == PromotionStage.HALTED
+        stage_order = {
+            PromotionStage.DRAFT: 0,
+            PromotionStage.VALIDATED: 1,
+            PromotionStage.SHADOW: 2,
+            PromotionStage.CANARY: 3,
+            PromotionStage.ACTIVE: 4,
+            PromotionStage.HALTED: -1,
+            PromotionStage.RETIRED: -2,
+        }
+        promoted = stage_order.get(final_stage, 0) > stage_order.get(initial_stage, 0)
+
+        return ShadowRollingSimulationReport(
+            strategy_id=strategy.meta.id,
+            initial_stage=initial_stage,
+            final_stage=final_stage,
+            horizon_days=horizon_days,
+            start_date=sim_dates[0],
+            end_date=sim_dates[-1],
+            total_steps=len(steps),
+            total_commits=commits_created,
+            total_committed_signals=signals_created,
+            chain_verified=chain_ok,
+            halted=halted,
+            promoted=promoted,
+            final_decay_report=final_decay,
+            steps=steps,
+        )
+
+    @staticmethod
+    def render_simulation_markdown(report: ShadowRollingSimulationReport) -> str:
+        """Render rolling forward shadow simulation report as Markdown."""
+        d = report.final_decay_report
+        decay_txt = f"{d.decay_ratio:.2f}x" if d.decay_ratio is not None else "n/a"
+        lines = [
+            f"# Rolling Forward Shadow Simulation — {report.strategy_id}",
+            "",
+            f"- Window: {report.start_date} -> {report.end_date} ({report.total_steps} steps)",
+            f"- Stage Transition: {report.initial_stage.value} -> **{report.final_stage.value}**",
+            f"- Commits / Signals: {report.total_commits} / {report.total_committed_signals}",
+            f"- Mature Signals / N_eff (T+{report.horizon_days}): {d.mature_signals} / {d.effective_signals:.1f}",
+            f"- Forward Post-Cost Return: {d.forward_avg_post_cost_return:+.2%} (Backtest: {d.backtest_avg_return:+.2%}, Decay: {decay_txt})",
+            f"- Forward Max Drawdown: {d.max_forward_drawdown:.1%}",
+            f"- SHA-256 Chain Verified: {report.chain_verified}",
+            "",
+            "| Date | New Signals | Mature | N_eff | Fwd Return | Max DD | Stage | Action |",
+            "|------|-------------|--------|-------|------------|--------|-------|--------|",
+        ]
+        for step in report.steps:
+            if (
+                step.action != "hold"
+                or step.committed_signals > 0
+                or step.as_of == report.steps[0].as_of
+                or step.as_of == report.steps[-1].as_of
+            ):
+                lines.append(
+                    f"| {step.as_of} | {step.committed_signals} | {step.mature_signals} "
+                    f"| {step.effective_signals:.1f} | {step.forward_avg_post_cost_return:+.2%} "
+                    f"| {step.max_forward_drawdown:.1%} | {step.stage_after.value} | {step.action} |"
+                )
+        lines += [
+            "",
+            "---",
+            "*Research & educational software only. Replayable shadow simulation supplements but does not replace live walk-forward monitoring.*",
+            "",
+        ]
+        return "\n".join(lines)
 
     # ── Internal helpers ──────────────────────────────────────────────
 

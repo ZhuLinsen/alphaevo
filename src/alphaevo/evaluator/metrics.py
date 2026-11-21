@@ -306,16 +306,16 @@ class Evaluator:
         return []
 
     @staticmethod
-    def compute_daily_mtm_returns(
+    def compute_daily_mtm_series(
         signals: list[TradeSignal],
         market_data: dict[str, Any] | None,
-    ) -> tuple[list[float], int, float, float, float]:
-        """Compute chronological equal-weight daily MTM basket returns.
+    ) -> tuple[list[date], list[float], int, float, float, float]:
+        """Compute chronological equal-weight daily MTM basket dates and return series.
 
-        Returns ``(daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
+        Returns ``(calendar, daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
         """
         if not signals or not market_data:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         sym_dates: dict[str, list[date]] = {}
         sym_closes: dict[str, list[float]] = {}
@@ -343,13 +343,13 @@ class Evaluator:
             calendar_set.update(dates_list)
 
         if not sym_dates or not calendar_set:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         min_entry = min(s.signal_date for s in signals)
         max_exit = max((s.exit_date or s.signal_date) for s in signals)
         calendar = sorted(d for d in calendar_set if min_entry <= d <= max_exit)
         if len(calendar) < 2:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         day_pos_rets: dict[date, list[float]] = defaultdict(list)
         for sig in signals:
@@ -385,7 +385,7 @@ class Evaluator:
                 day_pos_rets[bar_d].append(bar_ret)
 
         if not day_pos_rets:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         daily_rets: list[float] = []
         active_days = 0
@@ -398,7 +398,7 @@ class Evaluator:
                 daily_rets.append(0.0)
 
         if active_days == 0 or len(daily_rets) < 2:
-            return ([], 0, 0.0, 0.0, 0.0)
+            return ([], [], 0, 0.0, 0.0, 0.0)
 
         equity = 1.0
         peak = 1.0
@@ -413,6 +413,20 @@ class Evaluator:
         std_d = stdev(daily_rets)
         sharpe = (avg_d / std_d * math.sqrt(252)) if std_d > 0 else 0.0
         total_ret = equity - 1.0
+        return (calendar, daily_rets, active_days, max_dd, sharpe, total_ret)
+
+    @staticmethod
+    def compute_daily_mtm_returns(
+        signals: list[TradeSignal],
+        market_data: dict[str, Any] | None,
+    ) -> tuple[list[float], int, float, float, float]:
+        """Compute chronological equal-weight daily MTM basket returns.
+
+        Returns ``(daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
+        """
+        _cal, daily_rets, active_days, max_dd, sharpe, total_ret = (
+            Evaluator.compute_daily_mtm_series(signals, market_data)
+        )
         return (daily_rets, active_days, max_dd, sharpe, total_ret)
 
     def compute_confidence_score(
@@ -521,8 +535,20 @@ class Evaluator:
         requested_folds: int = 3,
         train_pct: float = 0.7,
         pass_gap: float = 0.10,
+        split_mode: Literal["signal_index", "calendar_purged"] = "signal_index",
+        purge_overlap: bool | None = None,
     ) -> tuple[list[WalkForwardFoldMetrics], WalkForwardProtocol]:
         """Compute an expanding-window walk-forward diagnostic over trade signals."""
+        if split_mode == "calendar_purged":
+            return self.compute_calendar_walk_forward(
+                signals,
+                requested_folds=requested_folds,
+                train_pct=train_pct,
+                pass_gap=pass_gap,
+                purge_overlap=True if purge_overlap is None else purge_overlap,
+            )
+
+        effective_purge = False if purge_overlap is None else purge_overlap
         protocol = WalkForwardProtocol(
             requested_folds=requested_folds,
             effective_folds=0,
@@ -530,6 +556,9 @@ class Evaluator:
             test_pct=round(1.0 - train_pct, 4),
             pass_gap=pass_gap,
             min_signals_per_split=_MIN_SPLIT_SIGNALS,
+            split_mode="signal_index",
+            purge_overlap=effective_purge,
+            total_purged_signals=0,
         )
         if len(signals) < _MIN_SPLIT_SIGNALS * 2:
             return [], protocol
@@ -543,18 +572,31 @@ class Evaluator:
         fold_test_size = max(_MIN_SPLIT_SIGNALS, remaining // max(requested_folds, 1))
         folds: list[WalkForwardFoldMetrics] = []
         train_end = min_train
+        total_purged = 0
         for fold_num in range(1, requested_folds + 1):
             if train_end + _MIN_SPLIT_SIGNALS > len(ordered):
                 break
 
             test_end = min(len(ordered), train_end + fold_test_size)
-            train_set = ordered[:train_end]
+            raw_train_set = ordered[:train_end]
             test_set = ordered[train_end:test_end]
+            test_start_date = test_set[0].signal_date
+            test_end_date = test_set[-1].signal_date
+            if effective_purge:
+                train_set = [
+                    sig
+                    for sig in raw_train_set
+                    if sig.exit_date is None or sig.exit_date < test_start_date
+                ]
+            else:
+                train_set = raw_train_set
+            purged_count = len(raw_train_set) - len(train_set)
             if len(train_set) < _MIN_SPLIT_SIGNALS or len(test_set) < _MIN_SPLIT_SIGNALS:
                 break
 
             train_wr = self._split_win_rate(train_set)
             test_wr = self._split_win_rate(test_set)
+            total_purged += purged_count
             folds.append(
                 WalkForwardFoldMetrics(
                     fold_num=fold_num,
@@ -563,11 +605,130 @@ class Evaluator:
                     train_win_rate=round(train_wr, 4),
                     test_win_rate=round(test_wr, 4),
                     gap=round(abs(train_wr - test_wr), 4),
+                    train_start_date=train_set[0].signal_date,
+                    train_end_date=train_set[-1].signal_date,
+                    test_start_date=test_start_date,
+                    test_end_date=test_end_date,
+                    purged_signal_count=purged_count,
                 )
             )
             train_end = test_end
 
         protocol.effective_folds = len(folds)
+        protocol.total_purged_signals = total_purged
+        return folds, protocol
+
+    def compute_calendar_walk_forward(
+        self,
+        signals: list[TradeSignal],
+        *,
+        requested_folds: int = 3,
+        train_pct: float = 0.7,
+        pass_gap: float = 0.10,
+        purge_overlap: bool = True,
+    ) -> tuple[list[WalkForwardFoldMetrics], WalkForwardProtocol]:
+        """Compute date-aligned expanding walk-forward folds with optional overlap purging."""
+        protocol = WalkForwardProtocol(
+            requested_folds=requested_folds,
+            effective_folds=0,
+            train_pct=train_pct,
+            test_pct=round(1.0 - train_pct, 4),
+            pass_gap=pass_gap,
+            min_signals_per_split=_MIN_SPLIT_SIGNALS,
+            split_mode="calendar_purged",
+            purge_overlap=purge_overlap,
+            total_purged_signals=0,
+        )
+        if len(signals) < _MIN_SPLIT_SIGNALS * 2:
+            return [], protocol
+
+        ordered = sorted(signals, key=lambda signal: signal.signal_date)
+        unique_dates = sorted({sig.signal_date for sig in ordered})
+        if len(unique_dates) < 4:
+            return [], protocol
+
+        min_date = unique_dates[0]
+        max_date = unique_dates[-1]
+        total_span_days = max(1, (max_date - min_date).days)
+        n_folds = max(1, requested_folds)
+
+        def _build_folds_from_windows(
+            windows: list[tuple[date, date]],
+        ) -> list[WalkForwardFoldMetrics]:
+            out: list[WalkForwardFoldMetrics] = []
+            for win_start, win_end in windows:
+                raw_train = [sig for sig in ordered if sig.signal_date < win_start]
+                test_set = [sig for sig in ordered if win_start <= sig.signal_date <= win_end]
+                if purge_overlap:
+                    train_set = [
+                        sig
+                        for sig in raw_train
+                        if sig.exit_date is None or sig.exit_date < win_start
+                    ]
+                else:
+                    train_set = raw_train
+                purged_count = len(raw_train) - len(train_set)
+                if len(train_set) < _MIN_SPLIT_SIGNALS or len(test_set) < _MIN_SPLIT_SIGNALS:
+                    continue
+                train_wr = self._split_win_rate(train_set)
+                test_wr = self._split_win_rate(test_set)
+                out.append(
+                    WalkForwardFoldMetrics(
+                        fold_num=len(out) + 1,
+                        train_signal_count=len(train_set),
+                        test_signal_count=len(test_set),
+                        train_win_rate=round(train_wr, 4),
+                        test_win_rate=round(test_wr, 4),
+                        gap=round(abs(train_wr - test_wr), 4),
+                        train_start_date=train_set[0].signal_date,
+                        train_end_date=train_set[-1].signal_date,
+                        test_start_date=win_start,
+                        test_end_date=win_end,
+                        purged_signal_count=purged_count,
+                    )
+                )
+            return out
+
+        # Try true calendar-day intervals first
+        train_days = max(1, int(total_span_days * train_pct))
+        rem_days = max(1, total_span_days - train_days)
+        step_days = max(1, rem_days // n_folds)
+        cal_windows: list[tuple[date, date]] = []
+        cursor = min_date + timedelta(days=train_days)
+        for fold_idx in range(n_folds):
+            if cursor > max_date:
+                break
+            win_end = (
+                max_date
+                if fold_idx == n_folds - 1
+                else min(max_date, cursor + timedelta(days=step_days - 1))
+            )
+            cal_windows.append((cursor, win_end))
+            cursor = win_end + timedelta(days=1)
+
+        folds = _build_folds_from_windows(cal_windows)
+
+        # Fallback: partition unique signal dates by date quantiles (never splits same day)
+        if not folds:
+            train_date_idx = max(1, min(len(unique_dates) - 2, int(len(unique_dates) * train_pct)))
+            rem_date_count = len(unique_dates) - train_date_idx
+            step_dates = max(1, rem_date_count // n_folds)
+            date_windows: list[tuple[date, date]] = []
+            d_cursor = train_date_idx
+            for fold_idx in range(n_folds):
+                if d_cursor >= len(unique_dates):
+                    break
+                end_pos = (
+                    len(unique_dates) - 1
+                    if fold_idx == n_folds - 1
+                    else min(len(unique_dates) - 1, d_cursor + step_dates - 1)
+                )
+                date_windows.append((unique_dates[d_cursor], unique_dates[end_pos]))
+                d_cursor = end_pos + 1
+            folds = _build_folds_from_windows(date_windows)
+
+        protocol.effective_folds = len(folds)
+        protocol.total_purged_signals = sum(fold.purged_signal_count for fold in folds)
         return folds, protocol
 
     def compute_regime_holdout(

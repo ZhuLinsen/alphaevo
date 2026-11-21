@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import random
-from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal
 
-import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
-from alphaevo.backtest.engine import BacktestEngine
+from alphaevo.alpha_factory.factor_store import FactorStore
+from alphaevo.alpha_factory.factory import (
+    load_registered_factors,
+    register_factor_record,
+)
+from alphaevo.core.config import BacktestConfig
 from alphaevo.evaluator.metrics import Evaluator
-from alphaevo.models.enums import EvidenceLevel, RSILevel, SamplingMethod
-from alphaevo.models.execution import EvaluationReport, SampleBatch, StrategyChange
+from alphaevo.models.enums import EvidenceLevel, RSILevel
+from alphaevo.models.execution import EvaluationReport, StrategyChange
 from alphaevo.models.strategy import Strategy
 from alphaevo.reflection.critic import SelfCritic
 from alphaevo.reflection.experience import ExperienceRecord, ExperienceStore
@@ -25,13 +29,26 @@ from alphaevo.rsi.council import HeterogeneousCouncil
 from alphaevo.rsi.program import RSICharter
 from alphaevo.rsi.qd_archive import ArchiveSummary, MAPElitesArchive
 from alphaevo.strategy.dsl.serializer import StrategySerializer
+from alphaevo.strategy.store import StrategyStore
+from alphaevo.truth.kernel import (
+    EvaluationKernel,
+    KernelEvaluationOutcome,
+    LockedHoldoutVault,
+    PortfolioGateConfig,
+    PortfolioGateVerdict,
+    split_market_data_with_holdout,
+)
 from alphaevo.truth.ledger import (
     TrialLedger,
-    TrialRecord,
-    compute_data_fingerprint,
     compute_kernel_fingerprint,
 )
-from alphaevo.truth.null_control import NullControlReport, NullSignalController
+from alphaevo.truth.null_control import NullSignalController
+
+if TYPE_CHECKING:
+    import pandas as pd  # type: ignore[import-untyped]
+
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+    from alphaevo.provenance.store import RunArtifactStore
 
 
 class RSIRoundRow(BaseModel):
@@ -73,6 +90,11 @@ class RSIRunResult(BaseModel):
     rows: list[RSIRoundRow] = Field(default_factory=list)
     archive_summary: ArchiveSummary
     scars_created: int = 0
+    holdout_evaluation: EvaluationReport | None = None
+    portfolio_verdict: PortfolioGateVerdict | None = None
+    enrolled_in_shadow: bool = False
+    persisted_factors: list[str] = Field(default_factory=list)
+    run_id: str | None = None
     tsv_path: Path | None = None
     report_path: Path | None = None
     champion_yaml_path: Path | None = None
@@ -125,21 +147,6 @@ def _structural_strategy_hash(strategy: Strategy) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _date_bounds(market_data: dict[str, pd.DataFrame]) -> tuple[date, date]:
-    starts: list[date] = []
-    ends: list[date] = []
-    for df in market_data.values():
-        if df.empty or "date" not in df:
-            continue
-        ds = pd.to_datetime(df["date"]).dt.date
-        starts.append(ds.min())
-        ends.append(ds.max())
-    if not starts or not ends:
-        today = date.today()
-        return today, today
-    return min(starts), max(ends)
-
-
 class StockRSIEngine:
     """Self-improving stock strategy/factor loop guarded by L0 Truth & MAP-Elites."""
 
@@ -150,9 +157,19 @@ class StockRSIEngine:
         complexity_limit: int = 8,
         enable_pinned_scars: bool = True,
         council: HeterogeneousCouncil | None = None,
+        backtest_config: BacktestConfig | None = None,
     ) -> None:
+        self._db_path = db_path
+        self._backtest_config = backtest_config or BacktestConfig(min_data_days=15)
         self._trial_ledger = TrialLedger(db_path)
         self._experience_store = ExperienceStore(db_path)
+        self._factor_store = FactorStore(db_path)
+        if str(db_path) != ":memory:":
+            with contextlib.suppress(Exception):
+                load_registered_factors(db_path, status="active")
+        else:
+            for rec in self._factor_store.list_all(status="active"):
+                register_factor_record(rec)
         scar_path = (
             Path(db_path).expanduser().with_suffix(".scars.jsonl")
             if str(db_path) != ":memory:"
@@ -165,10 +182,16 @@ class StockRSIEngine:
             complexity_limit=complexity_limit,
         )
         self._council = council or HeterogeneousCouncil(critic=self._critic)
-        self._miner = BlindSpotMiner()
+        self._miner = BlindSpotMiner(factor_store=self._factor_store)
         self._null_ctrl = NullSignalController()
-        self._bt_engine = BacktestEngine(min_data_days=15)
         self._evaluator = Evaluator()
+        self._kernel = EvaluationKernel(
+            backtest_config=self._backtest_config,
+            db_path=None,
+            trial_ledger=self._trial_ledger,
+            null_controller=self._null_ctrl,
+            min_data_days=15,
+        )
 
     def run(
         self,
@@ -178,49 +201,61 @@ class StockRSIEngine:
         charter: RSICharter | None = None,
         output_dir: Path | None = None,
         seed: int = 42,
+        persist_champion: bool = True,
+        shadow_ledger: ShadowLedger | None = None,
+        auto_enroll_shadow: bool = False,
+        artifact_store: RunArtifactStore | None = None,
     ) -> RSIRunResult:
-        """Execute an bounded L1/L2 RSI evolution session and persist traceable outputs."""
+        """Execute a bounded L1/L2 RSI evolution session and persist traceable outputs."""
         cfg = charter or RSICharter(seed_strategy_id=seed_strategy.meta.id)
         kernel_before = compute_kernel_fingerprint()
-        data_fp = compute_data_fingerprint(market_data)
+
+        vault: LockedHoldoutVault | None = None
+        search_market = market_data
+        if cfg.locked_holdout_pct > 0.0:
+            try:
+                vault, _split = split_market_data_with_holdout(
+                    market_data,
+                    holdout_pct=cfg.locked_holdout_pct,
+                )
+                search_market = vault.search_data
+            except ValueError:
+                vault = None
+                search_market = market_data
+
         family_id = self._trial_ledger.resolve_trial_family_id(seed_strategy)
-        symbols = sorted(market_data.keys())
-        date_range = _date_bounds(market_data)
         sample_df = next(
-            (df for df in market_data.values() if not df.empty and len(df) >= 15),
+            (df for df in search_market.values() if not df.empty and len(df) >= 15),
             None,
         )
 
         mutator = StrategyMutator(max_changes=3, complexity_limit=cfg.max_complexity)
         archive = MAPElitesArchive()
         rng = random.Random(seed)
+        portfolio_gate_cfg = (
+            PortfolioGateConfig(
+                enabled=True,
+                max_portfolio_drawdown=cfg.max_portfolio_drawdown,
+            )
+            if cfg.require_portfolio_gate
+            else None
+        )
 
-        # Baseline evaluation (Round 0)
-        base_eval, base_null, base_bt_signals = self._eval_with_l0(
+        # Baseline evaluation (Round 0) via canonical EvaluationKernel
+        base_outcome = self._eval_with_kernel(
             strategy=seed_strategy,
-            market_data=market_data,
-            symbols=symbols,
-            date_range=date_range,
+            market_data=search_market,
             family_id=family_id,
             charter=cfg,
             seed=seed,
-        )
-        self._trial_ledger.record_trial(
-            strategy=seed_strategy,
-            trial_family_id=family_id,
-            data_fingerprint=data_fp,
+            portfolio_gate=portfolio_gate_cfg,
             rsi_level=RSILevel.L1_STRATEGY,
             round_num=0,
-            signal_count=base_eval.overall.signal_count,
-            sharpe_ratio=base_eval.overall.sharpe_ratio,
-            returns=[s.return_pct for s in base_bt_signals],
-            confidence_score=base_eval.confidence_score,
-            passed_null_control=base_eval.null_control_passed,
             accepted=True,
             notes="baseline",
         )
-        # Re-read updated family count onto report
-        base_eval.family_trial_count = self._trial_ledger.count_family_trials(family_id)
+        base_eval = base_outcome.evaluation
+        base_null = base_outcome.null_control
         working_strategy = seed_strategy.model_copy(deep=True)
         working_eval = base_eval
         working_fitness = _compute_rsi_fitness(
@@ -232,6 +267,7 @@ class StockRSIEngine:
         verified_champion_strategy = seed_strategy.model_copy(deep=True)
         verified_champion_eval = base_eval
         verified_champion_fitness = working_fitness
+        verified_champion_outcome = base_outcome
         has_verified_promotion = False
         archive.insert(working_strategy, working_eval, working_fitness)
 
@@ -257,6 +293,7 @@ class StockRSIEngine:
         kept_rounds = 0
         promotions = 0
         scars_created = 0
+        persisted_factors: list[str] = []
         next_version = seed_strategy.meta.version + 1
         seen_hashes: set[str] = {_structural_strategy_hash(seed_strategy)}
         tried_by_parent: dict[str, set[tuple[tuple[str, str, str], ...]]] = {}
@@ -283,6 +320,12 @@ class StockRSIEngine:
                 allowed_levels=cfg.allowed_levels,
                 stagnant_l1_rounds=stagnant_l1,
             )
+            if (
+                steer.persisted_to_store
+                and steer.synthesized_factor_name
+                and steer.synthesized_factor_name not in persisted_factors
+            ):
+                persisted_factors.append(steer.synthesized_factor_name)
 
             parent_tried = tried_by_parent.setdefault(parent_strategy.meta.id, set())
             deliberations = self._council.generate_candidates(
@@ -318,12 +361,10 @@ class StockRSIEngine:
             best_cand_bundle: (
                 tuple[
                     Strategy,
-                    EvaluationReport,
-                    NullControlReport | None,
+                    KernelEvaluationOutcome,
                     float,
                     list[StrategyChange],
                     RSILevel,
-                    TrialRecord,
                 ]
                 | None
             ) = None
@@ -359,29 +400,19 @@ class StockRSIEngine:
                     continue
                 seen_hashes.add(shash)
 
-                cand_eval, cand_null, cand_bt_sigs = self._eval_with_l0(
+                cand_outcome = self._eval_with_kernel(
                     strategy=cand_strategy,
-                    market_data=market_data,
-                    symbols=symbols,
-                    date_range=date_range,
+                    market_data=search_market,
                     family_id=family_id,
                     charter=cfg,
                     seed=seed + rnd,
-                )
-                trial_rec = self._trial_ledger.record_trial(
-                    strategy=cand_strategy,
-                    trial_family_id=family_id,
-                    data_fingerprint=data_fp,
+                    portfolio_gate=portfolio_gate_cfg,
                     rsi_level=level_used,
                     round_num=rnd,
-                    signal_count=cand_eval.overall.signal_count,
-                    sharpe_ratio=cand_eval.overall.sharpe_ratio,
-                    returns=[s.return_pct for s in cand_bt_sigs],
-                    confidence_score=cand_eval.confidence_score,
-                    passed_null_control=cand_eval.null_control_passed,
                     accepted=False,
                     notes=changes[0].reason[:120],
                 )
+                cand_eval = cand_outcome.evaluation
                 cand_fit = _compute_rsi_fitness(
                     cand_eval,
                     objective=cfg.objective,
@@ -408,9 +439,10 @@ class StockRSIEngine:
                     if cand_eval.null_control_passed is True
                     else EvidenceLevel.BACKTEST
                 )
+                conf_delta = round(cand_eval.confidence_score - working_eval.confidence_score, 4)
                 self._experience_store.record(
                     ExperienceRecord(
-                        strategy_family=family_id,
+                        strategy_family=cand_strategy.meta.family_id,
                         strategy_id=cand_id,
                         round_num=rnd,
                         change_type=changes[0].change_type,
@@ -418,25 +450,24 @@ class StockRSIEngine:
                         from_value=changes[0].from_value,
                         to_value=changes[0].to_value,
                         reason=changes[0].reason,
-                        score_before=working_fitness,
-                        score_after=cand_fit,
-                        score_delta=round(cand_fit - working_fitness, 4),
+                        score_before=working_eval.confidence_score,
+                        score_after=cand_eval.confidence_score,
+                        score_delta=conf_delta,
                         worked=cand_fit > working_fitness,
-                        lesson=f"{level_used.value}: {changes[0].reason}",
+                        lesson=f"{level_used.value} (fitness={cand_fit:.3f}): {changes[0].reason}",
                         action_type="rsi_engine",
                         evidence_level=ev_level,
+                        score_metric="confidence_score",
                     )
                 )
 
-                if best_cand_bundle is None or cand_fit > best_cand_bundle[3]:
+                if best_cand_bundle is None or cand_fit > best_cand_bundle[2]:
                     best_cand_bundle = (
                         cand_strategy,
-                        cand_eval,
-                        cand_null,
+                        cand_outcome,
                         cand_fit,
                         changes,
                         level_used,
-                        trial_rec,
                     )
                 next_version += 1
 
@@ -444,13 +475,16 @@ class StockRSIEngine:
                 stagnant_l1 += 1
                 continue
 
-            cand_strat, cand_eval, cand_null, cand_fit, chs, lvl, best_trial = best_cand_bundle
+            cand_strat, cand_outcome, cand_fit, chs, lvl = best_cand_bundle
+            cand_eval = cand_outcome.evaluation
+            cand_null = cand_outcome.null_control
+            best_trial = cand_outcome.trial_record
             dsr_prob = (
                 float(cand_eval.deflated_sharpe_prob)
                 if cand_eval.deflated_sharpe_prob is not None
                 else 0.0
             )
-            passes_gate = (
+            passes_base_gates = (
                 cand_fit > verified_champion_fitness + 1e-4
                 and cand_eval.overall.avg_return > 0.0
                 and cand_eval.overall.max_drawdown <= cfg.max_drawdown
@@ -458,7 +492,34 @@ class StockRSIEngine:
                 and cand_eval.overall.signal_count >= cfg.min_signals
                 and dsr_prob >= cfg.min_dsr_prob
                 and (not cfg.require_null_control or cand_eval.null_control_passed is True)
+                and (
+                    not cfg.require_portfolio_gate
+                    or (
+                        cand_outcome.portfolio_verdict is not None
+                        and cand_outcome.portfolio_verdict.passed
+                    )
+                )
             )
+            if passes_base_gates and cfg.require_strategy_rerun_null:
+                rerun_null = self._null_ctrl.evaluate_strategy_against_null_worlds(
+                    cand_strat,
+                    search_market,
+                    cand_eval,
+                    n_worlds=cfg.strategy_rerun_null_worlds,
+                    seed=seed + rnd,
+                    backtest_engine=self._kernel._build_engine(),
+                )
+                cand_outcome.strategy_rerun_null = rerun_null
+                if not rerun_null.passed:
+                    cand_eval.null_control_passed = False
+                    cand_eval.null_p_value = round(
+                        max(float(cand_eval.null_p_value or 0.0), rerun_null.worst_p_value),
+                        4,
+                    )
+                passes_gate = rerun_null.passed
+            else:
+                passes_gate = passes_base_gates
+
             is_stepping_stone = (
                 not passes_gate
                 and promotions == 0
@@ -476,13 +537,15 @@ class StockRSIEngine:
             desc = "; ".join(f"{c.target}->{c.to_value}" for c in chs)
 
             if passes_gate:
-                self._trial_ledger.mark_trial_accepted(best_trial.trial_id, True)
+                if best_trial is not None:
+                    self._trial_ledger.mark_trial_accepted(best_trial.trial_id, True)
                 working_strategy = cand_strat
                 working_eval = cand_eval
                 working_fitness = cand_fit
                 verified_champion_strategy = cand_strat
                 verified_champion_eval = cand_eval
                 verified_champion_fitness = cand_fit
+                verified_champion_outcome = cand_outcome
                 has_verified_promotion = True
                 kept_rounds += 1
                 promotions += 1
@@ -518,6 +581,33 @@ class StockRSIEngine:
                 )
             )
 
+        holdout_eval: EvaluationReport | None = None
+        if vault is not None:
+            holdout_outcome = vault.evaluate_locked_holdout(
+                verified_champion_strategy,
+                self._kernel,
+                mode="full",
+                record_trial=False,
+                portfolio_gate=portfolio_gate_cfg,
+            )
+            holdout_eval = holdout_outcome.evaluation
+
+        if persist_champion and has_verified_promotion and str(self._db_path) != ":memory:":
+            try:
+                strat_store = StrategyStore(self._db_path)
+                strat_store.save(verified_champion_strategy)
+                strat_store.save_evaluation(verified_champion_eval)
+            except Exception:
+                pass
+
+        enrolled_in_shadow = False
+        if auto_enroll_shadow and has_verified_promotion and shadow_ledger is not None:
+            try:
+                shadow_ledger.register_candidate(verified_champion_strategy, verified_champion_eval)
+                enrolled_in_shadow = True
+            except Exception:
+                enrolled_in_shadow = False
+
         kernel_after = compute_kernel_fingerprint()
         result = RSIRunResult(
             charter_name=cfg.name,
@@ -538,6 +628,10 @@ class StockRSIEngine:
             rows=rows,
             archive_summary=archive.coverage_summary(),
             scars_created=scars_created,
+            holdout_evaluation=holdout_eval,
+            portfolio_verdict=verified_champion_outcome.portfolio_verdict,
+            enrolled_in_shadow=enrolled_in_shadow,
+            persisted_factors=persisted_factors,
         )
 
         if output_dir is not None:
@@ -546,77 +640,78 @@ class StockRSIEngine:
             report_path = output_dir / "rsi_run_report.md"
             yaml_path = output_dir / f"{verified_champion_strategy.meta.id}.yaml"
             tsv_path.write_text(self.render_tsv(result), encoding="utf-8")
-            report_path.write_text(self.render_markdown(result), encoding="utf-8")
+            md_text = self.render_markdown(result)
+            report_path.write_text(md_text, encoding="utf-8")
             StrategySerializer().to_file(verified_champion_strategy, yaml_path)
             result.tsv_path = tsv_path
             result.report_path = report_path
             result.champion_yaml_path = yaml_path
+        else:
+            md_text = self.render_markdown(result)
+
+        effective_artifact_store = artifact_store
+        if effective_artifact_store is None and output_dir is not None:
+            from alphaevo.provenance.store import RunArtifactStore
+
+            effective_artifact_store = RunArtifactStore(
+                artifact_root=output_dir,
+                db_path=self._db_path,
+            )
+        if effective_artifact_store is not None:
+            try:
+                manifest = effective_artifact_store.save_run(
+                    kind="rsi",
+                    strategy=verified_champion_strategy,
+                    evaluation=verified_champion_eval,
+                    market_data=search_market,
+                    trades=verified_champion_outcome.backtest_result.signals,
+                    initial_strategy=seed_strategy,
+                    adapter_name="snapshot_or_live",
+                    requested_protocol="full_research_v1",
+                    data_reproducibility="replayable",
+                    data_mutability="replayable_snapshot",
+                    random_seed=seed,
+                    report_markdown=md_text,
+                )
+                result.run_id = manifest.run_id
+            except Exception:
+                pass
 
         return result
 
-    def _eval_with_l0(
+    def _eval_with_kernel(
         self,
         *,
         strategy: Strategy,
         market_data: dict[str, pd.DataFrame],
-        symbols: list[str],
-        date_range: tuple[date, date],
         family_id: str,
         charter: RSICharter,
         seed: int,
-    ) -> tuple[EvaluationReport, NullControlReport | None, list[Any]]:
-        batch = SampleBatch(
-            batch_id="rsi_eval",
-            strategy_id=strategy.meta.id,
-            symbols=symbols,
-            date_range=date_range,
-            sampling_method=SamplingMethod.REPRESENTATIVE,
-        )
-        bt = self._bt_engine.run(strategy, market_data, batch)
-        ev = self._evaluator.evaluate_fast(
-            strategy=strategy,
-            result=bt,
-            market_data=market_data,
-        )
-        executed = [s for s in bt.signals if s.exit_price is not None]
-
-        # Compute DSR using accumulated trial count + current trial
-        trial_n = max(1, self._trial_ledger.count_family_trials(family_id) + 1)
-        dsr_returns = (
-            self._evaluator.compute_daily_mtm_returns(executed, market_data)[0]
-            if ev.overall.metrics_basis == "daily_mtm"
-            else []
-        )
-        dsr_input = dsr_returns if dsr_returns else [s.return_pct for s in executed]
-        dsr_obs = len(dsr_input) if dsr_returns else ev.overall.signal_count
-        dsr_res = self._trial_ledger.compute_dsr_for_trials(
+        portfolio_gate: PortfolioGateConfig | None,
+        rsi_level: RSILevel,
+        round_num: int,
+        accepted: bool,
+        notes: str,
+    ) -> KernelEvaluationOutcome:
+        return self._kernel.evaluate(
+            strategy,
+            market_data,
+            mode="fast",
             family_id=family_id,
-            n_trials=trial_n,
-            returns=dsr_input,
-            observed_sharpe=ev.overall.sharpe_ratio,
-            signal_count=dsr_obs,
+            record_trial=True,
+            run_null_control=charter.require_null_control,
+            run_strategy_rerun_null=False,
+            null_permutations=charter.null_permutations,
+            min_signals=charter.min_signals,
+            min_dsr_prob=charter.min_dsr_prob,
+            max_drawdown=charter.max_drawdown,
+            portfolio_gate=portfolio_gate,
+            rsi_level=rsi_level,
+            round_num=round_num,
+            accepted=accepted,
+            notes=notes,
+            seed=seed,
         )
-        ev.family_trial_count = trial_n
-        ev.deflated_sharpe_prob = dsr_res.dsr_probability
-
-        null_rep: NullControlReport | None = None
-        if charter.require_null_control:
-            if len(executed) < charter.min_signals or ev.overall.avg_return <= 0.0:
-                ev.null_control_passed = False
-                ev.null_p_value = 1.0
-            else:
-                null_rep = self._null_ctrl.evaluate_candidate_against_nulls(
-                    bt.signals,
-                    market_data=market_data,
-                    n_permutations=charter.null_permutations,
-                    min_signals=charter.min_signals,
-                    seed=seed,
-                )
-                ev.null_control_passed = null_rep.passed
-                ev.null_p_value = null_rep.worst_p_value
-        else:
-            ev.null_control_passed = None
-        return ev, null_rep, executed
 
     @staticmethod
     def render_tsv(result: RSIRunResult) -> str:
@@ -660,6 +755,30 @@ class StockRSIEngine:
                 f"{'PASS' if r.null_passed else 'FAIL'} | {r.fitness_score:.1%} | "
                 f"**{r.status.upper()}** | {r.description} |"
             )
+        if result.holdout_evaluation is not None:
+            ho = result.holdout_evaluation.overall
+            lines += [
+                "",
+                "## Locked Out-of-Sample Holdout",
+                "",
+                f"- Signals: {ho.signal_count} | Win Rate: {ho.win_rate:.1%} | Avg Return: {ho.avg_return:.2%} | Max DD: {ho.max_drawdown:.1%} | Sharpe: {ho.sharpe_ratio:.2f}",
+            ]
+        if result.portfolio_verdict is not None:
+            pv = result.portfolio_verdict
+            lines += [
+                "",
+                "## Layer-2 Portfolio Gate",
+                "",
+                f"- Passed: **{pv.passed}** | Total Return: {pv.total_return:.2%} | Max DD: {pv.max_drawdown:.1%} | Trades: {pv.total_trades}",
+            ]
+        if result.persisted_factors or result.enrolled_in_shadow:
+            lines += ["", "## Convergence & Provenance", ""]
+            if result.persisted_factors:
+                lines.append(f"- Persisted L2 Factors: {', '.join(result.persisted_factors)}")
+            if result.enrolled_in_shadow:
+                lines.append(f"- Shadow Ledger Enrolled: `{result.champion_id}`")
+            if result.run_id:
+                lines.append(f"- Run Manifest ID: `{result.run_id}`")
         lines += [
             "",
             "> Research & educational use only. Past simulated performance does not guarantee future returns.",

@@ -136,6 +136,40 @@ class PromotionDecision(BaseModel):
     decided_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ShadowSimulationStep(BaseModel):
+    """Single chronological day step in a rolling bitemporal shadow simulation."""
+
+    as_of: date
+    commit_id: str | None = None
+    committed_signals: int = 0
+    mature_signals: int = 0
+    effective_signals: float = 0.0
+    forward_avg_post_cost_return: float = 0.0
+    max_forward_drawdown: float = 0.0
+    stage_before: PromotionStage
+    stage_after: PromotionStage
+    action: Literal["promote", "hold", "halt"] = "hold"
+
+
+class ShadowRollingSimulationReport(BaseModel):
+    """End-to-end bitemporal forward shadow simulation audit report."""
+
+    strategy_id: str
+    initial_stage: PromotionStage
+    final_stage: PromotionStage
+    horizon_days: int = 10
+    start_date: date
+    end_date: date
+    total_steps: int = 0
+    total_commits: int = 0
+    total_committed_signals: int = 0
+    chain_verified: bool = True
+    halted: bool = False
+    promoted: bool = False
+    final_decay_report: ForwardDecayReport
+    steps: list[ShadowSimulationStep] = Field(default_factory=list)
+
+
 __all__ = [
     "BitemporalEnvelope",
     "CandidateSpec",
@@ -145,5 +179,7 @@ __all__ = [
     "OutcomeHorizon",
     "PromotionDecision",
     "SetupInstance",
+    "ShadowRollingSimulationReport",
+    "ShadowSimulationStep",
     "StageTransition",
 ]

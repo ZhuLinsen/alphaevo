@@ -30,7 +30,7 @@
 | **Data Layer** | `src/alphaevo/data/` | 多数据源接入，统一 MarketSnapshot 输出 |
 | **Strategy Layer** | `src/alphaevo/strategy/` | 策略 DSL 定义、解析、序列化、版本管理 |
 | **Sampler Layer** | `src/alphaevo/sampler/` | 分层采样（市场环境/风格/策略适用范围） |
-| **Backtest Layer** | `src/alphaevo/backtest/` | 指标注册表 + 条件评估 + 回测引擎 + 组合回测 |
+| **Backtest Layer** | `src/alphaevo/backtest/` | 指标注册表 + 条件评估 + 回测引擎 + 组合回测 + 因果自适应风险分配器 |
 | **Evaluator Layer** | `src/alphaevo/evaluator/` | 多维评估（胜率/盈亏比/回撤/环境适应性） |
 | **Reflection Layer** | `src/alphaevo/reflection/` | 失败归因 + 修正建议 + 下一版策略生成 |
 | **Orchestrator** | `src/alphaevo/orchestrator/` | 端到端流程编排 |
@@ -42,17 +42,18 @@
 | **Models** | `src/alphaevo/models/` | Pydantic v2 数据模型 |
 | **CLI** | `src/alphaevo/cli/` | Typer + Rich 命令行界面 |
 | **Config** | `src/alphaevo/core/config.py` | 统一配置管理 (Pydantic Settings) |
-| **Leaderboard** | `src/alphaevo/leaderboard/` | 策略排行榜，综合评分 |
+| **Leaderboard** | `src/alphaevo/leaderboard/` | 策略排行榜，严格区分 local / official scope |
+| **Provenance** | `src/alphaevo/provenance/` | 不可变 run artifact 清单、SHA-256 数据包 (`DataBundleStore`)、脱敏配置快照、`official_v1` 降级门控与 `compare_runs` |
 | **Utils** | `src/alphaevo/utils/` | 公共工具函数 (utcnow, fmt_pct, safe_div 等) |
-| **Alpha Factory** | `src/alphaevo/alpha_factory/` | LLM 驱动因子合成、验证、注册 |
+| **Alpha Factory** | `src/alphaevo/alpha_factory/` | LLM 驱动因子合成、验证、注册、OOS 衰变/冗余/PIT 生命周期治理 (`FactorGovernanceEngine`) |
 | **Research Log** | `src/alphaevo/research_log/` | 进化过程结构化记录与渲染 |
 | **Experience Store** | `src/alphaevo/reflection/experience.py` | 进化经验持久化 (SQLite)，跨策略学习 |
 | **Self-Critic** | `src/alphaevo/reflection/critic.py` | 变更质量门控 + 多候选排名 |
 | **Meta-Learner** | `src/alphaevo/reflection/meta_learner.py` | 数据驱动的进化策略自适应 |
 | **Pattern Library** | `src/alphaevo/strategy/library/` | 跨策略可复用模式提取与注入 |
-| **L0 Truth Kernel** | `src/alphaevo/truth/` | TrialLedger、Deflated Sharpe、两层 Null Control、运行时 PIT 未来噪声探针 |
+| **L0 Truth Kernel** | `src/alphaevo/truth/` | `EvaluationKernel` 共享评估内核、`LockedHoldoutVault`、组合硬否决门禁、`TrialLedger`、DSR、两层 Null Control、运行时 PIT 探针 |
 | **Forward Shadow Ledger** | `src/alphaevo/forward/` | 双时态 `as_of` 提交、SHA-256 哈希链、T+5/10/20 归因与非对称晋升/熔断状态机 |
-| **RSI Engine (L1/L2/L3)** | `src/alphaevo/rsi/` | `program.md` 驱动棘轮、MAP-Elites、Co-STEER 盲区路由、异构模型议会、机制 AB 进化 |
+| **RSI Engine (L1/L2/L3)** | `src/alphaevo/rsi/` | 收敛至 `EvaluationKernel` 的 `program.md` 棘轮、MAP-Elites、Co-STEER 盲区路由（`FactorStore` 落库）、异构模型议会、机制 AB 进化 |
 
 ### 关键入口
 
@@ -621,12 +622,25 @@ alphaevo factor list                  # 查看已发现因子
 alphaevo factor show <name>           # 查看因子详情和代码
 alphaevo factor retire <name>         # 退役一个因子
 alphaevo factor discover <symbol>     # LLM 驱动因子发现 (需要 [llm])
+alphaevo factor audit                 # 因子 OOS IC/IR 衰变、相关性冗余、PIT 与血缘治理审计
+alphaevo factor prune                 # 自动退役 PIT 不安全 / OOS 衰变 / 冗余因子（支持 --dry-run）
 
 # 核心闭环
-alphaevo run <strategy_id>            # 运行完整闭环（采样→回测→评估→报告）
+alphaevo run <strategy_id>            # 运行完整闭环（采样→回测→评估→报告→不可变 provenance 工件）
   --sampling strategy_scoped          #   覆盖采样模式
   --fill-policy conservative          #   止损/止盈同 K 线冲突策略
-alphaevo optimize <strategy_id>       # 优化入口阈值、指标周期、退出/风控规则
+  --protocol full_research_v1         #   评估协议: fast_research_v1 | full_research_v1 | official_v1
+  --bundle <bundle_id>                #   基于 SHA-256 不可变数据包运行
+alphaevo data bundle create|list|show|verify  # 创建/检索/校验不可变 OHLCV 数据包
+alphaevo portfolio allocate <s1> <s2> # 多策略因果市场状态自适应风险预算分配
+alphaevo rsi run <strategy_id>        # 运行受 L0 真相核约束的 Stock RSI 进化闭环
+  --holdout-pct 0.20                  #   物理隔离前向锁定 Holdout 窗口
+  --portfolio-gate                    #   启用 Layer-2 组合回撤/收益硬否决门禁
+  --enroll-shadow                     #   晋升冠军自动注册进前瞻影子账本
+  --save-store / --no-save-store      #   控制是否将晋升冠军保存至 StrategyStore
+alphaevo rsi mechanism-ab <id>        # L3 Meta-RSI 配对/多切分点（--cutoffs）机制校准评测
+alphaevo shadow simulate <id>         # 滚动逐日双时态前瞻影子承诺与晋升/熔断仿真
+alphaevo optimize <strategy_id>       # 优化入口阈值、指标周期、退出/风控规则（全量试错写入 TrialLedger）
   --spaces entry,params,indicator,exit,stoploss,takeprofit,holding,all
   --objective quality                 #   排序目标: confidence / win_rate / avg_return / drawdown / quality / profit_quality / robust_profit_quality
   --min-win-rate 0.5                  #   候选合格胜率门槛
@@ -659,9 +673,10 @@ alphaevo evolve <strategy_id>         # 进化策略 (需要 [llm])
 alphaevo leaderboard                  # 策略排行榜（默认 local scope）
   --scope local|official              #   local 显示本地研究 run；official 只显示 official_v1 通过项
 alphaevo compare <id1> <id2>          # 策略对比
-alphaevo runs list                    # 列出不可变 run / optimization artifact 索引
+alphaevo runs list                    # 列出不可变 run / optimization / evolve artifact 索引
 alphaevo runs show <run_id>           # 查看 run provenance 与 artifact 路径
 alphaevo runs compare <id1> <id2>     # 比较两个 run；不同 protocol 只诊断不排名
+alphaevo runs rerun-official <id> --bundle <bid>  # 在不可变数据包上按 official_v1 复评
 
 # 进化树
 alphaevo tree <strategy_id>           # 查看策略进化树

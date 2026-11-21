@@ -29,6 +29,11 @@ class RSICharter(BaseModel):
     max_complexity: int = Field(default=8, ge=1, le=20)
     require_null_control: bool = True
     null_permutations: int = Field(default=60, ge=10)
+    locked_holdout_pct: float = Field(default=0.0, ge=0.0, le=0.40)
+    require_strategy_rerun_null: bool = False
+    strategy_rerun_null_worlds: int = Field(default=5, ge=2, le=50)
+    require_portfolio_gate: bool = False
+    max_portfolio_drawdown: float = Field(default=0.30, gt=0.0, le=0.80)
     mission_notes: str = ""
 
 

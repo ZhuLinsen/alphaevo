@@ -12,6 +12,13 @@ from alphaevo.alpha_factory.factory import (
     load_registered_factors,
     register_factor_record,
 )
+from alphaevo.alpha_factory.governance import (
+    FactorAuditEntry,
+    FactorGovernanceConfig,
+    FactorGovernanceEngine,
+    FactorGovernanceReport,
+    FactorHealthStatus,
+)
 from alphaevo.alpha_factory.sandbox import FactorSandbox, SandboxResult
 from alphaevo.alpha_factory.synthesizer import FactorHypothesis, FactorSynthesizer
 from alphaevo.alpha_factory.validator import (
@@ -23,6 +30,11 @@ from alphaevo.alpha_factory.validator import (
 __all__ = [
     "AlphaFactory",
     "DiscoveryResult",
+    "FactorAuditEntry",
+    "FactorGovernanceConfig",
+    "FactorGovernanceEngine",
+    "FactorGovernanceReport",
+    "FactorHealthStatus",
     "FactorHypothesis",
     "FactorRecord",
     "FactorSandbox",

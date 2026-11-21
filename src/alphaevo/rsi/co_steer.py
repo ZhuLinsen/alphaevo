@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
+from alphaevo.alpha_factory.factor_store import FactorRecord, FactorStore
 from alphaevo.alpha_factory.factory import _build_indicator_fn
 from alphaevo.alpha_factory.sandbox import FactorSandbox
 from alphaevo.backtest.indicators import IndicatorFn, IndicatorRegistry
@@ -46,6 +47,7 @@ class CoSteerDecision(BaseModel):
     cluster: BlindSpotCluster
     synthesized_factor_name: str | None = None
     pit_verified: bool = False
+    persisted_to_store: bool = False
     proposed_changes: list[StrategyChange] = Field(default_factory=list)
 
 
@@ -242,8 +244,14 @@ class ScarRegistry:
 class BlindSpotMiner:
     """Clusters failure trades and steers L1 DSL evolution vs L2 factor discovery."""
 
-    def __init__(self, *, sandbox: FactorSandbox | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        sandbox: FactorSandbox | None = None,
+        factor_store: FactorStore | None = None,
+    ) -> None:
         self._sandbox = sandbox or FactorSandbox(timeout_seconds=10)
+        self._factor_store = factor_store
         self._pit_cache: dict[str, bool] = {}
 
     def diagnose_blind_spot(
@@ -351,6 +359,18 @@ class BlindSpotMiner:
                     template.name,
                     cast("IndicatorFn", _build_indicator_fn(template.code, self._sandbox)),
                 )
+                persisted = False
+                if self._factor_store is not None:
+                    self._factor_store.save(
+                        FactorRecord(
+                            name=template.name,
+                            description=template.description,
+                            rationale=f"Co-STEER L2 ({cluster.cluster_id}): {cluster.evidence}",
+                            code=template.code,
+                            status="active",
+                        )
+                    )
+                    persisted = True
                 target_field = "entry.guards" if strategy.entry.triggers else "entry.conditions"
                 change = StrategyChange(
                     change_type=ChangeType.ADD_CONDITION,
@@ -368,6 +388,7 @@ class BlindSpotMiner:
                     cluster=cluster,
                     synthesized_factor_name=template.name,
                     pit_verified=True,
+                    persisted_to_store=persisted,
                     proposed_changes=[change],
                 )
 

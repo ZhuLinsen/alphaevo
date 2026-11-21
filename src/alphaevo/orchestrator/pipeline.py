@@ -105,6 +105,9 @@ class RunResult:
     report_path: Path | None = field(default=None)
     data_source_health: list[DataSourceHealth] = field(default_factory=list)
     data_quality: DataQualityReport = field(default_factory=DataQualityReport)
+    run_id: str | None = field(default=None)
+    artifact_dir: Path | None = field(default=None)
+    manifest: Any | None = field(default=None)
     # Retained for post-hoc analysis (param sensitivity, etc.)
     _engine: object | None = field(default=None, repr=False)
     _data: dict | None = field(default=None, repr=False)
@@ -190,6 +193,10 @@ class RunPipeline:
         date_range: tuple[date, date] | None = None,
         report_dir: Path | None = None,
         on_progress: Callable[[str], None] | None = None,
+        protocol: str = "full_research_v1",
+        save_provenance: bool = True,
+        data_bundle_id: str | None = None,
+        bundle_root: str | Path = "reports/bundles",
     ) -> RunResult:
         """Execute the full research pipeline for *strategy_id*."""
 
@@ -204,92 +211,158 @@ class RunPipeline:
         if strategy is None:
             raise ValueError(f"Strategy not found: {strategy_id}")
 
-        # Step 2 — stock universe
-        _progress("Fetching stock universe...")
-        stock_list = await self.data_manager.get_stock_list(strategy.meta.market)
-
-        if date_range is None:
-            end = date.today()
-            start = end - timedelta(days=365)
-            date_range = (start, end)
-        target_signals = max(1, self.config.evolution.min_signal_count)
-        auto_expand = self.config.evolution.auto_expand_samples
-        max_expansions = max(0, self.config.evolution.max_sample_expansions)
-
+        used_bundle_manifest = None
         final_result: RunResult | None = None
         sampling_history: list[SamplingAttempt] = []
+        if data_bundle_id is not None:
+            from alphaevo.provenance.bundle import DataBundleStore, bundle_date_bounds
 
-        for expansion_idx in range(max_expansions + 1 if auto_expand else 1):
-            attempt_max_symbols = self._expanded_max_symbols(
-                max_symbols,
-                expansion_idx,
-                len(stock_list),
+            _progress(f"Loading & verifying immutable bundle '{data_bundle_id}'...")
+            bundle_data, used_bundle_manifest = DataBundleStore(bundle_root).load_bundle(
+                data_bundle_id, verify=True
             )
-            attempt_method = self._expanded_sampling_method(
-                sampling_method,
-                expansion_idx,
+            bundle_range = bundle_date_bounds(used_bundle_manifest)
+            batch = SampleBatch(
+                batch_id=f"bundle:{used_bundle_manifest.bundle_id}",
+                strategy_id=strategy.meta.id,
+                symbols=sorted(bundle_data.keys()),
+                date_range=bundle_range,
+                sampling_method=sampling_method,
+                sampling_reason=f"immutable data bundle {used_bundle_manifest.bundle_id}",
             )
-            attempt_date_range = self._expanded_date_range(
-                date_range,
-                expansion_idx,
+            self._autoload_custom_factors(_progress)
+            engine = BacktestEngine(
+                slippage=self.config.backtest.slippage,
+                commission=self.config.backtest.commission,
+                min_data_days=min(self.config.backtest.min_data_days, 15),
+                fill_policy=self.config.backtest.fill_policy,
             )
-            attempt_note = self._sampling_attempt_note(expansion_idx, sampling_method)
+            bt_result = engine.run(strategy, bundle_data, batch)
+            _progress(f"Backtest complete: {bt_result.total_signals} signals")
 
-            if expansion_idx == 0:
-                _progress(f"Sampling up to {attempt_max_symbols} stocks...")
-            else:
-                _progress(
-                    "Expanding sample due to sparse signals: "
-                    f"attempt {expansion_idx + 1}/{max_expansions + 1}, "
-                    f"method={attempt_method.value}, "
-                    f"symbols<={attempt_max_symbols}, "
-                    f"window={attempt_date_range[0]}→{attempt_date_range[1]}"
-                )
-
-            attempt_result = await self._run_attempt(
+            trial_ledger = TrialLedger(self.config.db_path)
+            evaluation = Evaluator().evaluate(
+                bt_result,
                 strategy,
-                stock_list,
-                max_symbols=attempt_max_symbols,
-                sampling_method=attempt_method,
-                date_range=attempt_date_range,
-                on_progress=_progress,
+                market_data=bundle_data,
+                backtest_config=self.config.backtest,
+                trial_ledger=trial_ledger,
             )
-            final_result = attempt_result
+            executed = [s for s in bt_result.signals if s.exit_price is not None]
+            trial_returns = (
+                Evaluator.compute_daily_mtm_returns(executed, bundle_data)[0]
+                if getattr(evaluation.overall, "metrics_basis", "trade_sequence") == "daily_mtm"
+                else [s.return_pct for s in executed]
+            )
+            trial_ledger.record_trial(
+                strategy=strategy,
+                trial_family_id=trial_ledger.resolve_trial_family_id(strategy),
+                data_fingerprint=compute_data_fingerprint(bundle_data),
+                rsi_level=RSILevel.L1_STRATEGY,
+                round_num=0,
+                signal_count=evaluation.overall.signal_count,
+                sharpe_ratio=evaluation.overall.sharpe_ratio,
+                returns=trial_returns,
+                confidence_score=evaluation.confidence_score,
+                passed_null_control=evaluation.null_control_passed,
+                accepted=True,
+                notes=f"bundle_run:{used_bundle_manifest.bundle_id}",
+            )
+            final_result = RunResult(
+                strategy=strategy,
+                batch=batch,
+                backtest_result=bt_result,
+                evaluation=evaluation,
+                _engine=engine,
+                _data=bundle_data,
+            )
+            target_signals = max(1, self.config.evolution.min_signal_count)
+        else:
+            # Step 2 — stock universe
+            _progress("Fetching stock universe...")
+            stock_list = await self.data_manager.get_stock_list(strategy.meta.market)
 
-            signal_count = attempt_result.evaluation.overall.signal_count
-            accepted = signal_count >= target_signals
-            sampling_history.append(
-                SamplingAttempt(
-                    attempt_num=expansion_idx + 1,
-                    max_symbols=attempt_max_symbols,
-                    date_range=attempt_date_range,
-                    sampling_method=attempt_method,
-                    sampling_reason=attempt_result.batch.sampling_reason,
-                    selected_symbols=len(attempt_result.batch.symbols),
-                    signal_count=signal_count,
-                    accepted=accepted,
-                    note=attempt_note,
+            if date_range is None:
+                end = date.today()
+                start = end - timedelta(days=365)
+                date_range = (start, end)
+            target_signals = max(1, self.config.evolution.min_signal_count)
+            auto_expand = self.config.evolution.auto_expand_samples
+            max_expansions = max(0, self.config.evolution.max_sample_expansions)
+
+            for expansion_idx in range(max_expansions + 1 if auto_expand else 1):
+                attempt_max_symbols = self._expanded_max_symbols(
+                    max_symbols,
+                    expansion_idx,
+                    len(stock_list),
                 )
-            )
+                attempt_method = self._expanded_sampling_method(
+                    sampling_method,
+                    expansion_idx,
+                )
+                attempt_date_range = self._expanded_date_range(
+                    date_range,
+                    expansion_idx,
+                )
+                attempt_note = self._sampling_attempt_note(expansion_idx, sampling_method)
 
-            if accepted:
-                if expansion_idx > 0:
+                if expansion_idx == 0:
+                    _progress(f"Sampling up to {attempt_max_symbols} stocks...")
+                else:
                     _progress(
-                        f"Signal target reached after expansion: {signal_count}/{target_signals}"
+                        "Expanding sample due to sparse signals: "
+                        f"attempt {expansion_idx + 1}/{max_expansions + 1}, "
+                        f"method={attempt_method.value}, "
+                        f"symbols<={attempt_max_symbols}, "
+                        f"window={attempt_date_range[0]}→{attempt_date_range[1]}"
                     )
-                break
 
-            if not auto_expand or expansion_idx >= max_expansions:
-                _progress(
-                    f"Signal target not reached after sampling attempts: "
-                    f"{signal_count}/{target_signals}"
+                attempt_result = await self._run_attempt(
+                    strategy,
+                    stock_list,
+                    max_symbols=attempt_max_symbols,
+                    sampling_method=attempt_method,
+                    date_range=attempt_date_range,
+                    on_progress=_progress,
                 )
-                break
+                final_result = attempt_result
 
-            _progress(f"Only {signal_count}/{target_signals} signals — scheduling broader sampling")
+                signal_count = attempt_result.evaluation.overall.signal_count
+                accepted = signal_count >= target_signals
+                sampling_history.append(
+                    SamplingAttempt(
+                        attempt_num=expansion_idx + 1,
+                        max_symbols=attempt_max_symbols,
+                        date_range=attempt_date_range,
+                        sampling_method=attempt_method,
+                        sampling_reason=attempt_result.batch.sampling_reason,
+                        selected_symbols=len(attempt_result.batch.symbols),
+                        signal_count=signal_count,
+                        accepted=accepted,
+                        note=attempt_note,
+                    )
+                )
 
-        if final_result is None:
-            raise RuntimeError("Pipeline failed before any sampling attempt completed.")
+                if accepted:
+                    if expansion_idx > 0:
+                        _progress(
+                            f"Signal target reached after expansion: {signal_count}/{target_signals}"
+                        )
+                    break
+
+                if not auto_expand or expansion_idx >= max_expansions:
+                    _progress(
+                        f"Signal target not reached after sampling attempts: "
+                        f"{signal_count}/{target_signals}"
+                    )
+                    break
+
+                _progress(
+                    f"Only {signal_count}/{target_signals} signals — scheduling broader sampling"
+                )
+
+            if final_result is None:
+                raise RuntimeError("Pipeline failed before any sampling attempt completed.")
 
         self._attach_sampling_history(
             final_result.batch,
@@ -317,6 +390,62 @@ class RunPipeline:
             _progress(f"Report saved to {report_path}")
 
         final_result.report_path = report_path
+        if report_dir is not None and save_provenance and final_result._data:
+            try:
+                from alphaevo.provenance.bundle import build_bundle_summary_dict
+                from alphaevo.provenance.contracts import ProtocolName
+                from alphaevo.provenance.store import RunArtifactStore
+
+                valid_protos = {"fast_research_v1", "full_research_v1", "official_v1"}
+                req_proto = cast(
+                    "ProtocolName",
+                    protocol if protocol in valid_protos else "full_research_v1",
+                )
+                md_text = (
+                    report_path.read_text(encoding="utf-8")
+                    if report_path is not None and report_path.is_file()
+                    else None
+                )
+                manifest = RunArtifactStore(
+                    artifact_root=report_dir,
+                    db_path=self.config.db_path,
+                ).save_run(
+                    kind="run",
+                    strategy=strategy,
+                    evaluation=final_result.evaluation,
+                    market_data=final_result._data,
+                    trades=final_result.backtest_result.signals,
+                    config=self.config,
+                    adapter_name=(
+                        f"bundle:{used_bundle_manifest.adapter}"
+                        if used_bundle_manifest is not None
+                        else self.config.data.adapter
+                    ),
+                    requested_protocol=req_proto,
+                    data_reproducibility=(
+                        "replayable" if used_bundle_manifest is not None else "refetch_dependent"
+                    ),
+                    data_mutability=(
+                        "immutable_bundle"
+                        if used_bundle_manifest is not None
+                        else "mutable_provider"
+                    ),
+                    data_bundle_id=(
+                        used_bundle_manifest.bundle_id if used_bundle_manifest is not None else None
+                    ),
+                    extra_config=(
+                        {"bundle": build_bundle_summary_dict(used_bundle_manifest)}
+                        if used_bundle_manifest is not None
+                        else None
+                    ),
+                    report_markdown=md_text,
+                    min_signals_official=self.config.evolution.min_signal_count,
+                )
+                final_result.run_id = manifest.run_id
+                final_result.artifact_dir = Path(manifest.artifacts.artifact_dir)
+                final_result.manifest = manifest
+            except Exception:
+                logger.debug("Provenance persistence skipped", exc_info=True)
         return final_result
 
     # -- helpers ---------------------------------------------------------

@@ -1,6 +1,8 @@
 # Canonical Evaluation / Run Provenance
 
-更新时间: 2026-04-29
+更新时间: 2026-11-21
+
+> **实现状态**: 核心不可变 Run Artifact 契约（`manifest.json`、`strategy_snapshot.yaml`、`config_snapshot.json`、`data_fingerprint.json`、`evaluation.json`、`trades.jsonl`、`report.md`、`run_artifacts` SQLite 索引、`alphaevo runs list/show/compare/rerun-official`、`alphaevo leaderboard --scope local|official` 及 `official_v1` 降级门控）与 SHA-256 不可变数据包（`DataBundleStore`、`alphaevo data bundle create/list/show/verify`、`alphaevo run --bundle`）均已落地；Web 工作台与扩展多市场分钟级包作为后续阶段扩展。
 
 ## 1. 目标
 
