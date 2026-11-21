@@ -60,3 +60,36 @@ jobs:
           pip install -e ".[dev]"
       - name: Run mypy
         run: python -m mypy src/alphaevo/ --ignore-missing-imports
+
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Run Windows smoke suite
+        run: |
+          python -m pytest tests/unit/test_data_cache.py tests/unit/test_cli_main.py tests/unit/test_p0_rigor_and_perf.py -q
+
+  wheel-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build wheel and verify out-of-tree CLI install
+        run: |
+          python -m pip install --upgrade pip
+          pip wheel --no-deps -w /tmp/alphaevo-dist .
+          python -m venv /tmp/alphaevo-wheel-venv
+          /tmp/alphaevo-wheel-venv/bin/pip install /tmp/alphaevo-dist/*.whl
+          cd /tmp
+          /tmp/alphaevo-wheel-venv/bin/alphaevo --help
+          /tmp/alphaevo-wheel-venv/bin/alphaevo demo --synthetic
+          /tmp/alphaevo-wheel-venv/bin/alphaevo showcase

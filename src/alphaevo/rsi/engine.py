@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
@@ -26,6 +27,7 @@ from alphaevo.rsi.qd_archive import ArchiveSummary, MAPElitesArchive
 from alphaevo.strategy.dsl.serializer import StrategySerializer
 from alphaevo.truth.ledger import (
     TrialLedger,
+    TrialRecord,
     compute_data_fingerprint,
     compute_kernel_fingerprint,
 )
@@ -57,8 +59,11 @@ class RSIRunResult(BaseModel):
     trial_family_id: str
     seed_strategy_id: str
     champion_id: str
+    champion_promoted: bool = False
     champion_strategy: Strategy
     champion_evaluation: EvaluationReport
+    working_strategy: Strategy | None = None
+    working_evaluation: EvaluationReport | None = None
     total_trials_recorded: int
     kept_rounds: int
     promotions: int
@@ -85,7 +90,11 @@ def _compute_rsi_fitness(
     if ov.signal_count == 0:
         return 0.01
 
-    dsr = float(evaluation.deflated_sharpe_prob or 0.5)
+    dsr = (
+        float(evaluation.deflated_sharpe_prob)
+        if evaluation.deflated_sharpe_prob is not None
+        else 0.0
+    )
     if objective == "confidence":
         raw = evaluation.confidence_score
     elif objective == "deflated_sharpe":
@@ -144,7 +153,12 @@ class StockRSIEngine:
     ) -> None:
         self._trial_ledger = TrialLedger(db_path)
         self._experience_store = ExperienceStore(db_path)
-        self._scar_registry = ScarRegistry()
+        scar_path = (
+            Path(db_path).expanduser().with_suffix(".scars.jsonl")
+            if str(db_path) != ":memory:"
+            else None
+        )
+        self._scar_registry = ScarRegistry(path=scar_path)
         self._enable_pinned_scars = enable_pinned_scars
         self._critic = SelfCritic(
             experience_store=self._experience_store,
@@ -177,8 +191,9 @@ class StockRSIEngine:
             None,
         )
 
-        mutator = StrategyMutator(max_changes=3, complexity_limit=8)
+        mutator = StrategyMutator(max_changes=3, complexity_limit=cfg.max_complexity)
         archive = MAPElitesArchive()
+        rng = random.Random(seed)
 
         # Baseline evaluation (Round 0)
         base_eval, base_null, base_bt_signals = self._eval_with_l0(
@@ -206,15 +221,19 @@ class StockRSIEngine:
         )
         # Re-read updated family count onto report
         base_eval.family_trial_count = self._trial_ledger.count_family_trials(family_id)
-        incumbent_strategy = seed_strategy.model_copy(deep=True)
-        incumbent_eval = base_eval
-        incumbent_fitness = _compute_rsi_fitness(
+        working_strategy = seed_strategy.model_copy(deep=True)
+        working_eval = base_eval
+        working_fitness = _compute_rsi_fitness(
             base_eval,
             objective=cfg.objective,
             min_signals=cfg.min_signals,
             max_drawdown=cfg.max_drawdown,
         )
-        archive.insert(incumbent_strategy, incumbent_eval, incumbent_fitness)
+        verified_champion_strategy = seed_strategy.model_copy(deep=True)
+        verified_champion_eval = base_eval
+        verified_champion_fitness = working_fitness
+        has_verified_promotion = False
+        archive.insert(working_strategy, working_eval, working_fitness)
 
         rows: list[RSIRoundRow] = [
             RSIRoundRow(
@@ -228,7 +247,7 @@ class StockRSIEngine:
                 dsr_probability=float(base_eval.deflated_sharpe_prob or 0.0),
                 null_threshold=base_null.worst_null_threshold if base_null else 0.0,
                 null_passed=bool(base_eval.null_control_passed),
-                fitness_score=incumbent_fitness,
+                fitness_score=working_fitness,
                 status="baseline",
                 description="Initial seed strategy",
             )
@@ -240,6 +259,7 @@ class StockRSIEngine:
         scars_created = 0
         next_version = seed_strategy.meta.version + 1
         seen_hashes: set[str] = {_structural_strategy_hash(seed_strategy)}
+        tried_by_parent: dict[str, set[tuple[tuple[str, str, str], ...]]] = {}
 
         for rnd in range(1, cfg.max_rounds + 1):
             if self._trial_ledger.count_family_trials(family_id) >= cfg.max_trials_budget:
@@ -248,36 +268,46 @@ class StockRSIEngine:
             if self._enable_pinned_scars:
                 self._council.set_scars(self._scar_registry.list_all(family_id))
 
+            parent_strategy = working_strategy
+            parent_eval = working_eval
+            if stagnant_l1 >= 1:
+                elite = archive.sample_elite(exclude_id=working_strategy.meta.id, rng=rng)
+                if elite is not None:
+                    parent_strategy = elite.strategy
+                    parent_eval = elite.evaluation
+
             steer = self._miner.steer(
-                incumbent_strategy,
-                incumbent_eval,
+                parent_strategy,
+                parent_eval,
                 sample_df,
                 allowed_levels=cfg.allowed_levels,
                 stagnant_l1_rounds=stagnant_l1,
             )
 
+            parent_tried = tried_by_parent.setdefault(parent_strategy.meta.id, set())
             deliberations = self._council.generate_candidates(
-                incumbent_strategy,
-                incumbent_eval,
+                parent_strategy,
+                parent_eval,
                 extra_changes=[steer.proposed_changes] if steer.proposed_changes else None,
                 mission_notes=cfg.mission_notes,
                 max_candidates=cfg.max_candidates_per_round,
+                exclude_sigs=parent_tried,
             )
             approved = [d for d in deliberations if d.audit.approved]
             if not approved:
                 rows.append(
                     RSIRoundRow(
                         round_num=rnd,
-                        strategy_id=incumbent_strategy.meta.id,
+                        strategy_id=parent_strategy.meta.id,
                         level=steer.chosen_level,
-                        signals=incumbent_eval.overall.signal_count,
-                        win_rate=incumbent_eval.overall.win_rate,
-                        avg_return=incumbent_eval.overall.avg_return,
-                        sharpe_ratio=incumbent_eval.overall.sharpe_ratio,
-                        dsr_probability=float(incumbent_eval.deflated_sharpe_prob or 0.0),
+                        signals=parent_eval.overall.signal_count,
+                        win_rate=parent_eval.overall.win_rate,
+                        avg_return=parent_eval.overall.avg_return,
+                        sharpe_ratio=parent_eval.overall.sharpe_ratio,
+                        dsr_probability=float(parent_eval.deflated_sharpe_prob or 0.0),
                         null_threshold=0.0,
-                        null_passed=bool(incumbent_eval.null_control_passed),
-                        fitness_score=incumbent_fitness,
+                        null_passed=bool(parent_eval.null_control_passed),
+                        fitness_score=working_fitness,
                         status="vetoed",
                         description="All proposals blocked by Adversarial Prosecutor / Pinned Scars",
                     )
@@ -293,6 +323,7 @@ class StockRSIEngine:
                     float,
                     list[StrategyChange],
                     RSILevel,
+                    TrialRecord,
                 ]
                 | None
             ) = None
@@ -301,6 +332,9 @@ class StockRSIEngine:
                 if self._trial_ledger.count_family_trials(family_id) >= cfg.max_trials_budget:
                     break
                 changes = delib.proposal.changes
+                parent_tried.add(
+                    tuple(sorted((c.change_type.value, c.target, str(c.to_value)) for c in changes))
+                )
                 level_used = (
                     RSILevel.L2_FACTOR
                     if any(c.change_type.value == "discover_factor" for c in changes)
@@ -311,14 +345,14 @@ class StockRSIEngine:
                     else RSILevel.L1_STRATEGY
                 )
                 try:
-                    cand_strategy = mutator.mutate(incumbent_strategy, changes, atomic=True)
+                    cand_strategy = mutator.mutate(parent_strategy, changes, atomic=True)
                 except Exception:
                     continue
 
-                cand_id = f"{family_id}_rsi_v{next_version}"
+                cand_id = f"{family_id}_v{next_version}"
                 cand_strategy.meta.id = cand_id
                 cand_strategy.meta.version = next_version
-                cand_strategy.meta.parent_id = incumbent_strategy.meta.id
+                cand_strategy.meta.parent_id = parent_strategy.meta.id
 
                 shash = _structural_strategy_hash(cand_strategy)
                 if shash in seen_hashes:
@@ -334,7 +368,7 @@ class StockRSIEngine:
                     charter=cfg,
                     seed=seed + rnd,
                 )
-                self._trial_ledger.record_trial(
+                trial_rec = self._trial_ledger.record_trial(
                     strategy=cand_strategy,
                     trial_family_id=family_id,
                     data_fingerprint=data_fp,
@@ -358,17 +392,14 @@ class StockRSIEngine:
                 archive.insert(cand_strategy, cand_eval, cand_fit)
 
                 if self._enable_pinned_scars and (
-                    (
-                        incumbent_eval.overall.signal_count > 0
-                        and cand_eval.overall.signal_count == 0
-                    )
-                    or (cand_fit - incumbent_fitness) < -0.08
+                    (working_eval.overall.signal_count > 0 and cand_eval.overall.signal_count == 0)
+                    or (cand_fit - working_fitness) < -0.08
                 ):
                     new_scars = self._scar_registry.synthesize_from_failure(
                         strategy=cand_strategy,
                         changes=changes,
                         signal_count=cand_eval.overall.signal_count,
-                        score_delta=cand_fit - incumbent_fitness,
+                        score_delta=cand_fit - working_fitness,
                     )
                     scars_created += len(new_scars)
 
@@ -387,10 +418,10 @@ class StockRSIEngine:
                         from_value=changes[0].from_value,
                         to_value=changes[0].to_value,
                         reason=changes[0].reason,
-                        score_before=incumbent_fitness,
+                        score_before=working_fitness,
                         score_after=cand_fit,
-                        score_delta=round(cand_fit - incumbent_fitness, 4),
-                        worked=cand_fit > incumbent_fitness,
+                        score_delta=round(cand_fit - working_fitness, 4),
+                        worked=cand_fit > working_fitness,
                         lesson=f"{level_used.value}: {changes[0].reason}",
                         action_type="rsi_engine",
                         evidence_level=ev_level,
@@ -405,6 +436,7 @@ class StockRSIEngine:
                         cand_fit,
                         changes,
                         level_used,
+                        trial_rec,
                     )
                 next_version += 1
 
@@ -412,44 +444,55 @@ class StockRSIEngine:
                 stagnant_l1 += 1
                 continue
 
-            cand_strat, cand_eval, cand_null, cand_fit, chs, lvl = best_cand_bundle
+            cand_strat, cand_eval, cand_null, cand_fit, chs, lvl, best_trial = best_cand_bundle
+            dsr_prob = (
+                float(cand_eval.deflated_sharpe_prob)
+                if cand_eval.deflated_sharpe_prob is not None
+                else 0.0
+            )
             passes_gate = (
-                cand_fit > incumbent_fitness + 1e-4
+                cand_fit > verified_champion_fitness + 1e-4
                 and cand_eval.overall.avg_return > 0.0
                 and cand_eval.overall.max_drawdown <= cfg.max_drawdown
                 and not cand_eval.anti_overfit.is_overfit
-                and cand_eval.overall.signal_count >= min(5, cfg.min_signals)
+                and cand_eval.overall.signal_count >= cfg.min_signals
+                and dsr_prob >= cfg.min_dsr_prob
                 and (not cfg.require_null_control or cand_eval.null_control_passed is True)
             )
             is_stepping_stone = (
                 not passes_gate
                 and promotions == 0
                 and cand_eval.overall.signal_count >= min(5, cfg.min_signals)
-                and cand_fit > incumbent_fitness + 1e-4
+                and cand_fit > working_fitness + 1e-4
                 and (
-                    incumbent_eval.overall.signal_count < 5
+                    working_eval.overall.signal_count < 5
                     or (
                         cand_eval.overall.max_drawdown
-                        <= max(cfg.max_drawdown, incumbent_eval.overall.max_drawdown)
-                        and cand_eval.overall.avg_return >= incumbent_eval.overall.avg_return
+                        <= max(cfg.max_drawdown, working_eval.overall.max_drawdown)
+                        and cand_eval.overall.avg_return >= working_eval.overall.avg_return
                     )
                 )
             )
             desc = "; ".join(f"{c.target}->{c.to_value}" for c in chs)
 
             if passes_gate:
-                incumbent_strategy = cand_strat
-                incumbent_eval = cand_eval
-                incumbent_fitness = cand_fit
+                self._trial_ledger.mark_trial_accepted(best_trial.trial_id, True)
+                working_strategy = cand_strat
+                working_eval = cand_eval
+                working_fitness = cand_fit
+                verified_champion_strategy = cand_strat
+                verified_champion_eval = cand_eval
+                verified_champion_fitness = cand_fit
+                has_verified_promotion = True
                 kept_rounds += 1
                 promotions += 1
                 stagnant_l1 = 0
                 status: Literal["keep", "stepping_stone", "revert"] = "keep"
             elif is_stepping_stone:
-                # Escape a 0-signal dead zone without counting as an L0 promotion.
-                incumbent_strategy = cand_strat
-                incumbent_eval = cand_eval
-                incumbent_fitness = cand_fit
+                # Escape a 0-signal dead zone for search continuity without counting as L0 promotion.
+                working_strategy = cand_strat
+                working_eval = cand_eval
+                working_fitness = cand_fit
                 kept_rounds += 1
                 stagnant_l1 = 0
                 status = "stepping_stone"
@@ -480,9 +523,12 @@ class StockRSIEngine:
             charter_name=cfg.name,
             trial_family_id=family_id,
             seed_strategy_id=seed_strategy.meta.id,
-            champion_id=incumbent_strategy.meta.id,
-            champion_strategy=incumbent_strategy,
-            champion_evaluation=incumbent_eval,
+            champion_id=verified_champion_strategy.meta.id,
+            champion_promoted=has_verified_promotion,
+            champion_strategy=verified_champion_strategy,
+            champion_evaluation=verified_champion_eval,
+            working_strategy=working_strategy,
+            working_evaluation=working_eval,
             total_trials_recorded=self._trial_ledger.count_family_trials(family_id),
             kept_rounds=kept_rounds,
             promotions=promotions,
@@ -498,10 +544,10 @@ class StockRSIEngine:
             output_dir.mkdir(parents=True, exist_ok=True)
             tsv_path = output_dir / "results.tsv"
             report_path = output_dir / "rsi_run_report.md"
-            yaml_path = output_dir / f"{incumbent_strategy.meta.id}.yaml"
+            yaml_path = output_dir / f"{verified_champion_strategy.meta.id}.yaml"
             tsv_path.write_text(self.render_tsv(result), encoding="utf-8")
             report_path.write_text(self.render_markdown(result), encoding="utf-8")
-            StrategySerializer().to_file(incumbent_strategy, yaml_path)
+            StrategySerializer().to_file(verified_champion_strategy, yaml_path)
             result.tsv_path = tsv_path
             result.report_path = report_path
             result.champion_yaml_path = yaml_path
@@ -527,24 +573,35 @@ class StockRSIEngine:
             sampling_method=SamplingMethod.REPRESENTATIVE,
         )
         bt = self._bt_engine.run(strategy, market_data, batch)
-        ev = self._evaluator.evaluate_fast(strategy=strategy, result=bt)
+        ev = self._evaluator.evaluate_fast(
+            strategy=strategy,
+            result=bt,
+            market_data=market_data,
+        )
         executed = [s for s in bt.signals if s.exit_price is not None]
 
         # Compute DSR using accumulated trial count + current trial
         trial_n = max(1, self._trial_ledger.count_family_trials(family_id) + 1)
+        dsr_returns = (
+            self._evaluator.compute_daily_mtm_returns(executed, market_data)[0]
+            if ev.overall.metrics_basis == "daily_mtm"
+            else []
+        )
+        dsr_input = dsr_returns if dsr_returns else [s.return_pct for s in executed]
+        dsr_obs = len(dsr_input) if dsr_returns else ev.overall.signal_count
         dsr_res = self._trial_ledger.compute_dsr_for_trials(
             family_id=family_id,
             n_trials=trial_n,
-            returns=[s.return_pct for s in executed],
+            returns=dsr_input,
             observed_sharpe=ev.overall.sharpe_ratio,
-            signal_count=ev.overall.signal_count,
+            signal_count=dsr_obs,
         )
         ev.family_trial_count = trial_n
         ev.deflated_sharpe_prob = dsr_res.dsr_probability
 
         null_rep: NullControlReport | None = None
         if charter.require_null_control:
-            if len(executed) < min(5, charter.min_signals) or ev.overall.avg_return <= 0.0:
+            if len(executed) < charter.min_signals or ev.overall.avg_return <= 0.0:
                 ev.null_control_passed = False
                 ev.null_p_value = 1.0
             else:
@@ -552,7 +609,7 @@ class StockRSIEngine:
                     bt.signals,
                     market_data=market_data,
                     n_permutations=charter.null_permutations,
-                    min_signals=min(5, charter.min_signals),
+                    min_signals=charter.min_signals,
                     seed=seed,
                 )
                 ev.null_control_passed = null_rep.passed

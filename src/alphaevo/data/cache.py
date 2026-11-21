@@ -11,19 +11,39 @@ to the same cache entry concurrently.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pandas as pd  # type: ignore[import-untyped]
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # Windows
+    _fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt as _msvcrt  # type: ignore[import-not-found]
+except ImportError:
+    _msvcrt = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TTL_SECONDS = 4 * 3600  # 4 hours for today's data
+_SAFE_TOKEN_RE = re.compile(r"[^\w.\-]")
+
+
+def _sanitize_token(token: str) -> str:
+    """Sanitize a path segment while disallowing dot-only traversal names."""
+    safe = _SAFE_TOKEN_RE.sub("_", token.strip())
+    if not safe or safe in {".", ".."}:
+        return "_"
+    return safe
 
 
 class DataCache:
@@ -32,15 +52,8 @@ class DataCache:
     Layout::
 
         {cache_dir}/{symbol}/{start}_{end}.parquet
-        {cache_dir}/{symbol}/{start}_{end}.pkl   # fallback when parquet engine is unavailable
-
-    Example::
-
-        cache = DataCache(Path("~/.alphaevo/cache"))
-        df = cache.get("AAPL", date(2024, 1, 1), date(2024, 12, 31))
-        if df is None:
-            df = fetch_from_network(...)
-            cache.put("AAPL", date(2024, 1, 1), date(2024, 12, 31), df)
+        {cache_dir}/{namespace}/{symbol}/{start}_{end}.parquet  # when namespace is provided
+        {cache_dir}/.../{start}_{end}.pkl                       # fallback without parquet engine
     """
 
     def __init__(
@@ -54,19 +67,41 @@ class DataCache:
         self._hits = 0
         self._misses = 0
 
-    def _cache_path(self, symbol: str, start: date, end: date, suffix: str) -> Path:
-        """Compute a cache file path for a given query and suffix."""
-        import re
+    def _namespace_root(self, namespace: str | None = None) -> Path:
+        root = self.cache_dir.resolve()
+        if not namespace:
+            return root
+        safe_ns = _sanitize_token(namespace)
+        target = (root / safe_ns).resolve()
+        if not str(target).startswith(str(root)):
+            raise ValueError(f"Invalid cache namespace (path traversal detected): {namespace}")
+        return target
 
-        # Sanitize symbol: keep only alphanumeric, dash, underscore, dot
-        safe_symbol = re.sub(r"[^\w.\-]", "_", symbol)
-        path = (self.cache_dir / safe_symbol / f"{start}_{end}{suffix}").resolve()
-        # Prevent path traversal
-        if not str(path).startswith(str(self.cache_dir.resolve())):
+    def _cache_path(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        suffix: str,
+        *,
+        namespace: str | None = None,
+    ) -> Path:
+        """Compute a cache file path for a given query, suffix, and optional namespace."""
+        safe_symbol = _sanitize_token(symbol)
+        base_root = self._namespace_root(namespace)
+        path = (base_root / safe_symbol / f"{start}_{end}{suffix}").resolve()
+        if not str(path).startswith(str(base_root)):
             raise ValueError(f"Invalid symbol (path traversal detected): {symbol}")
         return path
 
-    def _resolve_existing_path(self, symbol: str, start: date, end: date) -> Path | None:
+    def _resolve_existing_path(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        *,
+        namespace: str | None = None,
+    ) -> Path | None:
         """Return the best on-disk cache path for the requested interval.
 
         Preference order:
@@ -74,12 +109,12 @@ class DataCache:
           2. smallest cached range that fully covers the requested interval
         """
         for suffix in (".parquet", ".pkl"):
-            path = self._cache_path(symbol, start, end, suffix)
+            path = self._cache_path(symbol, start, end, suffix, namespace=namespace)
             if path.is_file():
                 return path
 
         best_candidate: tuple[int, float, int, Path] | None = None
-        for path in self._iter_symbol_cache_files(symbol):
+        for path in self._iter_symbol_cache_files(symbol, namespace=namespace):
             interval = self._parse_cache_interval(path)
             if interval is None:
                 continue
@@ -96,17 +131,24 @@ class DataCache:
 
         return None if best_candidate is None else best_candidate[3]
 
-    def get(self, symbol: str, start: date, end: date) -> pd.DataFrame | None:
+    def get(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        *,
+        namespace: str | None = None,
+    ) -> pd.DataFrame | None:
         """Read cached data if it exists and is still valid.
 
         Returns None on cache miss or expiry.
         """
-        path = self._resolve_existing_path(symbol, start, end)
+        path = self._resolve_existing_path(symbol, start, end, namespace=namespace)
         if path is None:
             self._misses += 1
             return None
 
-        # Check TTL — if end date is today, apply TTL
+        # Check TTL — if end date is today (or later), apply TTL
         if end >= date.today():
             age = time.time() - path.stat().st_mtime
             if age > self.ttl_seconds:
@@ -124,13 +166,21 @@ class DataCache:
             self._misses += 1
             return None
 
-    def put(self, symbol: str, start: date, end: date, df: pd.DataFrame) -> None:
+    def put(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        df: pd.DataFrame,
+        *,
+        namespace: str | None = None,
+    ) -> None:
         """Write data to cache (file-locked to prevent concurrent corruption)."""
         if df is None or df.empty:
             return
 
-        parquet_path = self._cache_path(symbol, start, end, ".parquet")
-        pickle_path = self._cache_path(symbol, start, end, ".pkl")
+        parquet_path = self._cache_path(symbol, start, end, ".parquet", namespace=namespace)
+        pickle_path = self._cache_path(symbol, start, end, ".pkl", namespace=namespace)
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
 
         with self._file_lock(parquet_path):
@@ -162,61 +212,86 @@ class DataCache:
     @staticmethod
     @contextmanager
     def _file_lock(target: Path) -> Iterator[None]:
-        """Acquire an exclusive file lock adjacent to *target*."""
+        """Acquire a cross-platform exclusive file lock adjacent to *target*."""
         lock_path = target.with_suffix(target.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = lock_path.open("w")
+        fd = lock_path.open("a+", encoding="utf-8")
+        locked_posix = False
+        locked_win = False
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if _fcntl is not None:
+                _fcntl.flock(fd, _fcntl.LOCK_EX)
+                locked_posix = True
+            elif _msvcrt is not None:
+                if fd.tell() == 0:
+                    fd.write(" ")
+                    fd.flush()
+                fd.seek(0)
+                _msvcrt.locking(fd.fileno(), _msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+                locked_win = True
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if locked_posix and _fcntl is not None:
+                with contextlib.suppress(OSError):
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
+            elif locked_win and _msvcrt is not None:
+                with contextlib.suppress(OSError):
+                    fd.seek(0)
+                    _msvcrt.locking(fd.fileno(), _msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
             fd.close()
             # Best-effort cleanup; race with other processes is harmless
             with contextlib.suppress(OSError):
                 lock_path.unlink()
 
-    def invalidate(self, symbol: str | None = None) -> int:
-        """Clear cached data.
-
-        Parameters
-        ----------
-        symbol : str or None
-            If provided, only clear caches for that symbol.
-            If None, clear all cached data.
-
-        Returns
-        -------
-        int
-            Number of files removed.
-        """
+    def invalidate(
+        self,
+        symbol: str | None = None,
+        *,
+        namespace: str | None = None,
+    ) -> int:
+        """Clear cached data."""
         removed = 0
-        if symbol is not None:
-            safe_symbol = symbol.replace("/", "_").replace("\\", "_")
-            target = self.cache_dir / safe_symbol
+        if symbol is None:
+            target = self._namespace_root(namespace)
+            if not target.exists():
+                return 0
+            for f in self._iter_cache_files(target):
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            return removed
+
+        safe_symbol = _sanitize_token(symbol)
+        candidate_dirs: list[Path] = []
+        if namespace is not None:
+            candidate_dirs.append(self._namespace_root(namespace) / safe_symbol)
         else:
-            target = self.cache_dir
+            candidate_dirs.append(self.cache_dir / safe_symbol)
+            if self.cache_dir.exists():
+                for child in self.cache_dir.iterdir():
+                    if child.is_dir():
+                        nested = child / safe_symbol
+                        if nested.is_dir():
+                            candidate_dirs.append(nested)
 
-        if not target.exists():
-            return 0
-
-        for f in self._iter_cache_files(target):
-            try:
-                f.unlink()
-                removed += 1
-            except OSError:
-                pass
-
-        # Clean up empty directories
-        if symbol is not None and target.is_dir():
-            import contextlib
-
-            with contextlib.suppress(OSError):
-                target.rmdir()
+        for target in candidate_dirs:
+            if not target.exists():
+                continue
+            for f in self._iter_cache_files(target):
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            if target.is_dir():
+                with contextlib.suppress(OSError):
+                    target.rmdir()
 
         return removed
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         """Return cache statistics."""
         total_files = 0
         total_size = 0
@@ -243,9 +318,20 @@ class DataCache:
         yield from root.rglob("*.parquet")
         yield from root.rglob("*.pkl")
 
-    def _iter_symbol_cache_files(self, symbol: str) -> Iterator[Path]:
+    def _iter_symbol_cache_files(
+        self,
+        symbol: str,
+        *,
+        namespace: str | None = None,
+    ) -> Iterator[Path]:
         """Iterate cache files for a single symbol namespace."""
-        symbol_dir = self._cache_path(symbol, date.min, date.min, ".parquet").parent
+        symbol_dir = self._cache_path(
+            symbol,
+            date.min,
+            date.min,
+            ".parquet",
+            namespace=namespace,
+        ).parent
         if not symbol_dir.exists():
             return
         yield from self._iter_cache_files(symbol_dir)

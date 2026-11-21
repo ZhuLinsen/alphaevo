@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import cast
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -607,6 +607,21 @@ class YFinanceAdapter(DataAdapter):
 
         return self._normalize(df)
 
+    async def get_history_range(self, symbol: str, start: date, end: date) -> pd.DataFrame | None:
+        """Fetch daily OHLCV for an explicit calendar range [start, end]."""
+        yf_symbol = _to_yf_symbol(symbol)
+        try:
+            df = await asyncio.to_thread(self._fetch_history_range, yf_symbol, start, end)
+        except Exception:
+            logger.exception("yfinance range fetch failed for %s", yf_symbol)
+            return self._empty_df()
+
+        if df is None or df.empty:
+            logger.warning("No data returned for %s (%s -> %s)", yf_symbol, start, end)
+            return self._empty_df()
+
+        return self._normalize(df)
+
     async def get_stock_list(self, market: MarketType) -> list[StockInfo]:
         """Return a curated list of liquid stocks for *market*."""
         entries = _STOCK_LISTS.get(market, [])
@@ -630,9 +645,7 @@ class YFinanceAdapter(DataAdapter):
         """
         try:
             yf_sym = _to_yf_symbol(index_symbol)
-            days = (end - start).days + 30
-            period = _days_to_yf_period(days)
-            df = await asyncio.to_thread(self._fetch_history, yf_sym, period)
+            df = await asyncio.to_thread(self._fetch_history_range, yf_sym, start, end)
             if df is None or df.empty:
                 return self._empty_df()
             result = self._normalize(df)
@@ -694,6 +707,28 @@ class YFinanceAdapter(DataAdapter):
 
         ticker = yf.Ticker(yf_symbol)
         return cast("pd.DataFrame", ticker.history(period=period, auto_adjust=True))
+
+    @staticmethod
+    def _fetch_history_range(yf_symbol: str, start: date, end: date) -> pd.DataFrame:
+        """Synchronous yfinance date-range call with inclusive ``end`` handling."""
+        try:
+            import yfinance as yf  # type: ignore[import-untyped]
+        except ImportError as err:
+            raise ImportError(
+                "yfinance is required for YFinanceAdapter. "
+                "Install with: pip install alphaevo[data-yfinance]"
+            ) from err
+
+        ticker = yf.Ticker(yf_symbol)
+        end_exclusive = end + timedelta(days=1)
+        return cast(
+            "pd.DataFrame",
+            ticker.history(
+                start=start.isoformat(),
+                end=end_exclusive.isoformat(),
+                auto_adjust=True,
+            ),
+        )
 
     @staticmethod
     def _fetch_news(yf_symbol: str) -> list[dict]:

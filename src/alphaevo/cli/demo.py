@@ -93,8 +93,22 @@ def _generate_synthetic_ohlcv(
     return cast("pd.DataFrame", pd.DataFrame(rows))
 
 
+def _resolve_bundled_path(relative_path: str) -> Path | None:
+    """Resolve a data path bundled inside the installed ``alphaevo`` wheel."""
+    try:
+        from importlib import resources
+
+        candidate = resources.files("alphaevo").joinpath("_bundled", *relative_path.split("/"))
+        candidate_path = Path(str(candidate))
+        if candidate_path.exists():
+            return candidate_path
+    except Exception:
+        return None
+    return None
+
+
 def _find_builtin_strategy_dir() -> Path | None:
-    """Locate builtin strategies directory."""
+    """Locate builtin strategies directory (repo checkout or wheel package data)."""
     candidates = [
         Path(__file__).resolve().parent.parent.parent.parent / "strategies" / "builtin",
         Path("strategies/builtin"),
@@ -102,7 +116,7 @@ def _find_builtin_strategy_dir() -> Path | None:
     for p in candidates:
         if p.exists():
             return p
-    return None
+    return _resolve_bundled_path("strategies/builtin")
 
 
 def _repo_root() -> Path:
@@ -111,7 +125,7 @@ def _repo_root() -> Path:
 
 
 def _showcase_data_dir() -> Path:
-    """Locate bundled showcase snapshot data."""
+    """Locate bundled showcase snapshot data (repo checkout or wheel package data)."""
     candidates = [
         _repo_root() / "examples" / "showcase_data",
         Path("examples/showcase_data"),
@@ -119,6 +133,9 @@ def _showcase_data_dir() -> Path:
     for candidate in candidates:
         if candidate.exists():
             return candidate
+    bundled = _resolve_bundled_path("showcase_data")
+    if bundled is not None:
+        return bundled
     return candidates[0]
 
 
@@ -570,7 +587,7 @@ def _run_backtest(
     strategy: Strategy,
     data: dict[str, pd.DataFrame],
 ) -> tuple[EvaluationReport, int, list]:
-    """Run a single backtest + evaluation, return (report, signal_count, signals)."""
+    """Run a single backtest + evaluation with daily MTM and sensitivity checks."""
     data_start, data_end = _date_range_from_data(data)
     batch = SampleBatch(
         batch_id="demo_batch",
@@ -581,7 +598,23 @@ def _run_backtest(
     engine = BacktestEngine(slippage=0.001, commission=0.0003, min_data_days=30)
     bt_result = engine.run(strategy, data, batch)
     evaluator = Evaluator()
-    report = evaluator.evaluate(bt_result, strategy)
+    report = evaluator.evaluate(bt_result, strategy, market_data=data)
+    if bt_result.executed_signals >= 30 and strategy.params.tunable:
+        sens = evaluator.compute_param_sensitivity(
+            strategy,
+            bt_result.signals,
+            report.confidence_score,
+            engine,
+            data,
+            batch,
+        )
+        report.anti_overfit.param_sensitivity = sens
+        report.anti_overfit.param_sensitivity_measured = True
+        report.confidence_score = evaluator.compute_confidence_score(
+            report.overall,
+            strategy.complexity_score,
+            anti_fit=report.anti_overfit,
+        )
     return report, bt_result.total_signals, bt_result.signals
 
 
@@ -917,17 +950,19 @@ def run_demo(console: Console) -> None:
     )
 
     # ── Load strategy ──────────────────────────────────────────────────
+    import typer
+
     builtin_dir = _find_builtin_strategy_dir()
     if builtin_dir is None:
         console.print("[red]Could not find strategies/builtin/ directory[/red]")
-        return
+        raise typer.Exit(1)
 
     parser = StrategyParser()
     try:
         strategy = _load_demo_strategy(parser, builtin_dir)
     except FileNotFoundError:
         console.print("[red]No strategy files found[/red]")
-        return
+        raise typer.Exit(1) from None
 
     # ── Generate data ──────────────────────────────────────────────────
     data = _build_synthetic_data()
@@ -1171,15 +1206,17 @@ def run_showcase(
         )
     )
 
+    import typer
+
     builtin_dir = _find_builtin_strategy_dir()
     if builtin_dir is None:
         console.print("[red]Could not find strategies/builtin/ directory[/red]")
-        return
+        raise typer.Exit(1)
 
     strategy_file = builtin_dir / _SHOWCASE_STRATEGY_FILE
     if not strategy_file.exists():
         console.print(f"[red]Showcase strategy not found: {strategy_file}[/red]")
-        return
+        raise typer.Exit(1)
 
     parser = StrategyParser()
     strategy = parser.parse_file(strategy_file)
@@ -1212,7 +1249,7 @@ def run_showcase(
     data = {symbol: data[symbol] for symbol in _SHOWCASE_SYMBOLS if symbol in data}
     if not data:
         console.print("[red]No showcase data available.[/red]")
-        return
+        raise typer.Exit(1)
 
     data_start, data_end = _date_range_from_data(data)
     console.print(
@@ -1266,17 +1303,25 @@ def run_showcase(
 
         candidate = mutator.mutate(current, next_plan, atomic=True)
         candidate_eval, candidate_signals, _candidate_trades = _run_backtest(candidate, data)
-        if candidate_eval.confidence_score <= evaluation.confidence_score:
+        strict_better = candidate_eval.confidence_score > evaluation.confidence_score
+        risk_adj_bridge = (
+            candidate_eval.overall.sharpe_ratio > evaluation.overall.sharpe_ratio
+            and candidate_eval.overall.avg_return > evaluation.overall.avg_return
+            and candidate_eval.overall.max_drawdown <= evaluation.overall.max_drawdown
+            and candidate_signals >= 30
+        )
+        if not strict_better and not risk_adj_bridge:
             console.print("    [yellow]Rejected mutation; retest did not improve score.[/yellow]")
             _display_changes(console, next_plan)
             break
 
         console.print("    [bold]Validated mutation for next round:[/bold]")
         _display_changes(console, next_plan)
+        note = "" if strict_better else " [dim](risk-adjusted bridge)[/dim]"
         console.print(
             "    [green]retest accepted:[/green] "
             f"{evaluation.confidence_score:.1%} → {candidate_eval.confidence_score:.1%} "
-            f"({signals} → {candidate_signals} signals)"
+            f"({signals} → {candidate_signals} signals){note}"
         )
         current = candidate
 
@@ -1353,6 +1398,8 @@ def run_real_demo(console: Console, *, market: str = "us") -> None:
     """
     import asyncio
 
+    import typer
+
     console.print(
         Panel(
             "[bold cyan]🧬 AlphaEvo — Real Data Demo[/bold cyan]\n\n"
@@ -1368,7 +1415,7 @@ def run_real_demo(console: Console, *, market: str = "us") -> None:
     builtin_dir = _find_builtin_strategy_dir()
     if builtin_dir is None:
         console.print("[red]Could not find strategies/builtin/ directory[/red]")
-        return
+        raise typer.Exit(1)
 
     if market == "cn":
         strategy_file = builtin_dir / "mean_reversion_oversold.yaml"
@@ -1385,7 +1432,7 @@ def run_real_demo(console: Console, *, market: str = "us") -> None:
         yaml_files = list(builtin_dir.glob("*.yaml"))
         if not yaml_files:
             console.print("[red]No strategy files found[/red]")
-            return
+            raise typer.Exit(1)
         strategy_file = yaml_files[0]
 
     parser = StrategyParser()
@@ -1404,11 +1451,11 @@ def run_real_demo(console: Console, *, market: str = "us") -> None:
     except Exception as e:
         console.print(f"[red]Data download failed: {e}[/red]")
         console.print("[dim]Try: alphaevo demo  (uses synthetic data, no network needed)[/dim]")
-        return
+        raise typer.Exit(1) from None
 
     if not data:
         console.print("[red]No data received. Check your network connection.[/red]")
-        return
+        raise typer.Exit(1)
 
     console.print(
         f"  [green]✓[/green] Downloaded {len(data)} symbols, "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -124,6 +125,21 @@ class MAPElitesArchive:
         """Return top-k niche champions sorted by fitness descending."""
         ordered = sorted(self._cells.values(), key=lambda c: c.fitness_score, reverse=True)
         return ordered[: max(0, k)]
+
+    def sample_elite(
+        self,
+        *,
+        exclude_id: str | None = None,
+        rng: random.Random | None = None,
+    ) -> ArchiveCell | None:
+        """Select a niche champion different from *exclude_id* when available."""
+        candidates = [c for c in self._cells.values() if c.strategy_id != exclude_id]
+        if not candidates:
+            return None
+        picker = rng or random.Random(42)
+        candidates.sort(key=lambda c: c.fitness_score, reverse=True)
+        top_pool = candidates[: max(1, min(3, len(candidates)))]
+        return picker.choice(top_pool)
 
     def coverage_summary(self) -> ArchiveSummary:
         """Summarize archive diversity and highest-fitness cell."""

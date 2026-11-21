@@ -102,6 +102,11 @@ class OverallMetrics(BaseModel):
     max_consecutive_loss: int = 0
     median_return: float = 0.0
     total_return: float = 0.0
+    metrics_basis: Literal["daily_mtm", "trade_sequence"] = "trade_sequence"
+    active_trading_days: int = 0
+    trade_sequence_max_drawdown: float = 0.0
+    trade_sequence_sharpe_ratio: float = 0.0
+    trade_sequence_total_return: float = 0.0
 
 
 class RegimeMetrics(BaseModel):
@@ -125,6 +130,7 @@ class AntiFitMetrics(BaseModel):
     walk_forward_gap: float = 0.0  # mean train-test gap across rolling folds
     walk_forward_pass_rate: float = 0.0  # share of folds within acceptable gap
     param_sensitivity: float = 0.0  # performance drop on param perturbation
+    param_sensitivity_measured: bool = False
     complexity_penalty: float = 0.0
 
     @property
@@ -297,6 +303,7 @@ class EvaluationReport(BaseModel):
     family_trial_count: int = 0
     null_control_passed: bool | None = None
     null_p_value: float | None = None
+    static_context_warnings: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

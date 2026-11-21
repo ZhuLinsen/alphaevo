@@ -31,14 +31,14 @@ AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的�
 
 ### 可复现无 API Showcase
 
-内置 frozen yfinance 快照，美股科技股篮子，2025-02-11 到 2026-04-10：
+内置 frozen yfinance 快照，美股科技股篮子，2025-02-11 到 2026-04-10（采用时序等权 **Daily MTM 组合净值口径**、跳空开盘止损/止盈撮合及 **实测参数敏感度**）：
 
 | 策略 | 信号数 | 胜率 | 平均收益 | 最大回撤 | 评分 |
 |------|--------|------|----------|----------|------|
-| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 8.1% |
-| `rsi_reversion_v7` champion | 37 | 48.6% | 2.94% | 23.6% | 68.7% |
+| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 6.6% |
+| `rsi_reversion_v7` champion | 37 | 48.6% | 2.94% | 26.7% | 65.9% |
 
-过程：研究委员会先判断入场条件过度确认，然后依次解锁信号、放宽止损、延长持仓、提高止盈倍数、把支撑锚点切到 MA60、收紧放量确认。每次修改都必须复测后才接受。该 champion 在快照上的 train-val / val-test gap 为 7.1% / 7.1%。完整报告见：[showcase_rsi_reversion_real_snapshot.md](reports/showcase_rsi_reversion_real_snapshot.md)。
+过程：研究委员会先判断入场条件过度确认，解锁信号后以风险调整期望/夏普桥接放宽止损，随后延长持仓、提高止盈倍数、把支撑锚点切到 MA60 并收紧放量确认，每次修改均经过重测。该 champion 在快照上的 train-val / val-test gap 为 7.1% / 7.1%。完整报告见：[showcase_rsi_reversion_real_snapshot.md](reports/showcase_rsi_reversion_real_snapshot.md)。
 
 ### 实时数据 LLM 进化路径
 
@@ -51,12 +51,21 @@ AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的�
 
 不同数据窗口和协议不应该直接混排；快照 showcase 是稳定的无 API 首跑，LLM 路径展示的是实时市场数据上的研究闭环。
 
-## 🧠 核心能力
+## 🧠 核心能力与成熟度边界
 
-- **回测与多维评估**：在真实股票数据上完成分层采样、多维评分与 Walk-Forward 防过拟合检验。
-- **股票策略递归自我进化（`alphaevo rsi`）**：基于 `program.md` 研究宪章驱动策略层（L1）、Co-STEER 因子层（L2）和评估机制（L3）的迭代演化，配合 `(regime × style × horizon)` MAP-Elites 档案库、可执行反思伤疤与异构提案/审讯评审，导出可核验的 `results.tsv` 账本。
-- **L0 真相核与前瞻影子账本（`truth` / `shadow`）**：通过只追加 `TrialLedger` + Deflated Sharpe Ratio 抑制沉默试错，借助零信号对照与子进程运行时 PIT 探针拦截未来函数，并用 SHA-256 哈希链记录 `T+5 / T+10 / T+20` 前瞻样本外承诺与兑现。
-- **可追踪的研究工作流**：每次迭代自动沉淀结构化研究结论、进化树以及用于后续训练的 trajectory 数据。
+- **向量化回测与高仿真撮合**：O(N) 预计算指标 (`IndicatorRegistry.precompute`)、O(N) 因果市场状态识别、基准日期对齐、跳空开盘止损/止盈撮合、冻结入场 ATR、`next_open` 实际买点柱 A 股涨跌停/ST/科创创业北交所检测，以及双层评估体系（`daily_mtm` 主口径 + `trade_sequence_*` 诊断对照）。
+- **股票策略递归自我进化（`alphaevo rsi`）**：基于 `program.md` 研究宪章驱动策略层（L1）、Co-STEER 因子层（L2）和评估机制（L3）演化，配合 MAP-Elites 档案库、持久化可执行反思伤疤与异构提案/审讯评审（CLI + LiteLLM），导出可核验的 `results.tsv` 账本。
+- **L0 真相核与前瞻影子账本（`truth` / `shadow`）**：只追加 `TrialLedger` + DSR（拒绝静默退回内存）、同步跨截面 block-shuffled 与全策略重跑零信号对照、受限命名空间与运行时 PIT 截断保护，以及不可回填倒签的 SHA-256 哈希链前瞻账本（含 `is_replay` 隔离、分阶段滞留门槛与 `HALTED` 保护）。
+- **可追踪的研究工作流**：自动沉淀研究委员会裁决、进化树与 SFT/DPO 轨迹数据。
+
+| 模块 / 能力 | 状态 | 说明 |
+|-------------|------|------|
+| YAML DSL v0.5、O(N) 回测引擎与 Daily MTM 评估 | **已实现 (Implemented)** | Wheel 包内置策略/快照资产；跨平台文件锁；CLI 延迟导入 (~0.1s) |
+| L0 真相核 (`TrialLedger` / DSR / 零信号对照 / PIT 探针) | **已实现 (Implemented)** | 严格持久化落盘，运行时对自定义因子强制 PIT 截断 |
+| 双时钟 RSI 棘轮与前瞻影子账本 (`alphaevo rsi` / `shadow`) | **已实现 (Implemented)** | SHA-256 哈希链、原子化 T+5/10/20 回填、非对称晋升/熔断状态机 |
+| 异构多模型议会 (CLI / LiteLLM 审讯) | **已实现 (Implemented)** | 无 Key 时退化为策略无关通用启发式探索 |
+| L2/L3 事件新闻与板块情绪指标 | **实验性 (Experimental)** | 缺少外部馈送时自动降级并记录静态上下文警示 (`static_context_warnings`) |
+| 跨策略动态风险预算与 Web UI 面板 | **规划中 (Planned)** | 路线图下一阶段 |
 
 ## 🚀 快速开始
 
@@ -78,14 +87,14 @@ alphaevo showcase
 ```
 Showcase Chain: baseline + up to 6 validated mutations
 
-Round 1 │ rsi_reversion_v1 │ 信号: 0  │ 评分: 8.1%
+Round 1 │ rsi_reversion_v1 │ 信号: 0  │ 评分: 6.6%
   研究委员会：入场条件过严
   修改：entry.logic and -> or
 
-Round 2 │ rsi_reversion_v2 │ 信号: 79 │ 评分: 17.8%
+Round 2 │ rsi_reversion_v2 │ 信号: 79 │ 评分: 22.1%
   修改：exit.stop_loss.value 0.05 -> 0.08
 
-Round 7 │ rsi_reversion_v7 │ 信号: 37 │ 评分: 68.7% 🏆
+Round 7 │ rsi_reversion_v7 │ 信号: 37 │ 评分: 65.9% 🏆
 ```
 
 ### 选择合适的入口

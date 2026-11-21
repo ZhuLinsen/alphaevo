@@ -134,6 +134,7 @@ class HeterogeneousCouncil:
         extra_changes: list[list[StrategyChange]] | None = None,
         mission_notes: str = "",
         max_candidates: int = 8,
+        exclude_sigs: set[tuple[tuple[str, str, str], ...]] | None = None,
     ) -> list[CouncilDeliberation]:
         """Generate candidate mutations and filter every bundle through the Prosecutor."""
         proposals: list[CouncilProposal] = []
@@ -164,9 +165,9 @@ class HeterogeneousCouncil:
         # Deterministic stock RSI heuristic proposals + tunable neighborhood
         proposals.extend(self._build_heuristic_proposals(strategy, evaluation, p_spec))
 
-        # Deduplicate while preserving proposal priority
+        # Deduplicate while preserving proposal priority and excluding already-tried signatures
         deliberations: list[CouncilDeliberation] = []
-        seen: set[tuple[tuple[str, str, str], ...]] = set()
+        seen: set[tuple[tuple[str, str, str], ...]] = set(exclude_sigs or set())
 
         for prop in proposals:
             if not prop.changes:
@@ -210,6 +211,11 @@ class HeterogeneousCouncil:
             if cli_veto:
                 objections.extend(cli_veto)
                 approved = False
+        elif approved and q_spec.backend == "litellm":
+            llm_veto = self._try_litellm_prosecutor(strategy, evaluation, changes, q_spec)
+            if llm_veto:
+                objections.extend(llm_veto)
+                approved = False
 
         return ProsecutorAudit(
             prosecutor_model=q_spec.model,
@@ -239,226 +245,137 @@ class HeterogeneousCouncil:
                 )
             )
 
-        # Escape over-constrained zero-signal / sparse lockouts first
+        # Escape over-constrained zero-signal / sparse lockouts cleanly
         if ov.signal_count < 15 and strategy.entry.logic == "and":
-            unlock_bundle: list[StrategyChange] = [
-                StrategyChange(
-                    change_type=ChangeType.CHANGE_LOGIC,
-                    target="entry.logic",
-                    from_value="and",
-                    to_value="or",
-                    reason="Unlock signal flow from over-confirmed AND condition stack",
+            unlock_change = StrategyChange(
+                change_type=ChangeType.CHANGE_LOGIC,
+                target="entry.logic",
+                from_value="and",
+                to_value="or",
+                reason="Unlock signal flow from over-constrained AND condition stack",
+            )
+            unlock_bundle: list[StrategyChange] = [unlock_change]
+            for param in strategy.params.tunable:
+                if len(unlock_bundle) >= 3 or not param.target.startswith("entry."):
+                    continue
+                curr = resolve_tunable_target(strategy, param.target)
+                if not isinstance(curr, (int, float)):
+                    continue
+                lo, hi = param.range
+                step = param.step or (hi - lo) / 4.0
+                cand_val: int | float = (
+                    int(round(min(hi, curr + step * 2)))
+                    if is_period_tunable_target(param.target)
+                    else round(float(min(hi, curr + step)), 4)
                 )
-            ]
-            for cond in strategy.entry.conditions:
-                if len(unlock_bundle) >= 3:
-                    break
-                if cond.indicator == "close_to_ma20_pct":
+                if cand_val != curr and lo <= cand_val <= hi:
                     unlock_bundle.append(
                         StrategyChange(
-                            change_type=ChangeType.LOOSEN_FILTER,
-                            target="entry.conditions[indicator=close_to_ma20_pct].indicator",
-                            from_value="close_to_ma20_pct",
-                            to_value="close_to_ma60_pct",
-                            reason=(
-                                "Anchor reversal support on MA60 to prevent whipsaws during OR unlock"
-                            ),
+                            change_type=ChangeType.TIGHTEN_FILTER
+                            if cand_val > curr
+                            else ChangeType.LOOSEN_FILTER,
+                            target=param.target,
+                            from_value=curr,
+                            to_value=cand_val,
+                            reason=f"Calibrate {param.label or param.target} alongside OR unlock",
                         )
                     )
-                elif cond.indicator == "volume_ratio_1d_5d":
-                    try:
-                        curr_vol = float(cond.value)
-                    except (TypeError, ValueError):
-                        curr_vol = 2.0
-                    if curr_vol < 2.0:
-                        unlock_bundle.append(
-                            StrategyChange(
-                                change_type=ChangeType.TIGHTEN_FILTER,
-                                target="entry.conditions[indicator=volume_ratio_1d_5d].value",
-                                from_value=curr_vol,
-                                to_value=2.0,
-                                reason="Require 2.0x volume confirmation alongside OR unlock",
-                            )
-                        )
             if len(unlock_bundle) > 1:
-                _add(
-                    unlock_bundle,
-                    "Coordinated OR unlock with MA60 anchor and 2.0x volume confirmation",
-                )
-            _add([unlock_bundle[0]], "Unlock sparse signal flow")
+                _add(unlock_bundle, "Coordinated OR unlock with entry tunable calibration")
+            _add([unlock_change], "Unlock sparse signal flow")
 
-        # Cut false rebounds after unlocking OR flow by anchoring support & tightening volume
-        if strategy.entry.logic == "or" and ov.signal_count > 35:
-            for cond in strategy.entry.conditions:
-                if cond.indicator == "close_to_ma20_pct":
-                    _add(
-                        [
-                            StrategyChange(
-                                change_type=ChangeType.LOOSEN_FILTER,
-                                target="entry.conditions[indicator=close_to_ma20_pct].indicator",
-                                from_value="close_to_ma20_pct",
-                                to_value="close_to_ma60_pct",
-                                reason=(
-                                    "Anchor reversal support on MA60 to reduce choppy rebound whipsaws"
-                                ),
-                            )
-                        ],
-                        "Switch support anchor to MA60",
-                    )
-                elif cond.indicator == "volume_ratio_1d_5d":
-                    try:
-                        curr_vol = float(cond.value)
-                    except (TypeError, ValueError):
-                        curr_vol = 2.0
-                    if curr_vol < 2.0:
-                        _add(
-                            [
-                                StrategyChange(
-                                    change_type=ChangeType.TIGHTEN_FILTER,
-                                    target="entry.conditions[indicator=volume_ratio_1d_5d].value",
-                                    from_value=curr_vol,
-                                    to_value=2.0,
-                                    reason=(
-                                        "Require stronger volume expansion (2.0x) after OR unlock"
-                                    ),
-                                )
-                            ],
-                            "Tighten volume confirmation to 2.0x",
-                        )
-
-        # Coordinated exit payoff & volatility calibration bundle
-        if ov.signal_count >= 15 and (ov.profit_loss_ratio < 1.8 or ov.avg_return < 0.02):
-            exit_bundle: list[StrategyChange] = []
-            if (
-                strategy.exit.stop_loss.type == "pct"
-                and strategy.exit.stop_loss.value is not None
-                and float(strategy.exit.stop_loss.value) < 0.08
-            ):
-                exit_bundle.append(
-                    StrategyChange(
-                        change_type=ChangeType.ADJUST_EXIT,
-                        target="exit.stop_loss.value",
-                        from_value=float(strategy.exit.stop_loss.value),
-                        to_value=0.08,
-                        reason="Widen stop-loss tolerance to 8% against reversal chop",
-                    )
-                )
-            if strategy.exit.max_holding_days < 14:
-                exit_bundle.append(
-                    StrategyChange(
-                        change_type=ChangeType.ADJUST_EXIT,
-                        target="exit.max_holding_days",
-                        from_value=strategy.exit.max_holding_days,
-                        to_value=14,
-                        reason="Extend holding horizon to 14d for mean-reversion capture",
-                    )
-                )
-            if (
-                strategy.exit.take_profit.type == "rr"
-                and strategy.exit.take_profit.value is not None
-                and float(strategy.exit.take_profit.value) < 6.0
-            ):
-                exit_bundle.append(
-                    StrategyChange(
-                        change_type=ChangeType.ADJUST_EXIT,
-                        target="exit.take_profit.value",
-                        from_value=float(strategy.exit.take_profit.value),
-                        to_value=6.0,
-                        reason="Raise take-profit target to 6.0R to capture fat-tail rebounds",
-                    )
-                )
-            if len(exit_bundle) >= 2:
-                _add(
-                    exit_bundle[:3],
-                    "Coordinated stock exit payoff and volatility tolerance calibration",
-                )
-
-        # Tunable numeric/indicator neighbors
+        # Tunable numeric/indicator neighbors across entry & exit parameters
+        single_tunables: list[StrategyChange] = []
         for param in strategy.params.tunable:
             current = resolve_tunable_target(strategy, param.target)
             if not isinstance(current, (int, float)):
                 continue
             lo, hi = param.range
             step = param.step or (hi - lo) / 8.0
-            for raw_cand in (current + step, current - step):
+            candidates_raw = [current + step, current - step]
+            if is_period_tunable_target(param.target) or step * 2 <= (hi - lo):
+                candidates_raw.extend([current + step * 2, hi, lo])
+            seen_vals: set[float] = set()
+            for raw_cand in candidates_raw:
                 cand: int | float = (
                     int(round(raw_cand))
                     if is_period_tunable_target(param.target)
                     else round(float(raw_cand), 4)
                 )
-                if cand == current or cand < lo or cand > hi:
+                if cand == current or cand < lo or cand > hi or float(cand) in seen_vals:
                     continue
+                seen_vals.add(float(cand))
                 if param.target.startswith("exit."):
                     ctype = ChangeType.ADJUST_EXIT
                 elif cand > current:
                     ctype = ChangeType.LOOSEN_FILTER
                 else:
                     ctype = ChangeType.TIGHTEN_FILTER
-                _add(
-                    [
-                        StrategyChange(
-                            change_type=ctype,
-                            target=param.target,
-                            from_value=current,
-                            to_value=cand,
-                            reason=f"Step {param.label or param.target}: {current} -> {cand}",
-                        )
-                    ],
-                    f"Tune {param.target}",
+                ch = StrategyChange(
+                    change_type=ctype,
+                    target=param.target,
+                    from_value=current,
+                    to_value=cand,
+                    reason=f"Tune {param.label or param.target}: {current} -> {cand}",
                 )
+                if len(seen_vals) <= 2:
+                    single_tunables.append(ch)
+                _add([ch], f"Tune {param.target}")
 
-        # Exit risk / holding / payoff adjustments tailored for stock whipsaw & tail payoff
+        # Coordinated exit payoff / risk / entry-tunable multi-lever calibration
+        exit_levers: list[StrategyChange] = []
         if strategy.exit.stop_loss.type == "pct" and strategy.exit.stop_loss.value is not None:
             curr_sl = float(strategy.exit.stop_loss.value)
             for delta in (0.02, -0.015, 0.03):
                 nxt = round(min(0.18, max(0.02, curr_sl + delta)), 3)
                 if abs(nxt - curr_sl) >= 0.005:
-                    _add(
-                        [
-                            StrategyChange(
-                                change_type=ChangeType.ADJUST_EXIT,
-                                target="exit.stop_loss.value",
-                                from_value=curr_sl,
-                                to_value=nxt,
-                                reason="Calibrate stop-loss tolerance against chop whipsaw",
-                            )
-                        ],
-                        "Stop-loss risk calibration",
+                    ch_sl = StrategyChange(
+                        change_type=ChangeType.ADJUST_EXIT,
+                        target="exit.stop_loss.value",
+                        from_value=curr_sl,
+                        to_value=nxt,
+                        reason="Calibrate stop-loss tolerance against chop whipsaw",
                     )
+                    if not exit_levers:
+                        exit_levers.append(ch_sl)
+                    _add([ch_sl], "Stop-loss risk calibration")
 
         curr_hold = strategy.exit.max_holding_days
         for new_hold in (curr_hold + 3, curr_hold + 5, max(3, curr_hold - 3)):
             if new_hold != curr_hold and 2 <= new_hold <= 30:
-                _add(
-                    [
-                        StrategyChange(
-                            change_type=ChangeType.ADJUST_EXIT,
-                            target="exit.max_holding_days",
-                            from_value=curr_hold,
-                            to_value=new_hold,
-                            reason=f"Adjust max holding horizon {curr_hold} -> {new_hold} days",
-                        )
-                    ],
-                    "Holding window tuning",
+                ch_hold = StrategyChange(
+                    change_type=ChangeType.ADJUST_EXIT,
+                    target="exit.max_holding_days",
+                    from_value=curr_hold,
+                    to_value=new_hold,
+                    reason=f"Adjust max holding horizon {curr_hold} -> {new_hold} days",
                 )
+                if len(exit_levers) < 2 and new_hold > curr_hold:
+                    exit_levers.append(ch_hold)
+                _add([ch_hold], "Holding window tuning")
 
         if strategy.exit.take_profit.type == "rr" and strategy.exit.take_profit.value is not None:
             curr_tp = float(strategy.exit.take_profit.value)
             for delta in (0.5, 2.0, -0.4):
                 nxt_tp = round(min(6.0, max(1.0, curr_tp + delta)), 2)
                 if abs(nxt_tp - curr_tp) >= 0.1:
-                    _add(
-                        [
-                            StrategyChange(
-                                change_type=ChangeType.ADJUST_EXIT,
-                                target="exit.take_profit.value",
-                                from_value=curr_tp,
-                                to_value=nxt_tp,
-                                reason="Calibrate R:R take-profit multiple",
-                            )
-                        ],
-                        "Take-profit payoff adjustment",
+                    ch_tp = StrategyChange(
+                        change_type=ChangeType.ADJUST_EXIT,
+                        target="exit.take_profit.value",
+                        from_value=curr_tp,
+                        to_value=nxt_tp,
+                        reason="Calibrate R:R take-profit multiple",
                     )
+                    if len(exit_levers) < 3 and delta > 0:
+                        exit_levers.append(ch_tp)
+                    _add([ch_tp], "Take-profit payoff adjustment")
+
+        if len(exit_levers) >= 2 and ov.signal_count >= 10:
+            _add(exit_levers[:3], "Coordinated exit risk & payoff calibration")
+        if single_tunables and exit_levers:
+            combo = [single_tunables[0], exit_levers[0]]
+            if single_tunables[0].target != exit_levers[0].target:
+                _add(combo, "Joint entry-tunable and exit-risk calibration")
 
         return out
 
@@ -590,6 +507,44 @@ class HeterogeneousCouncil:
             logger.debug(
                 "CLI prosecutor %s unavailable (%s); using deterministic critic", tool, exc
             )
+        return []
+
+    @staticmethod
+    def _try_litellm_prosecutor(
+        strategy: Strategy,
+        evaluation: EvaluationReport,
+        changes: list[StrategyChange],
+        q_spec: ModelSpec,
+    ) -> list[str]:
+        """Optionally invoke LiteLLM prosecutor; falls back cleanly when unconfigured."""
+        try:
+            from alphaevo.core.config import ConfigManager
+            from alphaevo.core.llm import LLMClient
+
+            cfg = ConfigManager().load()
+            cfg.llm.model = q_spec.model
+            api_key = ConfigManager().get_llm_api_key()
+            if not api_key:
+                return []
+            llm = LLMClient(cfg.llm, api_key=api_key)
+            change_desc = "; ".join(
+                f"{c.change_type.value}:{c.target}->{c.to_value}" for c in changes
+            )
+            prompt = (
+                f"You are an adversarial quantitative risk prosecutor. Audit changes [{change_desc}] "
+                f"for strategy {strategy.meta.id} (signals={evaluation.overall.signal_count}, "
+                f"avg_return={evaluation.overall.avg_return:.4f}, overfit={evaluation.anti_overfit.is_overfit}). "
+                'Respond ONLY with JSON {"veto": bool, "reason": "..."}.'
+            )
+            parsed = llm.chat_json(
+                [{"role": "user", "content": prompt}],
+                model=q_spec.model,
+                timeout=q_spec.timeout_seconds,
+            )
+            if parsed.get("veto") is True:
+                return [str(parsed.get("reason", "Vetoed by LiteLLM Prosecutor"))]
+        except Exception as exc:
+            logger.debug("LiteLLM prosecutor fallback to deterministic critic: %s", exc)
         return []
 
 

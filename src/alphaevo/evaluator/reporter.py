@@ -140,12 +140,18 @@ class Reporter:
             ]
 
         # Performance summary table
+        basis_label = (
+            f"Daily MTM ({o.active_trading_days} active days)"
+            if o.metrics_basis == "daily_mtm"
+            else "Trade Sequence"
+        )
         lines += [
             "",
             "## Performance Summary",
             "",
             "| Metric | Value |",
             "|--------|-------|",
+            f"| Metrics Basis | {basis_label} |",
             f"| Win Rate | {o.win_rate:.1%} |",
             f"| Avg Return | {o.avg_return:.2%} |",
             f"| Avg Win | {o.avg_win_return:.2%} |",
@@ -159,6 +165,14 @@ class Reporter:
             f"| Max Consecutive Loss | {o.max_consecutive_loss} |",
             f"| Total Return | {o.total_return:.2%} |",
         ]
+        if o.metrics_basis == "daily_mtm":
+            lines.append(
+                f"| Trade-Seq Max DD / Sharpe | {o.trade_sequence_max_drawdown:.1%} / {o.trade_sequence_sharpe_ratio:.2f} |"
+            )
+
+        if report.static_context_warnings:
+            lines += ["", "## Context Caveats", ""]
+            lines.extend(f"- ⚠️ {w}" for w in report.static_context_warnings)
 
         # Regime breakdown (if available)
         if report.by_regime:
@@ -312,13 +326,18 @@ class Reporter:
 
         # Anti-overfitting check
         tv_ok = "✅" if af.train_val_gap <= 0.10 else "⚠️"
+        sens_suffix = (
+            ""
+            if af.param_sensitivity_measured or af.param_sensitivity > 0.0
+            else " (not measured — neutral 50%)"
+        )
         lines += [
             "",
             "## Anti-Overfitting Check",
             "",
             f"- Train-Val Gap: {af.train_val_gap:.1%} {tv_ok}",
             f"- Yearly Consistency: {af.yearly_consistency:.1%}",
-            f"- Param Sensitivity: {af.param_sensitivity:.1%}",
+            f"- Param Sensitivity: {af.param_sensitivity:.1%}{sens_suffix}",
         ]
         if af.is_overfit:
             lines.append("- **⚠️ Potential overfitting detected**")

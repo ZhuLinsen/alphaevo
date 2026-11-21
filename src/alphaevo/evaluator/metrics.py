@@ -7,6 +7,7 @@ Formula matches AGENTS.md §10 and module_tech_specs.md §6.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import date, timedelta
 from itertools import combinations
@@ -53,16 +54,19 @@ class Evaluator:
         result: BacktestResult,
         strategy: Strategy,
         *,
+        market_data: dict[str, Any] | None = None,
         contexts: dict[str, Any] | None = None,
     ) -> EvaluationReport:
         """Fast candidate evaluation for optimizer search loops.
 
-        This keeps the trade-level metrics used by qualification gates but skips
-        benchmark, stress-window, walk-forward, CPCV, and other heavy diagnostics.
+        This keeps the trade-level metrics used by qualification gates and computes
+        daily mark-to-market basket metrics when *market_data* is supplied, while
+        skipping benchmark, stress-window, walk-forward, and CPCV diagnostics.
         Full reports should still use :meth:`evaluate`.
         """
         executed = [s for s in result.signals if s.exit_price is not None]
         overall = self.compute_metrics(executed)
+        self._apply_daily_mtm(overall, executed, market_data)
         by_regime = self.compute_metrics_by_regime(executed)
         by_sector = self.compute_metrics_by_sector(executed)
         anti_fit = self.compute_anti_overfit(executed)
@@ -106,6 +110,7 @@ class Evaluator:
         executed = [s for s in result.signals if s.exit_price is not None]
 
         overall = self.compute_metrics(executed)
+        daily_returns = self._apply_daily_mtm(overall, executed, market_data)
         by_regime = self.compute_metrics_by_regime(executed)
         by_sector = self.compute_metrics_by_sector(executed)
 
@@ -145,6 +150,7 @@ class Evaluator:
         failure_cases = sorted_by_return[:10]
 
         event_context = self.compute_event_context_metrics(strategy, contexts or {})
+        static_warnings = self._detect_static_context_warnings(strategy, market_data, contexts)
 
         benchmark = None
         stress_windows = None
@@ -187,12 +193,14 @@ class Evaluator:
         if trial_ledger is not None:
             family_id = trial_ledger.resolve_trial_family_id(strategy)
             family_trial_count = max(1, trial_ledger.count_family_trials(family_id))
+            dsr_returns = daily_returns if daily_returns else [s.return_pct for s in executed]
+            dsr_obs_count = len(dsr_returns) if daily_returns else overall.signal_count
             dsr_res = trial_ledger.compute_dsr_for_trials(
                 family_id=family_id,
                 n_trials=family_trial_count,
-                returns=[s.return_pct for s in executed],
+                returns=dsr_returns,
                 observed_sharpe=overall.sharpe_ratio,
-                signal_count=overall.signal_count,
+                signal_count=dsr_obs_count,
             )
             deflated_sharpe_prob = dsr_res.dsr_probability
 
@@ -229,17 +237,22 @@ class Evaluator:
             family_trial_count=family_trial_count,
             null_control_passed=null_control_passed,
             null_p_value=null_p_value,
+            static_context_warnings=static_warnings,
         )
 
     def compute_metrics(self, signals: list[TradeSignal]) -> OverallMetrics:
-        """Compute aggregate metrics from executed trade signals."""
+        """Compute aggregate metrics from executed trade signals (chronologically sorted)."""
         if not signals:
             return OverallMetrics()
 
-        returns = [s.return_pct for s in signals]
+        ordered = sorted(
+            signals,
+            key=lambda s: (s.signal_date, s.exit_date or s.signal_date, s.symbol),
+        )
+        returns = [s.return_pct for s in ordered]
         wins = [r for r in returns if r > 0]
         losses = [r for r in returns if r <= 0]
-        holding_days = [s.holding_days for s in signals if s.holding_days > 0]
+        holding_days = [s.holding_days for s in ordered if s.holding_days > 0]
 
         win_rate = len(wins) / len(returns) if returns else 0.0
         avg_return = mean(returns) if returns else 0.0
@@ -263,11 +276,144 @@ class Evaluator:
             profit_loss_ratio=round(profit_loss_ratio, 4),
             max_drawdown=round(max_dd, 4),
             sharpe_ratio=round(sharpe, 4),
-            signal_count=len(signals),
+            signal_count=len(ordered),
             avg_holding_days=round(mean(holding_days), 1) if holding_days else 0.0,
             max_consecutive_loss=max_consec_loss,
             total_return=round(total_return, 6),
+            metrics_basis="trade_sequence",
+            trade_sequence_max_drawdown=round(max_dd, 4),
+            trade_sequence_sharpe_ratio=round(sharpe, 4),
+            trade_sequence_total_return=round(total_return, 6),
         )
+
+    def _apply_daily_mtm(
+        self,
+        overall: OverallMetrics,
+        executed: list[TradeSignal],
+        market_data: dict[str, Any] | None,
+    ) -> list[float]:
+        """Compute equal-weight daily MTM basket metrics and update *overall* in-place."""
+        daily_rets, active_days, daily_dd, daily_sharpe, daily_total = (
+            self.compute_daily_mtm_returns(executed, market_data)
+        )
+        if active_days > 0 and len(daily_rets) >= 2:
+            overall.metrics_basis = "daily_mtm"
+            overall.active_trading_days = active_days
+            overall.max_drawdown = round(daily_dd, 4)
+            overall.sharpe_ratio = round(daily_sharpe, 4)
+            overall.total_return = round(daily_total, 6)
+            return daily_rets
+        return []
+
+    @staticmethod
+    def compute_daily_mtm_returns(
+        signals: list[TradeSignal],
+        market_data: dict[str, Any] | None,
+    ) -> tuple[list[float], int, float, float, float]:
+        """Compute chronological equal-weight daily MTM basket returns.
+
+        Returns ``(daily_returns, active_trading_days, max_drawdown, sharpe_ratio, total_return)``.
+        """
+        if not signals or not market_data:
+            return ([], 0, 0.0, 0.0, 0.0)
+
+        sym_dates: dict[str, list[date]] = {}
+        sym_closes: dict[str, list[float]] = {}
+        calendar_set: set[date] = set()
+
+        for sym, df in market_data.items():
+            if df is None or getattr(df, "empty", True):
+                continue
+            if "date" not in df.columns or "close" not in df.columns:
+                continue
+            pairs: list[tuple[date, float]] = []
+            for d_val, c_val in zip(df["date"].tolist(), df["close"].tolist(), strict=False):
+                d_norm = (
+                    d_val.date() if hasattr(d_val, "date") and type(d_val) is not date else d_val
+                )
+                if isinstance(d_norm, date) and c_val is not None:
+                    pairs.append((d_norm, float(c_val)))
+            if not pairs:
+                continue
+            pairs.sort(key=lambda item: item[0])
+            dates_list = [p[0] for p in pairs]
+            closes_list = [p[1] for p in pairs]
+            sym_dates[sym] = dates_list
+            sym_closes[sym] = closes_list
+            calendar_set.update(dates_list)
+
+        if not sym_dates or not calendar_set:
+            return ([], 0, 0.0, 0.0, 0.0)
+
+        min_entry = min(s.signal_date for s in signals)
+        max_exit = max((s.exit_date or s.signal_date) for s in signals)
+        calendar = sorted(d for d in calendar_set if min_entry <= d <= max_exit)
+        if len(calendar) < 2:
+            return ([], 0, 0.0, 0.0, 0.0)
+
+        day_pos_rets: dict[date, list[float]] = defaultdict(list)
+        for sig in signals:
+            sym_d = sym_dates.get(sig.symbol)
+            sym_c = sym_closes.get(sig.symbol)
+            if not sym_d or not sym_c:
+                continue
+            end_d = sig.exit_date or sig.signal_date
+            lo = bisect_left(sym_d, sig.signal_date)
+            hi = bisect_right(sym_d, end_d)
+            if lo >= hi:
+                continue
+            if hi - lo == 1:
+                day_pos_rets[sym_d[lo]].append(sig.return_pct)
+                continue
+
+            entry_p = sig.entry_price
+            prev_mark = entry_p
+            for pos in range(lo, hi):
+                bar_d = sym_d[pos]
+                close_p = sym_c[pos]
+                if pos == hi - 1:
+                    if prev_mark > 0 and entry_p > 0:
+                        target_end = entry_p * (1.0 + sig.return_pct)
+                        bar_ret = (target_end / prev_mark) - 1.0
+                    else:
+                        bar_ret = sig.return_pct
+                elif prev_mark > 0:
+                    bar_ret = (close_p / prev_mark) - 1.0
+                    prev_mark = close_p
+                else:
+                    bar_ret = 0.0
+                day_pos_rets[bar_d].append(bar_ret)
+
+        if not day_pos_rets:
+            return ([], 0, 0.0, 0.0, 0.0)
+
+        daily_rets: list[float] = []
+        active_days = 0
+        for d in calendar:
+            bucket = day_pos_rets.get(d)
+            if bucket:
+                active_days += 1
+                daily_rets.append(sum(bucket) / len(bucket))
+            else:
+                daily_rets.append(0.0)
+
+        if active_days == 0 or len(daily_rets) < 2:
+            return ([], 0, 0.0, 0.0, 0.0)
+
+        equity = 1.0
+        peak = 1.0
+        max_dd = 0.0
+        for r in daily_rets:
+            equity *= max(0.0, 1.0 + r)
+            peak = max(peak, equity)
+            dd = (peak - equity) / peak if peak > 0 else 0.0
+            max_dd = max(max_dd, dd)
+
+        avg_d = mean(daily_rets)
+        std_d = stdev(daily_rets)
+        sharpe = (avg_d / std_d * math.sqrt(252)) if std_d > 0 else 0.0
+        total_ret = equity - 1.0
+        return (daily_rets, active_days, max_dd, sharpe, total_ret)
 
     def compute_confidence_score(
         self,
@@ -296,7 +442,8 @@ class Evaluator:
 
         if anti_fit:
             consistency = max(0.0, anti_fit.yearly_consistency)
-            sensitivity = max(0.0, 1.0 - anti_fit.param_sensitivity)
+            if anti_fit.param_sensitivity_measured or anti_fit.param_sensitivity > 0.0:
+                sensitivity = max(0.0, 1.0 - anti_fit.param_sensitivity)
             if anti_fit.train_val_gap > 0.10:
                 overfit_penalty += 0.15
             if anti_fit.val_test_gap > 0.08:
@@ -908,6 +1055,45 @@ class Evaluator:
             parts.append(f"u:{m}")
         content = "|".join(parts)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    @classmethod
+    def _detect_static_context_warnings(
+        cls,
+        strategy: Strategy,
+        market_data: dict[str, Any] | None,
+        contexts: dict[str, Any] | None,
+    ) -> list[str]:
+        """Flag static snapshot fields used across historical backtest bars."""
+        if not contexts:
+            return []
+        indicators = cls._strategy_indicators(strategy)
+        warnings: list[str] = []
+        sector_inds = {
+            "sector_heat_rank",
+            "sector_heat_rising_days",
+            "intra_sector_strength_rank_pct",
+            "sector_fund_flow_positive",
+            "sector_risk_flag",
+            "sector_net_inflow_days",
+        }
+        has_sector_ctx = any(getattr(c, "sector_info", None) is not None for c in contexts.values())
+        if (indicators & sector_inds) and has_sector_ctx:
+            warnings.append(
+                "Static SectorInfo snapshot applied across historical bars (survivorship/look-ahead caveat)."
+            )
+        has_stock_ctx = any(getattr(c, "stock_info", None) is not None for c in contexts.values())
+        if "st_flag" in indicators and has_stock_ctx:
+            warnings.append("Static StockInfo.is_st flag applied across historical bars.")
+        has_bm = any(getattr(c, "benchmark_df", None) is not None for c in contexts.values())
+        has_mkt_ctx = any(
+            getattr(c, "market_context", None) is not None
+            and getattr(getattr(c, "market_context", None), "regime", None) is not None
+            for c in contexts.values()
+        )
+        short_data = market_data is not None and any(len(df) < 65 for df in market_data.values())
+        if strategy.meta.preferred_regime and not has_bm and has_mkt_ctx and short_data:
+            warnings.append("Static MarketContext.regime fallback active without benchmark_df.")
+        return warnings
 
     @staticmethod
     def _resolve_benchmark_df(contexts: dict[str, Any]) -> Any:

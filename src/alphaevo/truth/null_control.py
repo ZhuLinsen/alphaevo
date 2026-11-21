@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from alphaevo.models.execution import TradeSignal
+    from alphaevo.models.execution import EvaluationReport, TradeSignal
     from alphaevo.models.strategy import Strategy
 
 
@@ -105,102 +105,157 @@ def _summarize_null_means(
     )
 
 
+def _build_step_table(
+    frame: pd.DataFrame,
+) -> tuple[
+    list[Any],
+    tuple[float, float, float, float, float],
+    dict[Any, tuple[float, float, float, float, float]],
+]:
+    """Extract normalized first row and date-keyed daily step descriptors."""
+    closes = [max(1e-6, float(x)) for x in frame["close"].tolist()]
+    opens = (
+        [max(1e-6, float(x)) for x in frame["open"].tolist()] if "open" in frame else list(closes)
+    )
+    highs = (
+        [max(1e-6, float(x)) for x in frame["high"].tolist()] if "high" in frame else list(closes)
+    )
+    lows = [max(1e-6, float(x)) for x in frame["low"].tolist()] if "low" in frame else list(closes)
+    volumes = (
+        [max(0.0, float(x)) for x in frame["volume"].tolist()]
+        if "volume" in frame
+        else [1_000_000.0] * len(closes)
+    )
+    dates = frame["date"].tolist() if "date" in frame else list(range(len(closes)))
+    first_row = (opens[0], highs[0], lows[0], closes[0], volumes[0])
+    step_map: dict[Any, tuple[float, float, float, float, float]] = {}
+    for idx in range(1, len(closes)):
+        prev_c = closes[idx - 1]
+        c = closes[idx]
+        o = opens[idx]
+        h = max(highs[idx], o, c)
+        low_v = min(lows[idx], o, c)
+        ret_close = (c / prev_c) - 1.0
+        open_rel = (o / prev_c) - 1.0
+        high_rel = (h / max(o, c)) - 1.0
+        low_rel = 1.0 - (low_v / min(o, c))
+        step_map[dates[idx]] = (open_rel, ret_close, high_rel, low_rel, volumes[idx])
+    return dates, first_row, step_map
+
+
+def _reconstruct_shuffled_frame(
+    dates: list[Any],
+    first_row: tuple[float, float, float, float, float],
+    ordered_steps: list[tuple[float, float, float, float, float]],
+) -> pd.DataFrame:
+    """Reconstruct synthetic OHLCV frame from first row and permuted step descriptors."""
+    o0, h0, l0, prev_close, v0 = first_row
+    new_rows: list[dict[str, object]] = [
+        {
+            "date": dates[0],
+            "open": round(o0, 4),
+            "high": round(h0, 4),
+            "low": round(l0, 4),
+            "close": round(prev_close, 4),
+            "volume": int(v0),
+            "prev_close": round(prev_close, 4),
+        }
+    ]
+    for idx, (open_rel, ret_close, high_rel, low_rel, vol) in enumerate(ordered_steps, start=1):
+        new_close = max(0.01, prev_close * (1.0 + ret_close))
+        new_open = max(0.01, prev_close * (1.0 + open_rel))
+        new_high = max(new_open, new_close) * (1.0 + max(0.0, high_rel))
+        new_low = max(0.01, min(new_open, new_close) * (1.0 - min(0.95, max(0.0, low_rel))))
+        new_rows.append(
+            {
+                "date": dates[idx],
+                "open": round(new_open, 4),
+                "high": round(new_high, 4),
+                "low": round(new_low, 4),
+                "close": round(new_close, 4),
+                "volume": int(vol),
+                "prev_close": round(prev_close, 4),
+            }
+        )
+        prev_close = new_close
+    return cast("pd.DataFrame", pd.DataFrame(new_rows))
+
+
 def generate_block_shuffled_market(
     market_data: dict[str, pd.DataFrame],
     *,
     block_size: int = 5,
     seed: int = 42,
+    joint: bool = True,
 ) -> dict[str, pd.DataFrame]:
-    """Create a null-market world by block-shuffling daily bar returns per symbol.
+    """Create a null-market world by block-shuffling daily bar returns.
 
-    Preserves dates, bar count, volatility clustering, and intrabar high/low spread
-    ratios while destroying causal indicator -> future-return alignment.
+    When ``joint=True`` (default) and multiple symbols overlap on trading dates,
+    a single synchronous cross-sectional date-block permutation is shared across
+    all symbols so contemporaneous sector/market co-movements remain realistic while
+    destroying temporal indicator -> future-return predictability.
     """
     rng = random.Random(seed)
     effective_block = max(1, int(block_size))
     shuffled_world: dict[str, pd.DataFrame] = {}
 
+    eligible_frames: dict[str, pd.DataFrame] = {}
     for symbol, df in market_data.items():
         if df.empty or len(df) < 4 or "close" not in df:
             shuffled_world[symbol] = df.copy()
             continue
-
         frame = (
             df.sort_values("date").reset_index(drop=True)
             if "date" in df
             else df.reset_index(drop=True)
         )
-        closes = [max(1e-6, float(x)) for x in frame["close"].tolist()]
-        opens = (
-            [max(1e-6, float(x)) for x in frame["open"].tolist()]
-            if "open" in frame
-            else list(closes)
-        )
-        highs = (
-            [max(1e-6, float(x)) for x in frame["high"].tolist()]
-            if "high" in frame
-            else list(closes)
-        )
-        lows = (
-            [max(1e-6, float(x)) for x in frame["low"].tolist()] if "low" in frame else list(closes)
-        )
-        volumes = (
-            [max(0.0, float(x)) for x in frame["volume"].tolist()]
-            if "volume" in frame
-            else [1_000_000.0] * len(closes)
-        )
+        eligible_frames[symbol] = frame
 
-        # Build step descriptors starting at index 1
-        steps: list[tuple[float, float, float, float, float]] = []
-        for idx in range(1, len(closes)):
-            prev_c = closes[idx - 1]
-            c = closes[idx]
-            o = opens[idx]
-            h = max(highs[idx], o, c)
-            low_v = min(lows[idx], o, c)
-            ret_close = (c / prev_c) - 1.0
-            open_rel = (o / prev_c) - 1.0
-            high_rel = (h / max(o, c)) - 1.0
-            low_rel = 1.0 - (low_v / min(o, c))
-            steps.append((open_rel, ret_close, high_rel, low_rel, volumes[idx]))
+    if not eligible_frames:
+        return shuffled_world
 
-        blocks = [steps[i : i + effective_block] for i in range(0, len(steps), effective_block)]
-        rng.shuffle(blocks)
-        flat_steps = [step for blk in blocks for step in blk]
+    parsed = {sym: _build_step_table(frame) for sym, frame in eligible_frames.items()}
 
-        new_rows: list[dict[str, object]] = []
-        dates = frame["date"].tolist() if "date" in frame else list(range(len(closes)))
-        prev_close = closes[0]
-        new_rows.append(
-            {
-                "date": dates[0],
-                "open": round(opens[0], 4),
-                "high": round(highs[0], 4),
-                "low": round(lows[0], 4),
-                "close": round(prev_close, 4),
-                "volume": int(volumes[0]),
-                "prev_close": round(prev_close, 4),
-            }
-        )
-        for idx, (open_rel, ret_close, high_rel, low_rel, vol) in enumerate(flat_steps, start=1):
-            new_close = max(0.01, prev_close * (1.0 + ret_close))
-            new_open = max(0.01, prev_close * (1.0 + open_rel))
-            new_high = max(new_open, new_close) * (1.0 + max(0.0, high_rel))
-            new_low = max(0.01, min(new_open, new_close) * (1.0 - min(0.95, max(0.0, low_rel))))
-            new_rows.append(
-                {
-                    "date": dates[idx],
-                    "open": round(new_open, 4),
-                    "high": round(new_high, 4),
-                    "low": round(new_low, 4),
-                    "close": round(new_close, 4),
-                    "volume": int(vol),
-                    "prev_close": round(prev_close, 4),
-                }
-            )
-            prev_close = new_close
+    # Joint synchronous cross-sectional date-block shuffle when overlapping dates exist
+    joint_perm: dict[Any, Any] | None = None
+    if joint and len(parsed) >= 2:
+        step_date_sets = [set(step_map.keys()) for _, _, step_map in parsed.values()]
+        common_dates = sorted(set.intersection(*step_date_sets)) if step_date_sets else []
+        if len(common_dates) >= 4:
+            blocks = [
+                common_dates[i : i + effective_block]
+                for i in range(0, len(common_dates), effective_block)
+            ]
+            permuted_blocks = list(blocks)
+            rng.shuffle(permuted_blocks)
+            shuffled_dates = [d for blk in permuted_blocks for d in blk]
+            # Map target_date -> source_date synchronously across all symbols
+            joint_perm = dict(zip(common_dates, shuffled_dates, strict=True))
 
-        shuffled_world[symbol] = pd.DataFrame(new_rows)
+    for symbol, (dates, first_row, step_map) in parsed.items():
+        if joint_perm is not None:
+            # Permute common dates synchronously; preserve order or locally shuffle non-common dates
+            non_common = [d for d in dates[1:] if d not in joint_perm]
+            non_common_blocks = [
+                non_common[i : i + effective_block]
+                for i in range(0, len(non_common), effective_block)
+            ]
+            rng.shuffle(non_common_blocks)
+            shuffled_non_common = iter([d for blk in non_common_blocks for d in blk])
+            ordered_steps = [
+                step_map[joint_perm[d]] if d in joint_perm else step_map[next(shuffled_non_common)]
+                for d in dates[1:]
+            ]
+        else:
+            raw_steps = [step_map[d] for d in dates[1:]]
+            blocks = [
+                raw_steps[i : i + effective_block]
+                for i in range(0, len(raw_steps), effective_block)
+            ]
+            rng.shuffle(blocks)
+            ordered_steps = [step for blk in blocks for step in blk]
+
+        shuffled_world[symbol] = _reconstruct_shuffled_frame(dates, first_row, ordered_steps)
 
     return shuffled_world
 
@@ -390,6 +445,89 @@ class NullSignalController:
             false_promotions=total_promotions,
             passed=(total_promotions == 0),
             worlds=worlds,
+        )
+
+    def evaluate_strategy_against_null_worlds(
+        self,
+        strategy: Strategy,
+        market_data: dict[str, pd.DataFrame],
+        observed_eval: EvaluationReport,
+        *,
+        n_worlds: int = 10,
+        block_size: int = 5,
+        seed: int = 42,
+        backtest_engine: Any = None,
+    ) -> NullControlReport:
+        """Re-run actual strategy backtests across *n_worlds* joint block-shuffled null worlds."""
+        from alphaevo.backtest.engine import BacktestEngine
+        from alphaevo.evaluator.metrics import Evaluator
+        from alphaevo.models.enums import SamplingMethod
+        from alphaevo.models.execution import SampleBatch
+
+        observed_mean = float(observed_eval.overall.avg_return)
+        observed_sigs = int(observed_eval.overall.signal_count)
+        engine = backtest_engine or BacktestEngine(min_data_days=15)
+        evaluator = Evaluator()
+        symbols = sorted(market_data.keys())
+
+        date_vals = [
+            d
+            for df in market_data.values()
+            if not df.empty and "date" in df
+            for d in pd.to_datetime(df["date"]).dt.date.tolist()
+        ]
+        if not date_vals or not symbols:
+            empty_stats = NullDistributionStats(method="strategy_rerun", n_permutations=0)
+            return NullControlReport(
+                observed_avg_return=observed_mean,
+                observed_signal_count=observed_sigs,
+                block_shuffle=empty_stats,
+                time_shift=empty_stats,
+                random_entry=empty_stats,
+                worst_null_threshold=0.0,
+                worst_p_value=1.0,
+                passed=False,
+                reasons=["No market data available for strategy-rerun null worlds"],
+            )
+
+        date_range = (min(date_vals), max(date_vals))
+        null_means: list[float] = []
+        for idx in range(max(1, n_worlds)):
+            world = generate_block_shuffled_market(
+                market_data,
+                block_size=block_size,
+                seed=seed + idx * 131,
+                joint=True,
+            )
+            batch = SampleBatch(
+                batch_id=f"null_world_{idx}",
+                strategy_id=strategy.meta.id,
+                symbols=symbols,
+                date_range=date_range,
+                sampling_method=SamplingMethod.REPRESENTATIVE,
+            )
+            bt = engine.run(strategy, world, batch)
+            ev = evaluator.evaluate_fast(bt, strategy, market_data=world)
+            null_means.append(ev.overall.avg_return if ev.overall.signal_count > 0 else 0.0)
+
+        stats = _summarize_null_means("strategy_rerun", observed_mean, null_means, 0.95)
+        reasons: list[str] = []
+        if observed_mean <= 0.0:
+            reasons.append(f"Observed avg return {observed_mean:.2%} is non-positive")
+        if observed_mean <= stats.threshold_value:
+            reasons.append(
+                f"Strategy return {observed_mean:.2%} fails to beat null-world p95 {stats.threshold_value:.2%}"
+            )
+        return NullControlReport(
+            observed_avg_return=round(observed_mean, 6),
+            observed_signal_count=observed_sigs,
+            block_shuffle=stats,
+            time_shift=stats,
+            random_entry=stats,
+            worst_null_threshold=round(stats.threshold_value, 6),
+            worst_p_value=round(stats.p_value, 4),
+            passed=len(reasons) == 0,
+            reasons=reasons,
         )
 
 

@@ -6,6 +6,7 @@ evaluate entry conditions, manage positions, check exits.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Literal
@@ -13,7 +14,12 @@ from typing import TYPE_CHECKING, Literal
 import pandas as pd
 
 from alphaevo.backtest.condition import ConditionEvaluator
-from alphaevo.backtest.indicators import IndicatorRegistry
+from alphaevo.backtest.indicators import (
+    IndicatorRegistry,
+    IndicatorValue,
+    _align_benchmark_idx,
+    _extract_dates,
+)
 from alphaevo.backtest.rules import MarketRuleChecker
 from alphaevo.models.enums import ExitReason, MarketRegime, SignalDirection
 from alphaevo.models.execution import BacktestResult, SampleBatch, TradeSignal
@@ -41,6 +47,7 @@ class _Position:
     entry_price: float
     regime: MarketRegime | None = None
     sector: str | None = None
+    entry_atr: float | None = None
     indicator_snapshot: dict[str, float | bool] | None = None
 
 
@@ -71,6 +78,17 @@ class BacktestEngine:
         self.commission = commission
         self.min_data_days = min_data_days
         self.fill_policy = normalized_fill_policy
+        self._evaluator_supports_precomputed = (
+            "precomputed" in inspect.signature(self.evaluator.evaluate_entry).parameters
+        )
+        self._cond_supports_precomputed = (
+            "precomputed" in inspect.signature(self.evaluator.evaluate_condition).parameters
+        )
+        self._rule_checker_supports_meta = (
+            "symbol" in inspect.signature(self.rule_checker.can_buy).parameters
+        )
+        self._regime_cache: dict[tuple[int, int], MarketRegime | None] = {}
+        self._regime_series_cache: dict[int, tuple[list[date] | None, list[MarketRegime]]] = {}
 
     def run(
         self,
@@ -96,7 +114,8 @@ class BacktestEngine:
         if unknown_indicators:
             names = ", ".join(unknown_indicators)
             raise ValueError(f"Unknown indicators in strategy: {names}")
-        self._regime_cache: dict[tuple[int, int], MarketRegime | None] = {}
+        self._regime_cache = {}
+        self._regime_series_cache = {}
 
         # Resolve market rules
         market_key = strategy.meta.market.value
@@ -143,6 +162,48 @@ class BacktestEngine:
             date_range=batch.date_range,
         )
 
+    def _can_buy(
+        self,
+        df: pd.DataFrame,
+        idx: int,
+        rules: MarketRuleConfig,
+        symbol: str,
+        stock_name: str,
+        is_st: bool | None,
+    ) -> bool:
+        if self._rule_checker_supports_meta:
+            return self.rule_checker.can_buy(
+                df,
+                idx,
+                rules,
+                symbol=symbol,
+                stock_name=stock_name,
+                is_st=is_st,
+            )
+        return self.rule_checker.can_buy(df, idx, rules)
+
+    def _can_sell(
+        self,
+        df: pd.DataFrame,
+        idx: int,
+        entry_idx: int,
+        rules: MarketRuleConfig,
+        symbol: str,
+        stock_name: str,
+        is_st: bool | None,
+    ) -> bool:
+        if self._rule_checker_supports_meta:
+            return self.rule_checker.can_sell(
+                df,
+                idx,
+                entry_idx,
+                rules,
+                symbol=symbol,
+                stock_name=stock_name,
+                is_st=is_st,
+            )
+        return self.rule_checker.can_sell(df, idx, entry_idx, rules)
+
     def _run_symbol(
         self,
         strategy: Strategy,
@@ -157,16 +218,37 @@ class BacktestEngine:
         signals: list[TradeSignal] = []
         position: _Position | None = None
         # Ensure we have enough bars for the largest indicator window
-        warmup = _indicator_warmup(self._collect_all_indicators(strategy))
+        all_indicators = self._collect_all_indicators(strategy)
+        warmup = _indicator_warmup(all_indicators)
         start_idx = max(self.min_data_days, warmup)
+
+        precompute_names = list(all_indicators)
+        precompute_names.extend(
+            ("rsi_14", "volume_ratio_1d_5d", "atr", "momentum_10d", "ma20_slope")
+        )
+        sl = strategy.exit.stop_loss
+        if sl.type == "atr":
+            atr_ind = f"atr_{sl.atr_period}" if sl.atr_period and sl.atr_period != 14 else "atr"
+            precompute_names.append(atr_ind)
+        precomputed = (
+            IndicatorRegistry.precompute(precompute_names, df, ctx)
+            if self._evaluator_supports_precomputed
+            else None
+        )
+        stock_name = ctx.stock_info.name if ctx and ctx.stock_info else ""
+        is_st = ctx.stock_info.is_st if ctx and ctx.stock_info else None
 
         for idx in range(start_idx, len(df)):
             # ── Holding a position: check exit ──
             if position is not None:
-                if not self.rule_checker.can_sell(df, idx, position.entry_idx, rules):
+                if not self._can_sell(
+                    df, idx, position.entry_idx, rules, symbol, stock_name, is_st
+                ):
                     continue
 
-                exit_result = self._check_exit(position, strategy, df, idx, ctx)
+                exit_result = self._check_exit(
+                    position, strategy, df, idx, ctx, precomputed=precomputed
+                )
                 if exit_result is not None:
                     reason, exit_price = exit_result
                     signal = self._close_position(position, df, idx, exit_price, reason, slippage)
@@ -175,14 +257,31 @@ class BacktestEngine:
                 continue  # Don't check entry while holding
 
             # ── No position: check entry ──
-            if not self.rule_checker.can_buy(df, idx, rules):
+            if timing == "close" and not self._can_buy(df, idx, rules, symbol, stock_name, is_st):
                 continue
 
             if not self._regime_allows_entry(strategy, df, idx, ctx):
                 continue
 
-            if self.evaluator.evaluate_entry(strategy.entry, df, idx, ctx):
-                position = self._open_position(symbol, df, idx, timing, slippage, ctx)
+            cond_ok = (
+                self.evaluator.evaluate_entry(strategy.entry, df, idx, ctx, precomputed=precomputed)
+                if self._evaluator_supports_precomputed
+                else self.evaluator.evaluate_entry(strategy.entry, df, idx, ctx)
+            )
+            if cond_ok:
+                position = self._open_position(
+                    symbol,
+                    df,
+                    idx,
+                    timing,
+                    slippage,
+                    ctx,
+                    rules=rules,
+                    stock_name=stock_name,
+                    is_st=is_st,
+                    strategy=strategy,
+                    precomputed=precomputed,
+                )
                 if position is None:
                     continue
                 # Capture indicator snapshot for failure analysis
@@ -191,6 +290,7 @@ class BacktestEngine:
                     df,
                     idx,
                     ctx,
+                    precomputed=precomputed,
                 )
 
         # Force close any remaining position at end
@@ -210,31 +310,49 @@ class BacktestEngine:
         timing: str,
         slippage: float,
         ctx: IndicatorContext | None,
+        *,
+        rules: MarketRuleConfig | None = None,
+        stock_name: str = "",
+        is_st: bool | None = None,
+        strategy: Strategy | None = None,
+        precomputed: dict[str, list[IndicatorValue]] | None = None,
     ) -> _Position | None:
         """Create a new position based on entry timing."""
-        if timing == "next_open" and signal_idx + 1 < len(df):
-            entry_idx = signal_idx + 1
-            entry_price = df["open"].iloc[entry_idx]
-        elif timing == "close":
+        if timing == "close":
             entry_idx = signal_idx
-            entry_price = df["close"].iloc[signal_idx]
+            entry_price = float(df["close"].iloc[signal_idx])
         elif timing == "breakout_high":
             if signal_idx + 1 >= len(df):
                 return None  # no next bar to check breakout
             entry_idx = signal_idx + 1
-            breakout_price = df["high"].iloc[signal_idx]
+            breakout_price = float(df["high"].iloc[signal_idx])
             # Confirm breakout: next day must open above signal day's high
-            next_open = df["open"].iloc[entry_idx]
+            next_open = float(df["open"].iloc[entry_idx])
             if next_open < breakout_price:
                 return None
             entry_price = next_open
         else:
-            # Default: next open
-            entry_idx = min(signal_idx + 1, len(df) - 1)
-            entry_price = df["open"].iloc[entry_idx]
+            # next_open / default: must have a valid next bar
+            if signal_idx + 1 >= len(df):
+                return None
+            entry_idx = signal_idx + 1
+            entry_price = float(df["open"].iloc[entry_idx])
+
+        # Enforce market rules on the actual entry bar
+        if rules is not None and not self._can_buy(df, entry_idx, rules, symbol, stock_name, is_st):
+            return None
 
         # Apply slippage (buy slightly higher)
         entry_price *= 1 + slippage
+
+        entry_atr: float | None = None
+        if strategy is not None and strategy.exit.stop_loss.type == "atr":
+            sl = strategy.exit.stop_loss
+            atr_ind = f"atr_{sl.atr_period}" if sl.atr_period and sl.atr_period != 14 else "atr"
+            if precomputed and atr_ind in precomputed:
+                entry_atr = float(precomputed[atr_ind][signal_idx])
+            else:
+                entry_atr = float(IndicatorRegistry.compute(atr_ind, df, signal_idx, ctx))
 
         entry_date = self._get_date(df, entry_idx)
         return _Position(
@@ -244,6 +362,7 @@ class BacktestEngine:
             entry_price=entry_price,
             regime=self._get_current_regime(df, signal_idx, ctx),
             sector=self._get_sector(ctx),
+            entry_atr=entry_atr,
         )
 
     def _check_exit(
@@ -253,10 +372,12 @@ class BacktestEngine:
         df: pd.DataFrame,
         idx: int,
         ctx: IndicatorContext | None,
+        *,
+        precomputed: dict[str, list[IndicatorValue]] | None = None,
     ) -> tuple[ExitReason, float] | None:
         """Check all exit conditions. Returns (reason, exit_price) or None."""
         exit_cfg = strategy.exit
-        current_price = df["close"].iloc[idx]
+        current_price = float(df["close"].iloc[idx])
         holding_days = idx - position.entry_idx
 
         # 1. Max holding days
@@ -264,7 +385,9 @@ class BacktestEngine:
             return (ExitReason.MAX_HOLD, current_price)
 
         # 2. Stop loss
-        stop_result = self._check_stop_loss(position, strategy, df, idx, ctx)
+        stop_result = self._check_stop_loss(
+            position, strategy, df, idx, ctx, precomputed=precomputed
+        )
 
         # 3. Take profit
         take_profit_result = self._check_take_profit(position, strategy, df, idx, ctx)
@@ -284,7 +407,12 @@ class BacktestEngine:
         # 4. Explicit exit triggers. These are end-of-bar sell signals,
         # so they execute at the current close after intraday risk checks.
         for trigger in exit_cfg.triggers:
-            if self.evaluator.evaluate_condition(trigger, df, idx, ctx):
+            hit = (
+                self.evaluator.evaluate_condition(trigger, df, idx, ctx, precomputed=precomputed)
+                if self._cond_supports_precomputed
+                else self.evaluator.evaluate_condition(trigger, df, idx, ctx)
+            )
+            if hit:
                 return (ExitReason.SIGNAL, current_price)
 
         return None
@@ -296,49 +424,66 @@ class BacktestEngine:
         df: pd.DataFrame,
         idx: int,
         ctx: IndicatorContext | None,
+        *,
+        precomputed: dict[str, list[IndicatorValue]] | None = None,
     ) -> tuple[ExitReason, float] | None:
-        """Check stop-loss exits for one bar."""
+        """Check stop-loss exits for one bar with gap-aware fills."""
         exit_cfg = strategy.exit
-        current_price = df["close"].iloc[idx]
+        current_price = float(df["close"].iloc[idx])
+        open_price = float(df["open"].iloc[idx])
+        low_price = float(df["low"].iloc[idx])
         sl = exit_cfg.stop_loss
         if sl.type == "pct" and sl.value is not None:
             stop_price = position.entry_price * (1 - sl.value)
-            low_price = df["low"].iloc[idx]
-            # Use intraday low for more realistic stop-loss simulation
+            if open_price <= stop_price:
+                return (ExitReason.STOP_LOSS, open_price)
             if low_price <= stop_price:
                 return (ExitReason.STOP_LOSS, stop_price)
 
         elif sl.type == "atr":
-            atr_ind = f"atr_{sl.atr_period}" if sl.atr_period and sl.atr_period != 14 else "atr"
-            atr_val = IndicatorRegistry.compute(atr_ind, df, idx, ctx)
+            entry_atr = getattr(position, "entry_atr", None)
+            if entry_atr is None:
+                atr_ind = f"atr_{sl.atr_period}" if sl.atr_period and sl.atr_period != 14 else "atr"
+                atr_val = float(IndicatorRegistry.compute(atr_ind, df, idx, ctx))
+            else:
+                atr_val = float(entry_atr)
             multiplier = sl.multiplier or 2.0
             stop_price = position.entry_price - atr_val * multiplier
-            low_price = df["low"].iloc[idx]
+            if open_price <= stop_price:
+                return (ExitReason.STOP_LOSS, open_price)
             if low_price <= stop_price:
                 return (ExitReason.STOP_LOSS, stop_price)
 
         elif sl.type == "pct_from_low" and sl.value is not None:
-            # Trailing stop: exit when low drops sl.value% from highest high
-            # Start from bar after entry to avoid using entry bar's high as anchor
-            trail_start = min(position.entry_idx + 1, idx)
-            high_since_entry = df["high"].iloc[trail_start : idx + 1].max()
-            low_price = df["low"].iloc[idx]
+            # Causal trailing peak using prior bars since entry
+            if idx > position.entry_idx:
+                high_since_entry = float(df["high"].iloc[position.entry_idx : idx].max())
+            else:
+                high_since_entry = float(df["high"].iloc[position.entry_idx])
             if high_since_entry > 0:
-                drawdown = (low_price - high_since_entry) / high_since_entry
-                if drawdown <= -sl.value:
-                    # Exit at the stop price, not the close
-                    stop_price = high_since_entry * (1 - sl.value)
+                stop_price = high_since_entry * (1 - sl.value)
+                if open_price <= stop_price:
+                    return (ExitReason.STOP_LOSS, open_price)
+                if low_price <= stop_price:
                     return (ExitReason.STOP_LOSS, stop_price)
 
         elif sl.type == "price_level":
             price_level = self._resolve_price_level(position, sl, df, idx, ctx)
-            if price_level is not None and df["low"].iloc[idx] <= price_level:
-                return (ExitReason.STOP_LOSS, price_level)
+            if price_level is not None:
+                if open_price <= price_level:
+                    return (ExitReason.STOP_LOSS, open_price)
+                if low_price <= price_level:
+                    return (ExitReason.STOP_LOSS, price_level)
 
         elif sl.type == "composite" and sl.conditions:
             # Any condition triggers stop loss
             for cond in sl.conditions:
-                if self.evaluator.evaluate_condition(cond, df, idx, ctx):
+                hit = (
+                    self.evaluator.evaluate_condition(cond, df, idx, ctx, precomputed=precomputed)
+                    if self._cond_supports_precomputed
+                    else self.evaluator.evaluate_condition(cond, df, idx, ctx)
+                )
+                if hit:
                     return (ExitReason.STOP_LOSS, current_price)
 
         return None
@@ -351,38 +496,47 @@ class BacktestEngine:
         idx: int,
         ctx: IndicatorContext | None,
     ) -> tuple[ExitReason, float] | None:
-        """Check take-profit exits for one bar."""
+        """Check take-profit exits for one bar with gap-aware fills."""
         exit_cfg = strategy.exit
         tp = exit_cfg.take_profit
+        open_price = float(df["open"].iloc[idx])
+        high_price = float(df["high"].iloc[idx])
+        low_price = float(df["low"].iloc[idx])
         risk_amount = self._compute_risk(position, exit_cfg.stop_loss, df, idx, ctx)
 
         if tp.type == "rr" and tp.value is not None:
             target = position.entry_price + risk_amount * tp.value
-            # Use intraday high for more realistic take-profit
-            if df["high"].iloc[idx] >= target:
+            if open_price >= target:
+                return (ExitReason.TAKE_PROFIT, open_price)
+            if high_price >= target:
                 return (ExitReason.TAKE_PROFIT, target)
 
         elif tp.type == "pct" and tp.value is not None:
             target = position.entry_price * (1 + tp.value)
-            if df["high"].iloc[idx] >= target:
+            if open_price >= target:
+                return (ExitReason.TAKE_PROFIT, open_price)
+            if high_price >= target:
                 return (ExitReason.TAKE_PROFIT, target)
 
         elif tp.type == "target_ma" and tp.target:
-            target_ma = self._resolve_target_ma(tp.target, df, idx)
-            if target_ma is not None and df["high"].iloc[idx] >= target_ma:
-                return (ExitReason.TAKE_PROFIT, target_ma)
+            target_idx = max(position.entry_idx, idx - 1)
+            target_ma = self._resolve_target_ma(tp.target, df, target_idx)
+            if target_ma is not None:
+                if open_price >= target_ma:
+                    return (ExitReason.TAKE_PROFIT, open_price)
+                if high_price >= target_ma:
+                    return (ExitReason.TAKE_PROFIT, target_ma)
 
-        elif tp.type == "trailing":
+        elif tp.type == "trailing" and idx > position.entry_idx:
             trigger_pct = tp.trigger_pct or 0.08
             trail_pct = tp.trail_pct or 0.04
-            high_since = df["high"].iloc[position.entry_idx : idx + 1].max()
+            high_since = float(df["high"].iloc[position.entry_idx : idx].max())
             gain_from_entry = (high_since - position.entry_price) / position.entry_price
             if gain_from_entry >= trigger_pct:
-                low_price = df["low"].iloc[idx]
-                drawdown_from_high = (high_since - low_price) / high_since
-                if drawdown_from_high >= trail_pct:
-                    # Exit at the trail level, not the close
-                    trail_price = high_since * (1 - trail_pct)
+                trail_price = high_since * (1 - trail_pct)
+                if open_price <= trail_price:
+                    return (ExitReason.TAKE_PROFIT, open_price)
+                if low_price <= trail_price:
                     return (ExitReason.TAKE_PROFIT, trail_price)
 
         return None
@@ -414,6 +568,9 @@ class BacktestEngine:
         if sl_config.type in ("pct", "pct_from_low") and sl_config.value is not None:
             return float(abs(position.entry_price * sl_config.value))
         elif sl_config.type == "atr":
+            entry_atr = getattr(position, "entry_atr", None)
+            if entry_atr is not None:
+                return float(float(entry_atr) * (sl_config.multiplier or 2.0))
             atr_ind = (
                 f"atr_{sl_config.atr_period}"
                 if sl_config.atr_period and sl_config.atr_period != 14
@@ -532,40 +689,51 @@ class BacktestEngine:
             return True
         return regime.value in set(strategy.meta.preferred_regime)
 
+    def _get_regime_series(
+        self,
+        source_df: pd.DataFrame,
+    ) -> tuple[list[date] | None, list[MarketRegime]]:
+        """Detect and cache full causal regime series for *source_df*."""
+        key = id(source_df)
+        cached = self._regime_series_cache.get(key)
+        if cached is not None:
+            return cached
+        work_df = source_df
+        if "high" not in work_df.columns or "low" not in work_df.columns:
+            work_df = source_df.copy()
+            for col in ("high", "low"):
+                if col not in work_df.columns:
+                    work_df[col] = work_df["close"]
+        regimes = RegimeDetector().detect_series(work_df)
+        dates = _extract_dates(source_df)
+        result = (dates, regimes)
+        self._regime_series_cache[key] = result
+        return result
+
     def _get_current_regime(
         self,
         df: pd.DataFrame,
         idx: int,
         ctx: IndicatorContext | None,
     ) -> MarketRegime | None:
-        """Detect current regime from benchmark data (preferred) or symbol data."""
-        benchmark_df = None
-        if ctx and isinstance(ctx.benchmark_df, pd.DataFrame):
-            benchmark_df = ctx.benchmark_df
-        elif ctx and ctx.market_context and ctx.market_context.regime is not None:
+        """Detect current regime causally from date-aligned benchmark or symbol data."""
+        if ctx and isinstance(ctx.benchmark_df, pd.DataFrame) and not ctx.benchmark_df.empty:
+            bm = ctx.benchmark_df
+            bm_idx = _align_benchmark_idx(df, idx, bm)
+            if bm_idx is None or bm_idx + 1 < 20:
+                return None
+            _, bm_regimes = self._get_regime_series(bm)
+            return bm_regimes[bm_idx]
+
+        # Only honor static MarketContext regime when series is shorter than the
+        # causal regime warmup window (<65 bars); longer series detect causally.
+        if len(df) < 65 and ctx and ctx.market_context and ctx.market_context.regime is not None:
             return ctx.market_context.regime
 
-        source_df = benchmark_df if benchmark_df is not None else df
-        cache_key = (id(source_df), idx)
-        if cache_key in self._regime_cache:
-            return self._regime_cache[cache_key]
-
-        end_idx = min(idx + 1, len(source_df))
-        start_idx = max(0, end_idx - 80)
-        window = source_df.iloc[start_idx:end_idx].copy()
-
-        if len(window) < 20:
-            self._regime_cache[cache_key] = None
+        if idx + 1 < 20:
             return None
-
-        for col in ("high", "low"):
-            if col not in window.columns:
-                window[col] = window["close"]
-
-        detector = RegimeDetector()
-        regime = detector.detect(window.reset_index(drop=True))
-        self._regime_cache[cache_key] = regime
-        return regime
+        _, sym_regimes = self._get_regime_series(df)
+        return sym_regimes[min(idx, len(sym_regimes) - 1)]
 
     @staticmethod
     def _collect_unknown_indicators(strategy: Strategy) -> list[str]:
@@ -599,6 +767,8 @@ class BacktestEngine:
         df: pd.DataFrame,
         idx: int,
         ctx: IndicatorContext | None,
+        *,
+        precomputed: dict[str, list[IndicatorValue]] | None = None,
     ) -> dict[str, float | bool]:
         """Capture all strategy-relevant indicator values at entry.
 
@@ -614,7 +784,10 @@ class BacktestEngine:
         for extra in ("rsi_14", "volume_ratio_1d_5d", "atr", "momentum_10d", "ma20_slope"):
             indicators_to_capture.add(extra)
         for name in sorted(indicators_to_capture):
-            if IndicatorRegistry.is_registered(name):
+            if precomputed is not None and name in precomputed:
+                val = precomputed[name][idx]
+                snapshot[name] = val if isinstance(val, bool) else round(float(val), 4)
+            elif IndicatorRegistry.is_registered(name):
                 try:
                     val = IndicatorRegistry.compute(name, df, idx, ctx)
                     if isinstance(val, bool):

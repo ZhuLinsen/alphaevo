@@ -108,6 +108,70 @@ class RegimeDetector:
 
         return MarketRegime.RANGE_BOUND
 
+    def detect_series(self, df: pd.DataFrame) -> list[MarketRegime]:
+        """Classify the market regime at every bar causally in O(N) time."""
+        n = len(df)
+        if n == 0:
+            return []
+        min_bars = self.ma_long + 5
+        if n < min_bars:
+            return [MarketRegime.RANGE_BOUND] * n
+
+        close = df["close"].to_numpy(dtype=float)
+        high = df["high"].to_numpy(dtype=float)
+        low = df["low"].to_numpy(dtype=float)
+
+        ma_short = self._sma(close, self.ma_short)
+        ma_long = self._sma(close, self.ma_long)
+        atr = self._atr(high, low, close, self.atr_period)
+        recent_max = (
+            pd.Series(close).rolling(self.ma_short, min_periods=1).max().to_numpy(dtype=float)
+        )
+
+        regimes: list[MarketRegime] = [MarketRegime.RANGE_BOUND] * n
+        for i in range(min_bars - 1, n):
+            ma_s_now = ma_short[i]
+            ma_s_prev = ma_short[i - 4] if i >= 4 else np.nan
+            if (
+                np.isnan(ma_s_now)
+                or np.isnan(ma_s_prev)
+                or ma_s_prev == 0
+                or not np.isfinite(ma_s_prev)
+            ):
+                slope = 0.0
+            else:
+                slope = float((ma_s_now - ma_s_prev) / (ma_s_prev * 5))
+                if not np.isfinite(slope):
+                    slope = 0.0
+
+            price_above_ma_long = (
+                bool(close[i] > ma_long[i])
+                if not np.isnan(ma_long[i]) and ma_long[i] > 0
+                else False
+            )
+            rel_volatility = float(atr[i] / close[i]) if close[i] > 0 else 0.0
+            rmax = recent_max[i]
+            drawdown_from_peak = float((rmax - close[i]) / rmax) if rmax > 0 else 0.0
+
+            if slope < self.crash_slope_threshold and drawdown_from_peak > 0.10:
+                regimes[i] = MarketRegime.PANIC
+            elif rel_volatility > self.volatility_threshold:
+                regimes[i] = MarketRegime.VOLATILE
+            elif slope > self.trend_slope_threshold and price_above_ma_long:
+                if (
+                    slope > self.trend_slope_threshold * 4
+                    and rel_volatility < self.volatility_threshold * 0.5
+                ):
+                    regimes[i] = MarketRegime.EUPHORIA
+                else:
+                    regimes[i] = MarketRegime.TRENDING_UP
+            elif slope < -self.trend_slope_threshold and not price_above_ma_long:
+                regimes[i] = MarketRegime.TRENDING_DOWN
+            else:
+                regimes[i] = MarketRegime.RANGE_BOUND
+
+        return regimes
+
     def detect_periods(
         self,
         df: pd.DataFrame,

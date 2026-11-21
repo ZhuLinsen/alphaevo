@@ -38,10 +38,11 @@ from alphaevo.models import (
     StockInfo,
     Strategy,
 )
-from alphaevo.models.enums import MarketType, SamplingMethod
+from alphaevo.models.enums import MarketType, RSILevel, SamplingMethod
 from alphaevo.sampler.adaptive import AdaptiveSampler
 from alphaevo.sampler.regime import RegimeDetector
 from alphaevo.strategy.store import StrategyStore
+from alphaevo.truth.ledger import TrialLedger, compute_data_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -372,12 +373,33 @@ class RunPipeline:
 
         on_progress("Evaluating results...")
         evaluator = Evaluator()
+        trial_ledger = TrialLedger(self.config.db_path)
         evaluation = evaluator.evaluate(
             result,
             strategy,
             market_data=data,
             contexts=contexts or None,
             backtest_config=self.config.backtest,
+            trial_ledger=trial_ledger,
+        )
+        executed = [s for s in result.signals if s.exit_price is not None]
+        if getattr(evaluation.overall, "metrics_basis", "trade_sequence") == "daily_mtm":
+            trial_returns = Evaluator.compute_daily_mtm_returns(executed, data)[0]
+        else:
+            trial_returns = [s.return_pct for s in executed]
+        trial_ledger.record_trial(
+            strategy=strategy,
+            trial_family_id=trial_ledger.resolve_trial_family_id(strategy),
+            data_fingerprint=compute_data_fingerprint(data),
+            rsi_level=RSILevel.L1_STRATEGY,
+            round_num=0,
+            signal_count=evaluation.overall.signal_count,
+            sharpe_ratio=evaluation.overall.sharpe_ratio,
+            returns=trial_returns,
+            confidence_score=evaluation.confidence_score,
+            passed_null_control=evaluation.null_control_passed,
+            accepted=True,
+            notes="pipeline_run",
         )
         on_progress(f"Confidence score: {evaluation.confidence_score:.2%}")
         data_source_health = self.data_manager.health_status()
@@ -512,14 +534,16 @@ class RunPipeline:
     ) -> dict[str, pd.DataFrame]:
         """Fetch OHLCV data for all *symbols* concurrently."""
         fetch_start, fetch_end = self._history_window_for_strategy(strategy, date_range)
+        sem = asyncio.Semaphore(max(1, self.config.data.max_concurrent_fetches))
 
         async def _fetch_one(symbol: str) -> tuple[str, pd.DataFrame | None]:
-            try:
-                df = await self.data_manager.get_history(symbol, fetch_start, fetch_end)
-                return (symbol, df)
-            except Exception:
-                logger.warning("Failed to fetch %s", symbol, exc_info=True)
-                return (symbol, None)
+            async with sem:
+                try:
+                    df = await self.data_manager.get_history(symbol, fetch_start, fetch_end)
+                    return (symbol, df)
+                except Exception:
+                    logger.warning("Failed to fetch %s", symbol, exc_info=True)
+                    return (symbol, None)
 
         results = await asyncio.gather(*[_fetch_one(s) for s in symbols])
         return {sym: df for sym, df in results if df is not None and not df.empty}
@@ -641,7 +665,8 @@ class RunPipeline:
     ) -> dict[str, IndicatorContext]:
         """Build per-symbol indicator context for L2/L3 indicators."""
         stock_lookup = {stock.symbol: stock for stock in stock_list}
-        benchmark_df = await self._fetch_benchmark_data(strategy.meta.market, date_range)
+        benchmark_range = self._history_window_for_strategy(strategy, date_range)
+        benchmark_df = await self._fetch_benchmark_data(strategy.meta.market, benchmark_range)
         benchmark_context = self._build_market_context(benchmark_df)
         provider_context = await self._call_optional_data_manager_method(
             "get_market_context",
@@ -658,24 +683,27 @@ class RunPipeline:
         ):
             batch.market_regimes.append(market_context.regime)
 
+        sem = asyncio.Semaphore(max(1, self.config.data.max_concurrent_fetches))
+
         async def _symbol_context(
             symbol: str,
         ) -> tuple[str, SectorInfo | None, EventContextSeries | None]:
-            sector = await self._call_optional_data_manager_method(
-                "get_sector_data",
-                symbol,
-            )
-            events = await self._call_optional_data_manager_method(
-                "get_event_context",
-                symbol,
-                date_range[0],
-                date_range[1],
-            )
-            return (
-                symbol,
-                sector if isinstance(sector, SectorInfo) else None,
-                events if isinstance(events, EventContextSeries) else None,
-            )
+            async with sem:
+                sector = await self._call_optional_data_manager_method(
+                    "get_sector_data",
+                    symbol,
+                )
+                events = await self._call_optional_data_manager_method(
+                    "get_event_context",
+                    symbol,
+                    date_range[0],
+                    date_range[1],
+                )
+                return (
+                    symbol,
+                    sector if isinstance(sector, SectorInfo) else None,
+                    events if isinstance(events, EventContextSeries) else None,
+                )
 
         symbol_results = await asyncio.gather(*[_symbol_context(symbol) for symbol in data])
         sector_map = {symbol: sector for symbol, sector, _ in symbol_results}
@@ -822,12 +850,16 @@ class RunPipeline:
 
     def ensure_builtin_strategies(self) -> int:
         """Import built-in strategy YAML files if not already in the store."""
-        # Resolve relative to the package source tree
+        from alphaevo.cli.demo import _resolve_bundled_path
+
+        # Resolve relative to the package source tree first
         builtin_dir = (
             Path(__file__).resolve().parent.parent.parent.parent / "strategies" / "builtin"
         )
         if not builtin_dir.exists():
-            builtin_dir = Path("strategies/builtin")
+            bundled = _resolve_bundled_path("strategies/builtin")
+            if bundled is not None:
+                builtin_dir = bundled
         if builtin_dir.exists():
             return self.store.import_builtin_strategies(builtin_dir)
         logger.warning("Built-in strategies directory not found")

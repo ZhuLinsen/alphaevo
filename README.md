@@ -31,14 +31,14 @@ To keep self-evolution honest on noisy equity data, AlphaEvo separates **fast of
 
 ### Reproducible no-key showcase
 
-Bundled frozen yfinance snapshot, US tech basket, 2025-02-11 to 2026-04-10:
+Bundled frozen yfinance snapshot, US tech basket, 2025-02-11 to 2026-04-10 (evaluated under chronological equal-weight **daily MTM**, gap-aware open SL/TP fills, and **measured parameter sensitivity**):
 
 | Strategy | Signals | Win Rate | Avg Return | Max DD | Score |
 |----------|---------|----------|------------|--------|-------|
-| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 8.1% |
-| `rsi_reversion_v7` champion | 37 | 48.6% | 2.94% | 23.6% | 68.7% |
+| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 6.6% |
+| `rsi_reversion_v7` champion | 37 | 48.6% | 2.94% | 26.7% | 65.9% |
 
-What happened: the deterministic research committee flagged an over-confirmed entry stack, unlocked enough signals, widened the stop, extended holding, raised the payoff target, switched support context to MA60, then tightened volume confirmation. Each change was accepted only after retest. The champion keeps train-val and val-test gaps at 7.1% / 7.1% on this snapshot. See [showcase_rsi_reversion_real_snapshot.md](docs/reports/showcase_rsi_reversion_real_snapshot.md).
+What happened: the deterministic research committee flagged an over-confirmed entry stack, unlocked enough signals (`22.1%`), widened the stop (Sharpe/expectancy bridge), extended holding, raised the payoff target, switched support context to MA60, then tightened volume confirmation. Each change was accepted only after retest. The champion keeps train-val and val-test gaps at 7.1% / 7.1% on this snapshot. See [showcase_rsi_reversion_real_snapshot.md](docs/reports/showcase_rsi_reversion_real_snapshot.md).
 
 ### Live-data LLM evolution path
 
@@ -51,12 +51,21 @@ Live yfinance data, configured external LLM provider, `alphaevo evolve rsi_rever
 
 Different data windows and protocols should not be ranked directly; the snapshot showcase is the stable no-key first run, while this path demonstrates the LLM research loop on live market data.
 
-## 🧠 Core Capabilities
+## 🧠 Core Capabilities & Maturity Status
 
-- **Backtesting and evaluation**: run strategies on real data with regime sampling, multi-metric scoring, and walk-forward anti-overfitting checks.
-- **Recursive self-improvement (`alphaevo rsi`)**: drive `program.md`-steered L1 strategy mutations, L2 Co-STEER factor synthesis, `(regime × style × horizon)` MAP-Elites archives, executable reflection scars, and heterogeneous proposer/prosecutor reviews with `results.tsv` provenance.
-- **L0 truth kernel & forward shadow ledger (`truth` / `shadow`)**: enforce an append-only `TrialLedger` with Deflated Sharpe Ratio (DSR), shuffled-return null-signal controls, runtime point-in-time (PIT) leak probes, and SHA-256 hash-chained forward commitments.
-- **Traceable research workflow**: keep deterministic or LLM research committee verdicts, evolution trees, and SFT/DPO trajectory exports for every iteration.
+- **Vectorized Quant Engine & Execution Realism**: O(N) precomputed indicators (`IndicatorRegistry.precompute`), O(N) causal regime detection, date-aligned benchmark context, gap-aware open stop/take-profit fills, frozen entry ATR, `next_open` entry-bar A-share limit/ST/suspension enforcement, and dual-layer evaluation (`daily_mtm` primary basket DD/Sharpe + `trade_sequence_*` diagnostics).
+- **Recursive self-improvement (`alphaevo rsi`)**: `program.md`-steered L1 strategy mutations, L2 Co-STEER factor synthesis, `(regime × style × horizon)` MAP-Elites archives, persistent executable reflection scars, and heterogeneous proposer/prosecutor reviews (CLI + LiteLLM) with `results.tsv` provenance.
+- **L0 truth kernel & forward shadow ledger (`truth` / `shadow`)**: fail-closed SQLite `TrialLedger` with Deflated Sharpe Ratio (DSR), synchronous cross-sectional block-shuffled null controls & strategy-rerun null worlds, restricted-namespace subprocess/runtime point-in-time (PIT) probes, and SHA-256 hash-chained forward commitments with monotonic `as_of`, replay-gate isolation, per-stage `CANARY -> ACTIVE` dwell, and `HALTED` protection.
+- **Traceable research workflow**: deterministic or LLM research committee verdicts, evolution trees, and SFT/DPO trajectory exports for every iteration.
+
+| Capability Area | Status | Notes |
+|-----------------|--------|-------|
+| YAML Strategy DSL v0.5, O(N) Backtest & Dual-Layer MTM Evaluator | **Implemented** | Bundled assets in wheel; cross-platform cache & lazy CLI startup (~0.1s) |
+| L0 Truth Kernel (`TrialLedger`, DSR, Joint Null Controls, PIT Probe) | **Implemented** | Fail-closed persistence; runtime PIT truncation on custom factors |
+| Dual-Clock RSI Ratchet & Forward Shadow Ledger | **Implemented** | Hash-chained commits, atomic T+5/10/20 backfill, asymmetric gates |
+| Heterogeneous CLI / LiteLLM Multi-Model Council | **Implemented** | Deterministic general heuristic fallback when API keys unavailable |
+| Event/News & Sector Context Indicators (L2/L3) | **Experimental** | Degrades to price/volume proxy or static snapshot with explicit warnings |
+| Multi-Strategy Risk Budgeting & Web Dashboard | **Planned** | Roadmap Phase 6–7 |
 
 ## 🚀 Quick Start
 
@@ -78,14 +87,14 @@ This runs a real historical-data showcase from a bundled yfinance snapshot:
 ```
 Showcase Chain: baseline + up to 6 validated mutations
 
-Round 1 │ rsi_reversion_v1 │ Signals: 0  │ Score: 8.1%
+Round 1 │ rsi_reversion_v1 │ Signals: 0  │ Score: 6.6%
   Committee: entry stack is too strict
   Mutation: entry.logic and -> or
 
-Round 2 │ rsi_reversion_v2 │ Signals: 79 │ Score: 17.8%
+Round 2 │ rsi_reversion_v2 │ Signals: 79 │ Score: 22.1%
   Mutation: exit.stop_loss.value 0.05 -> 0.08
 
-Round 7 │ rsi_reversion_v7 │ Signals: 37 │ Score: 68.7% 🏆
+Round 7 │ rsi_reversion_v7 │ Signals: 37 │ Score: 65.9% 🏆
 ```
 
 ### Choose the right path

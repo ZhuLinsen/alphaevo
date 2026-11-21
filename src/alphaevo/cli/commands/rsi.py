@@ -7,38 +7,19 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
-import pandas as pd  # type: ignore[import-untyped]
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from alphaevo.backtest.engine import BacktestEngine
 from alphaevo.cli._helpers import _get_config
-from alphaevo.cli.demo import _find_builtin_strategy_dir, load_showcase_snapshot
-from alphaevo.core.config import ConfigManager
-from alphaevo.data.adapter import DataManager, get_adapter_chain
-from alphaevo.evaluator.metrics import Evaluator
-from alphaevo.forward.shadow_ledger import ShadowLedger
-from alphaevo.models.enums import RSILevel, SamplingMethod
-from alphaevo.models.execution import SampleBatch
-from alphaevo.models.strategy import Strategy
-from alphaevo.rsi.council import (
-    HeterogeneousCouncil,
-    HeterogeneousCouncilConfig,
-    ModelSpec,
-)
-from alphaevo.rsi.engine import StockRSIEngine
-from alphaevo.rsi.mechanism import HarnessVariant, MechanismEvaluator
-from alphaevo.rsi.program import RSICharter, parse_rsi_program
-from alphaevo.strategy.dsl.parser import StrategyParser
-from alphaevo.strategy.store import StrategyStore
-from alphaevo.truth.ledger import TrialLedger
-from alphaevo.truth.null_control import NullSignalController
-from alphaevo.truth.pit_probe import probe_point_in_time_invariance
 
 if TYPE_CHECKING:
+    import pandas as pd  # type: ignore[import-untyped]
+
     from alphaevo.core.config import AppConfig
+    from alphaevo.models.strategy import Strategy
+    from alphaevo.rsi.council import HeterogeneousCouncil
 
 rsi_app = typer.Typer(
     help="Dual-Clock Stock RSI — evolve strategies (L1), factors (L2), and harnesses (L3)"
@@ -54,6 +35,10 @@ console = Console()
 
 def _resolve_strategy(strategy_ref: str, config: AppConfig) -> Strategy:
     """Resolve strategy from YAML path, builtin filename/id, or SQLite StrategyStore."""
+    from alphaevo.cli.demo import _find_builtin_strategy_dir
+    from alphaevo.strategy.dsl.parser import StrategyParser
+    from alphaevo.strategy.store import StrategyStore
+
     parser = StrategyParser()
     candidate_path = Path(strategy_ref)
     if candidate_path.is_file():
@@ -88,12 +73,18 @@ def _load_market_data(
 ) -> dict[str, pd.DataFrame]:
     """Load real-snapshot stock data (default zero-network) or live market data."""
     if not live:
+        from alphaevo.cli.demo import load_showcase_snapshot
+
         data, _ = load_showcase_snapshot()
         return data
 
+    from alphaevo.core.config import ConfigManager
+    from alphaevo.data.adapter import DataManager, get_adapter_chain
+    from alphaevo.data.cache import DataCache
+
     config = ConfigManager().load()
     chain = get_adapter_chain(config)
-    mgr = DataManager(adapters=chain)
+    mgr = DataManager(adapters=chain, cache=DataCache(config.data.cache_dir))
     end_d = date.today()
     start_d = date.fromordinal(end_d.toordinal() - days)
     target_syms = symbols or ["AAPL", "MSFT", "NVDA", "AMD", "TSLA"]
@@ -121,6 +112,12 @@ def _build_council(
     prosecutor_model: str | None,
 ) -> HeterogeneousCouncil:
     """Build Adversarial Heterogeneous Council respecting method and model families."""
+    from alphaevo.rsi.council import (
+        HeterogeneousCouncil,
+        HeterogeneousCouncilConfig,
+        ModelSpec,
+    )
+
     if method == "heuristic" and not proposer_model and not prosecutor_model:
         return HeterogeneousCouncil()
 
@@ -180,6 +177,10 @@ def rsi_run(
     ),
 ) -> None:
     """Run the L0-grounded Stock RSI evolution ratchet loop."""
+    from alphaevo.models.enums import RSILevel
+    from alphaevo.rsi.engine import StockRSIEngine
+    from alphaevo.rsi.program import RSICharter, parse_rsi_program
+
     config = _get_config()
     try:
         seed_strategy = _resolve_strategy(strategy_id, config)
@@ -188,7 +189,14 @@ def rsi_run(
         raise typer.Exit(1) from None
 
     if program is not None:
-        charter = parse_rsi_program(program)
+        resolved_program = program
+        if not resolved_program.is_file():
+            from alphaevo.cli.demo import _resolve_bundled_path
+
+            bundled_prog = _resolve_bundled_path(program.name)
+            if bundled_prog is not None:
+                resolved_program = bundled_prog
+        charter = parse_rsi_program(resolved_program)
         charter.seed_strategy_id = seed_strategy.meta.id
     else:
         parsed_levels = [
@@ -286,6 +294,11 @@ def rsi_null_audit(
     rounds: int = typer.Option(3, "--rounds", "-r", help="RSI rounds per null world"),
 ) -> None:
     """Tier-2 L0 Anti-Delusion check: verify 0 promotions occur on shuffled returns."""
+    from alphaevo.models.enums import RSILevel
+    from alphaevo.rsi.engine import StockRSIEngine
+    from alphaevo.rsi.program import RSICharter
+    from alphaevo.truth.null_control import NullSignalController
+
     config = _get_config()
     seed_strategy = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=False)
@@ -328,6 +341,8 @@ def rsi_mechanism_ab(
     rounds: int = typer.Option(3, "--rounds", "-r", help="Budget per harness variant"),
 ) -> None:
     """L3 Meta-RSI paired AB experiment comparing harness calibration on unseen forward bars."""
+    from alphaevo.rsi.mechanism import HarnessVariant, MechanismEvaluator
+
     config = _get_config()
     seed_strategy = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=False)
@@ -385,6 +400,14 @@ def shadow_register(
     ),
 ) -> None:
     """Preregister a strategy candidate into the Forward Shadow Ledger."""
+    import pandas as pd  # type: ignore[import-untyped]
+
+    from alphaevo.backtest.engine import BacktestEngine
+    from alphaevo.evaluator.metrics import Evaluator
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+    from alphaevo.models.enums import SamplingMethod
+    from alphaevo.models.execution import SampleBatch
+
     config = _get_config()
     strat = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=False)
@@ -416,8 +439,17 @@ def shadow_emit(
     strategy_id: str = typer.Argument(..., help="Registered strategy ID or YAML path"),
     as_of: str | None = typer.Option(None, "--as-of", help="Point-in-time date YYYY-MM-DD"),
     live: bool = typer.Option(False, "--live", help="Fetch live market data"),
+    replay: bool | None = typer.Option(
+        None,
+        "--replay/--no-replay",
+        help="Mark backdated commit as replay (defaults to True when --as-of is given without --no-replay)",
+    ),
 ) -> None:
     """Emit point-in-time forward setups strictly truncated to ``--as-of``."""
+    import pandas as pd  # type: ignore[import-untyped]
+
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
     config = _get_config()
     strat = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=live)
@@ -427,8 +459,15 @@ def shadow_emit(
         if not df.empty and "date" in df
     )
     eval_date = datetime.strptime(as_of, "%Y-%m-%d").date() if as_of else max_avail
+    is_replay = replay if replay is not None else (as_of is not None)
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
-    commit = ledger.commit_signals(strat, market_data, as_of=eval_date)
+    commit = ledger.commit_signals(
+        strat,
+        market_data,
+        as_of=eval_date,
+        is_replay=is_replay,
+        enforce_wall_clock=not is_replay and live,
+    )
     console.print(
         f"[green]✓ Committed[/green] {commit.commit_id} | as_of={commit.as_of} | "
         f"raw={commit.total_raw_candidates} | capped={commit.sector_capped_count} | "
@@ -442,6 +481,10 @@ def shadow_backfill(
     live: bool = typer.Option(False, "--live", help="Fetch live market data"),
 ) -> None:
     """Backfill T+5/10/20 forward outcomes up to ``--as-of`` (immature signals stay excluded)."""
+    import pandas as pd  # type: ignore[import-untyped]
+
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
     config = _get_config()
     market_data = _load_market_data(live=live)
     max_avail = max(
@@ -465,6 +508,8 @@ def shadow_status(
     horizon: int = typer.Option(10, "--horizon", help="Horizon days: 5, 10, or 20"),
 ) -> None:
     """Display Forward Shadow Ledger decay ratios, N_eff, and stage status."""
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
     config = _get_config()
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
     candidates = ledger.list_candidates()
@@ -503,6 +548,8 @@ def shadow_promote(
     horizon: int = typer.Option(10, "--horizon", help="Evaluation horizon: 5, 10, or 20"),
 ) -> None:
     """Evaluate asymmetric promotion/halt gates for a Forward Shadow candidate."""
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
     config = _get_config()
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
     decision = ledger.evaluate_promotion(
@@ -524,6 +571,8 @@ def shadow_promote(
 @shadow_app.command("verify")
 def shadow_verify() -> None:
     """Verify cryptographic SHA-256 hash chain integrity of commits.jsonl."""
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
     config = _get_config()
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
     ok, errs = ledger.verify_chain()
@@ -545,6 +594,8 @@ def truth_trials(
     limit: int = typer.Option(25, "--limit", "-n", help="Max rows to display"),
 ) -> None:
     """Inspect L0 TrialLedger accounting and Deflated Sharpe probabilities."""
+    from alphaevo.truth.ledger import TrialLedger
+
     config = _get_config()
     ledger = TrialLedger(config.db_path)
     records = ledger.list_trials(trial_family_id=family, limit=limit)
@@ -586,6 +637,8 @@ def truth_pit_probe(
     ],
 ) -> None:
     """Run AST whitelist + runtime future-noise/truncation PIT probe on factor code."""
+    from alphaevo.truth.pit_probe import probe_point_in_time_invariance
+
     if not factor_file.is_file():
         console.print(f"[red]File not found: {factor_file}[/red]")
         raise typer.Exit(1)

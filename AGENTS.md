@@ -150,6 +150,7 @@
 | `data.cache_dir` | `ALPHAEVO_CACHE_DIR` | `~/.alphaevo/cache/` | 数据缓存目录 |
 | `data.source_failure_threshold` | `ALPHAEVO_DATA_SOURCE_FAILURE_THRESHOLD` | `3` | 单数据源连续失败达到阈值后临时熔断 |
 | `data.source_cooldown_seconds` | `ALPHAEVO_DATA_SOURCE_COOLDOWN_SECONDS` | `60.0` | 数据源熔断冷却秒数 |
+| `data.max_concurrent_fetches` | `ALPHAEVO_DATA_MAX_CONCURRENT_FETCHES` | `8` | 异步并发抓取最大并发数 |
 | `db.path` | `ALPHAEVO_DB_PATH` | `~/.alphaevo/alphaevo.db` | SQLite 数据库路径 |
 | `backtest.slippage` | — | `0.001` | 默认滑点 |
 | `backtest.commission` | — | `0.0003` | 默认手续费率 |
@@ -524,11 +525,12 @@ confidence_score =
   + 0.15 × drawdown_score         # 回撤 (30%=0分, 反转取值)
   + 0.10 × sharpe_score           # 夏普比率 (2.0=满分)
   + 0.10 × consistency_score      # 年度一致性
-  + 0.10 × sensitivity_score      # 参数敏感度 (越低越好)
+  + 0.10 × sensitivity_score      # 参数敏感度 (越低越好；未实测取中性值 0.5)
   - overfit_penalty               # train-val gap>10%: -0.15; val-test gap>8%: -0.10
   - complexity_penalty            # complexity_score × 0.10
 ```
 
+> 当提供 `market_data` 时，回撤、Sharpe 与总收益主口径为按日等权 Mark-to-Market 组合序列（`metrics_basis="daily_mtm"`，`trade_sequence_*` 保留为诊断对照）。未显式运行参数扰动实测时，`sensitivity_score` 保持中性 `0.5`，不再默认给予 `1.0` 满分。
 > ⚠️ 本公式与 `docs/module_tech_specs.md` §6 保持一致。修改时必须同步两处。
 
 ---

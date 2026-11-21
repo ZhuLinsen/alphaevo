@@ -87,6 +87,21 @@ class AkShareAdapter(DataAdapter):
 
         return self._normalize(df)
 
+    async def get_history_range(self, symbol: str, start: date, end: date) -> pd.DataFrame | None:
+        """Fetch daily OHLCV for an explicit calendar range [start, end]."""
+        code = _normalize_a_share_symbol(symbol)
+        try:
+            df = await asyncio.to_thread(self._fetch_hist, code, start, end)
+        except Exception:
+            logger.exception("akshare range fetch failed for %s", code)
+            return self._empty_df()
+
+        if df is None or df.empty:
+            logger.warning("No data returned for %s (%s -> %s)", code, start, end)
+            return self._empty_df()
+
+        return self._normalize(df)
+
     async def get_stock_list(self, market: MarketType) -> list[StockInfo]:
         """Get stock list.
 

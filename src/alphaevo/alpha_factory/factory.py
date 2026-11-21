@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pandas as pd
 
 from alphaevo.alpha_factory.factor_store import FactorRecord, FactorStore
-from alphaevo.alpha_factory.sandbox import FactorSandbox
+from alphaevo.alpha_factory.sandbox import FactorSandbox, build_restricted_namespace
 from alphaevo.alpha_factory.synthesizer import FactorHypothesis, FactorSynthesizer
 from alphaevo.alpha_factory.validator import FactorValidator, ValidationThresholds
 from alphaevo.backtest.indicators import IndicatorFn, IndicatorRegistry
@@ -53,13 +53,7 @@ def _build_indicator_fn(
     if not is_safe:
         return _zero_indicator
 
-    namespace = {
-        "np": __import__("numpy"),
-        "pd": __import__("pandas"),
-        "math": __import__("math"),
-        "numpy": __import__("numpy"),
-        "pandas": __import__("pandas"),
-    }
+    namespace = build_restricted_namespace()
     try:
         exec(factor_code, namespace)  # noqa: S102
     except Exception:
@@ -77,7 +71,8 @@ def _build_indicator_fn(
     ) -> float | bool:
         del ctx
         try:
-            val = float(compute(df, idx))
+            pit_df = df.iloc[: idx + 1]
+            val = float(compute(pit_df, idx))
             import numpy as np
 
             return val if np.isfinite(val) else 0.0
@@ -91,17 +86,19 @@ def _execute_factor_series(
     code: str,
     ohlcv_data: pd.DataFrame,
     sandbox: FactorSandbox,
+    *,
+    verify_pit: bool = True,
 ) -> tuple[pd.Series | None, str | None]:
     """Execute factor code while respecting symbol boundaries."""
     if "_symbol" not in ohlcv_data.columns:
-        sandbox_result = sandbox.execute(code, ohlcv_data)
+        sandbox_result = sandbox.execute(code, ohlcv_data, verify_pit=verify_pit)
         if not sandbox_result.success or sandbox_result.values is None:
             return None, sandbox_result.error or "Sandbox execution failed"
         return pd.Series(sandbox_result.values, index=ohlcv_data.index, dtype=float), None
 
     factor_values = pd.Series(index=ohlcv_data.index, dtype=float)
     for symbol, group in ohlcv_data.groupby("_symbol", sort=False):
-        sandbox_result = sandbox.execute(code, group)
+        sandbox_result = sandbox.execute(code, group, verify_pit=verify_pit)
         if not sandbox_result.success or sandbox_result.values is None:
             err = sandbox_result.error or "Sandbox execution failed"
             return None, f"{symbol}: {err}"
@@ -188,12 +185,14 @@ class AlphaFactory:
         sandbox_timeout: int = 30,
         validation_thresholds: ValidationThresholds | None = None,
         max_refine_attempts: int = 2,
+        verify_pit: bool = True,
     ) -> None:
         self._synthesizer = FactorSynthesizer(llm_client)
         self._sandbox = FactorSandbox(timeout_seconds=sandbox_timeout)
         self._validator = FactorValidator(validation_thresholds)
         self._store = FactorStore(db_path)
         self._max_refine = max_refine_attempts
+        self._verify_pit = verify_pit
 
     async def discover(
         self,
@@ -256,7 +255,9 @@ class AlphaFactory:
     ) -> None:
         """Process a single factor candidate through sandbox → validation → store."""
         # Phase 2: Sandbox execution (with retry)
-        factor_series, sandbox_error = _execute_factor_series(hyp.code, ohlcv_data, self._sandbox)
+        factor_series, sandbox_error = _execute_factor_series(
+            hyp.code, ohlcv_data, self._sandbox, verify_pit=self._verify_pit
+        )
 
         if factor_series is None:
             # Try refining
@@ -269,6 +270,7 @@ class AlphaFactory:
                     hyp.code,
                     ohlcv_data,
                     self._sandbox,
+                    verify_pit=self._verify_pit,
                 )
                 if factor_series is not None:
                     break

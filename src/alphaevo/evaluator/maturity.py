@@ -229,7 +229,17 @@ def _robustness_check(report: EvaluationReport) -> MaturityCheck:
 
 def _data_quality_check(report: EvaluationReport) -> MaturityCheck:
     event_context = report.event_context
+    static_warnings = list(report.static_context_warnings)
     if event_context is None or not event_context.uses_event_indicators:
+        if static_warnings:
+            return MaturityCheck(
+                check_id="data_quality",
+                title="Data Quality",
+                status="watch",
+                evidence=["event_indicators=none", *static_warnings],
+                recommendation="Replace static snapshot context with point-in-time historical series before promotion.",
+                inspired_by=["OpenBB", "Qlib"],
+            )
         return MaturityCheck(
             check_id="data_quality",
             title="Data Quality",
@@ -243,13 +253,16 @@ def _data_quality_check(report: EvaluationReport) -> MaturityCheck:
         f"provider_coverage={event_context.provider_coverage:.1%}",
         f"proxy_only_coverage={event_context.proxy_only_coverage:.1%}",
         f"indicators={', '.join(event_context.relevant_indicators)}",
+        *static_warnings,
     ]
     if event_context.is_proxy_dominant:
         status: MaturityStatus = "fail"
         recommendation = "Fix provider coverage or switch to OHLCV-only variant before mutation."
-    elif event_context.has_proxy_caveat:
+    elif event_context.has_proxy_caveat or static_warnings:
         status = "watch"
-        recommendation = "Keep proxy caveat visible and validate with provider-backed context."
+        recommendation = (
+            "Keep proxy/static-context caveats visible and validate with PIT historical context."
+        )
     else:
         status = "pass"
         recommendation = "Provider-backed event context is acceptable for local research."
