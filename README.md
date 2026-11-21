@@ -61,11 +61,13 @@ Different data windows and protocols should not be ranked directly; the snapshot
 | Capability Area | Status | Notes |
 |-----------------|--------|-------|
 | YAML Strategy DSL v0.5, O(N) Backtest & Dual-Layer MTM Evaluator | **Implemented** | Bundled assets in wheel; cross-platform cache & lazy CLI startup (~0.1s) |
-| L0 Truth Kernel (`TrialLedger`, DSR, Joint Null Controls, PIT Probe) | **Implemented** | Fail-closed persistence; runtime PIT truncation on custom factors |
-| Dual-Clock RSI Ratchet & Forward Shadow Ledger | **Implemented** | Hash-chained commits, atomic T+5/10/20 backfill, asymmetric gates |
+| Unified `EvaluationKernel` & Locked Holdout Vault | **Implemented** | Chronological holdout isolation, Layer-2 portfolio veto gate, Optimizer `TrialLedger` tracking & CI all-indicator PIT invariance tests |
+| L0 Truth Kernel (`TrialLedger`, DSR, Joint Null Controls, PIT Probe) | **Implemented** | Fail-closed persistence, runtime PIT truncation on custom factors & CI Tier-2 0-false-promotion audit |
+| Dual-Clock RSI Ratchet & Forward Shadow Ledger | **Implemented** | `FactorStore`-persisted Co-STEER L2 factors, unified `ExperienceStore` metrics, SHA-256 hash chain & optional auto-enrollment |
+| Immutable Run Provenance & Scoped Leaderboard | **Implemented** | `RunArtifactStore` manifests, secret-free config snapshots, `alphaevo runs list/show/compare` & `leaderboard --scope local\|official` |
 | Heterogeneous CLI / LiteLLM Multi-Model Council | **Implemented** | Deterministic general heuristic fallback when API keys unavailable |
 | Event/News & Sector Context Indicators (L2/L3) | **Experimental** | Degrades to price/volume proxy or static snapshot with explicit warnings |
-| Multi-Strategy Risk Budgeting & Web Dashboard | **Planned** | Roadmap Phase 6–7 |
+| Data Bundles (`data bundle create`) & Web Dashboard | **Planned** | Next-stage canonical bundle & web workspace |
 
 ## 🚀 Quick Start
 
@@ -324,14 +326,16 @@ data_manager = DataManager([DSAAdapter(dsa_path="/path/to/dsa")])
 ```bash
 alphaevo showcase                 # Real-data 30s snapshot showcase (no API key)
 alphaevo demo --real              # Real data demo without API key
-alphaevo run <id>                 # Full research loop
+alphaevo run <id> --protocol full_research_v1  # Full loop + immutable provenance bundle
+alphaevo runs list                # Inspect indexed run/evolve/optimize/rsi artifacts
+alphaevo runs compare <r1> <r2>   # Compare immutable manifests & strategy YAML diffs
 alphaevo evolve <id> --method llm --rounds 3 --output reports/  # LLM-first evolution
-alphaevo rsi run <id> --program examples/rsi_stock_program.md   # Stock RSI ratchet loop
+alphaevo rsi run <id> --holdout-pct 0.20 --portfolio-gate --enroll-shadow
 alphaevo rsi null-audit <id>      # Verify 0 false promotions under shuffled returns
 alphaevo shadow status            # Forward shadow ledger & promotion stages
 alphaevo truth trials             # Inspect append-only TrialLedger & DSR records
 alphaevo factor discover <symbol> # LLM-driven factor discovery
-alphaevo leaderboard              # Strategy rankings
+alphaevo leaderboard --scope local  # Strategy rankings (use --scope official for verified runs)
 alphaevo tree <id>                # Evolution tree visualization
 ```
 

@@ -25,6 +25,7 @@ _EULER_GAMMA = 0.5772156649015329
 _SRC_ROOT = Path(__file__).resolve().parents[1]
 _KERNEL_FILES = (
     _SRC_ROOT / "evaluator" / "metrics.py",
+    _SRC_ROOT / "truth" / "kernel.py",
     _SRC_ROOT / "truth" / "ledger.py",
     _SRC_ROOT / "truth" / "null_control.py",
     _SRC_ROOT / "truth" / "pit_probe.py",

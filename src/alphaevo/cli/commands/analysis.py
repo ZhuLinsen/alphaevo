@@ -148,16 +148,41 @@ def _render_tree(
 
 def leaderboard_command(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of strategies to show"),
+    scope: str = typer.Option(
+        "local",
+        "--scope",
+        help="Leaderboard scope: local or official",
+    ),
+    artifact_root: str = typer.Option(
+        "reports",
+        "--artifact-root",
+        help="Run artifacts root directory",
+    ),
 ) -> None:
     """Show strategy leaderboard ranked by confidence score."""
+    from alphaevo.leaderboard.service import LeaderboardScope, LeaderboardService
+
+    normalized_scope = scope.strip().lower()
+    if normalized_scope not in {"local", "official"}:
+        console.print(f"[red]Invalid scope '{scope}': choose 'local' or 'official'[/red]")
+        raise typer.Exit(1)
+
+    scope_val: LeaderboardScope = "official" if normalized_scope == "official" else "local"
     config = _get_config()
-    store: StrategyStore = _get_store()
-    entries = store.get_leaderboard(
+    service = LeaderboardService(db_path=config.db_path, artifact_root=artifact_root)
+    entries = service.get_entries(
+        scope=scope_val,
         limit=limit,
         min_signal_count=config.evolution.min_signal_count,
     )
 
     if not entries:
+        if normalized_scope == "official":
+            console.print(
+                "[yellow]No official_v1 runs exist yet (local runs are never promoted automatically).[/yellow]"
+            )
+            return
+        store: StrategyStore = _get_store()
         all_strategies = store.list_all()
         total_evaluations = sum(len(store.get_evaluations(s.meta.id)) for s in all_strategies)
         if total_evaluations:
@@ -170,9 +195,17 @@ def leaderboard_command(
             console.print("[yellow]No evaluations yet. Run some strategies first![/yellow]")
         return
 
-    table = Table(title="🏆 Strategy Leaderboard")
+    title = (
+        "🏅 Official Strategy Leaderboard (official_v1)"
+        if normalized_scope == "official"
+        else "🏆 Strategy Leaderboard (local)"
+    )
+    table = Table(title=title)
     table.add_column("Rank", justify="right", style="bold")
     table.add_column("Strategy", style="cyan")
+    table.add_column("Protocol")
+    table.add_column("Dirty", justify="center")
+    table.add_column("Repro")
     table.add_column("Win Rate", justify="right")
     table.add_column("Avg Return", justify="right")
     table.add_column("P/L Ratio", justify="right")
@@ -180,16 +213,19 @@ def leaderboard_command(
     table.add_column("Signals", justify="right")
     table.add_column("Score", justify="right", style="bold green")
 
-    for i, (strat, ev) in enumerate(entries, 1):
+    for i, entry in enumerate(entries, 1):
         table.add_row(
             str(i),
-            strat.meta.id,
-            f"{ev.overall.win_rate:.1%}",
-            f"{ev.overall.avg_return:.2%}",
-            f"{ev.overall.profit_loss_ratio:.2f}",
-            f"{ev.overall.max_drawdown:.1%}",
-            str(ev.overall.signal_count),
-            f"{ev.confidence_score:.2f}",
+            entry.strategy_id,
+            entry.protocol,
+            "yes" if entry.code_dirty else "no",
+            entry.data_reproducibility,
+            f"{entry.win_rate:.1%}",
+            f"{entry.avg_return:.2%}",
+            f"{entry.profit_loss_ratio:.2f}",
+            f"{entry.max_drawdown:.1%}",
+            str(entry.signal_count),
+            f"{entry.confidence_score:.2f}",
         )
     console.print(table)
 

@@ -61,11 +61,13 @@ AlphaEvo 用真实市场数据回测股票策略，并把策略放进完整的�
 | 模块 / 能力 | 状态 | 说明 |
 |-------------|------|------|
 | YAML DSL v0.5、O(N) 回测引擎与 Daily MTM 评估 | **已实现 (Implemented)** | Wheel 包内置策略/快照资产；跨平台文件锁；CLI 延迟导入 (~0.1s) |
-| L0 真相核 (`TrialLedger` / DSR / 零信号对照 / PIT 探针) | **已实现 (Implemented)** | 严格持久化落盘，运行时对自定义因子强制 PIT 截断 |
-| 双时钟 RSI 棘轮与前瞻影子账本 (`alphaevo rsi` / `shadow`) | **已实现 (Implemented)** | SHA-256 哈希链、原子化 T+5/10/20 回填、非对称晋升/熔断状态机 |
+| 统一 `EvaluationKernel` 与锁定 Holdout (`LockedHoldoutVault`) | **已实现 (Implemented)** | 时间隔离不可见 Holdout、Layer-2 组合硬否决、优化器全量接入 `TrialLedger` 及 CI 全指标 PIT 不变性校验 |
+| L0 真相核 (`TrialLedger` / DSR / 零信号对照 / PIT 探针) | **已实现 (Implemented)** | 严格持久化落盘、自定义因子运行时 PIT 截断与 CI Tier-2 零假晋升审讯 |
+| 双时钟 RSI 棘轮与前瞻影子账本 (`alphaevo rsi` / `shadow`) | **已实现 (Implemented)** | Co-STEER L2 因子落库 `FactorStore`、统一 `ExperienceStore` 评分口径、SHA-256 哈希链与可选自动入账 |
+| 不可变 Run Provenance 与分级排行榜 (`runs` / `leaderboard`) | **已实现 (Implemented)** | `RunArtifactStore` 清单、脱敏配置快照、`alphaevo runs list/show/compare` 与 `leaderboard --scope local\|official` |
 | 异构多模型议会 (CLI / LiteLLM 审讯) | **已实现 (Implemented)** | 无 Key 时退化为策略无关通用启发式探索 |
 | L2/L3 事件新闻与板块情绪指标 | **实验性 (Experimental)** | 缺少外部馈送时自动降级并记录静态上下文警示 (`static_context_warnings`) |
-| 跨策略动态风险预算与 Web UI 面板 | **规划中 (Planned)** | 路线图下一阶段 |
+| 不可变 Data Bundle 与 Web UI 面板 | **规划中 (Planned)** | 路线图下一阶段 |
 
 ## 🚀 快速开始
 
@@ -268,23 +270,25 @@ alphaevo strategy research "<idea>"       # 一句话策略→保存→回测→
 alphaevo strategy improve <id> "<改法>"   # 修订已有策略→保存→复测（无需 LLM）
 alphaevo strategy list / show <id>        # 查看策略列表与详情
 
-# 回测、优化与经典进化
-alphaevo run <strategy_id>                # 运行完整研究闭环（采样→回测→评估→报告）
+# 回测、优化、Provenance 与经典进化
+alphaevo run <strategy_id> --protocol full_research_v1
+                                          # 运行完整研究闭环并落盘不可变 provenance 工件
+alphaevo runs list / show / compare       # 检索与对比不可变 run artifact 清单及策略差异
 alphaevo optimize <strategy_id> --objective robust_profit_quality --reject-overfit
-                                          # 参数与风控搜索（完整选项见 alphaevo optimize --help）
+                                          # 参数与风控搜索（试错接入 TrialLedger，完整选项见 --help）
 alphaevo evolve <strategy_id> --method llm --rounds 3 --output reports/
                                           # LLM 引导多轮进化
 
 # 股票递归进化（RSI）、L0 真相核与前瞻影子账本
-alphaevo rsi run <id> --program examples/rsi_stock_program.md
-                                          # 按研究宪章运行 L1/L2 Stock RSI 闭环并输出 results.tsv
+alphaevo rsi run <id> --holdout-pct 0.20 --portfolio-gate --enroll-shadow
+                                          # 按研究宪章运行 L1/L2 Stock RSI 闭环并可选隔离 Holdout 与入账
 alphaevo rsi null-audit <id>              # 洗牌噪声零假晋升审讯
 alphaevo rsi mechanism-ab <id>            # L3 机制与评审框架配对 AB 评测
 alphaevo shadow register/emit/verify/status  # 前瞻影子账本注册、承诺、兑现与晋升门控
 alphaevo truth trials / pit-probe <file>  # 查看 TrialLedger 记录与因子 PIT 泄露探针
 
 # 排行、因子与进化树
-alphaevo leaderboard                      # 策略排行榜
+alphaevo leaderboard --scope local        # 策略排行榜（--scope official 严格仅展示 official_v1 通过项）
 alphaevo tree <strategy_id>               # 查看策略进化树
 alphaevo factor discover <symbol>         # LLM 驱动因子发现
 ```

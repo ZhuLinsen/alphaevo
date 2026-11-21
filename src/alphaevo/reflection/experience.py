@@ -45,6 +45,7 @@ class ExperienceRecord(BaseModel):
     regime: str = ""  # market regime when this change was tested
     source: str = ""  # which component produced this change
     evidence_level: EvidenceLevel = EvidenceLevel.BACKTEST
+    score_metric: str = "confidence_score"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -80,7 +81,8 @@ CREATE TABLE IF NOT EXISTS evolution_experience (
     action_type TEXT DEFAULT '',
     regime TEXT DEFAULT '',
     source TEXT DEFAULT '',
-    evidence_level TEXT DEFAULT 'backtest'
+    evidence_level TEXT DEFAULT 'backtest',
+    score_metric TEXT DEFAULT 'confidence_score'
 );
 
 CREATE INDEX IF NOT EXISTS idx_exp_family ON evolution_experience(strategy_family);
@@ -135,6 +137,10 @@ class ExperienceStore:
                     conn.execute(
                         "ALTER TABLE evolution_experience ADD COLUMN evidence_level TEXT DEFAULT 'backtest'"
                     )
+                if "score_metric" not in cols:
+                    conn.execute(
+                        "ALTER TABLE evolution_experience ADD COLUMN score_metric TEXT DEFAULT 'confidence_score'"
+                    )
             except Exception:
                 pass
 
@@ -148,8 +154,8 @@ class ExperienceStore:
                      target, from_value, to_value, reason,
                      score_before, score_after, score_delta, worked,
                      failure_patterns, lesson, created_at,
-                     hypothesis, action_type, regime, source, evidence_level)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hypothesis, action_type, regime, source, evidence_level, score_metric)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     exp.strategy_family,
@@ -172,6 +178,7 @@ class ExperienceStore:
                     exp.regime,
                     exp.source,
                     exp.evidence_level.value,
+                    exp.score_metric,
                 ),
             )
 
@@ -202,6 +209,7 @@ class ExperienceStore:
                 rec.regime,
                 rec.source,
                 rec.evidence_level.value,
+                rec.score_metric,
             )
             for rec in records
         ]
@@ -214,8 +222,8 @@ class ExperienceStore:
                      target, from_value, to_value, reason,
                      score_before, score_after, score_delta, worked,
                      failure_patterns, lesson, created_at,
-                     hypothesis, action_type, regime, source, evidence_level)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hypothesis, action_type, regime, source, evidence_level, score_metric)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -483,6 +491,7 @@ class ExperienceStore:
                 if len(row) > 20 and row[20] in {e.value for e in EvidenceLevel}
                 else EvidenceLevel.BACKTEST
             ),
+            score_metric=str(row[21]) if len(row) > 21 and row[21] else "confidence_score",
         )
 
     def _connect(self) -> sqlite3.Connection:

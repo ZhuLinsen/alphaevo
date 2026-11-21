@@ -169,6 +169,26 @@ def rsi_run(
         help="Prosecutor model from a different family (e.g. anthropic/claude-sonnet-5.5 or agy:claude-opus-5-5-high)",
     ),
     live: bool = typer.Option(False, "--live", help="Fetch live market data instead of snapshot"),
+    holdout_pct: float = typer.Option(
+        0.0,
+        "--holdout-pct",
+        help="Chronological locked out-of-sample holdout fraction (e.g. 0.20)",
+    ),
+    portfolio_gate: bool = typer.Option(
+        False,
+        "--portfolio-gate",
+        help="Enforce Layer-2 portfolio drawdown/return hard veto gate",
+    ),
+    enroll_shadow: bool = typer.Option(
+        False,
+        "--enroll-shadow",
+        help="Preregister promoted champion into the Forward Shadow Ledger",
+    ),
+    save_store: bool = typer.Option(
+        True,
+        "--save-store/--no-save-store",
+        help="Persist promoted champion into StrategyStore",
+    ),
     output_dir: str = typer.Option(
         "reports/rsi",
         "--output",
@@ -214,6 +234,10 @@ def rsi_run(
 
     if rounds is not None:
         charter.max_rounds = rounds
+    if holdout_pct > 0.0:
+        charter.locked_holdout_pct = holdout_pct
+    if portfolio_gate:
+        charter.require_portfolio_gate = True
 
     try:
         council = _build_council(
@@ -235,8 +259,23 @@ def rsi_run(
         )
     )
 
-    engine = StockRSIEngine(db_path=config.db_path, council=council)
-    result = engine.run(seed_strategy, market_data, charter=charter, output_dir=Path(output_dir))
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
+    engine = StockRSIEngine(
+        db_path=config.db_path,
+        council=council,
+        backtest_config=config.backtest,
+    )
+    shadow_ledger = ShadowLedger(config.rsi.shadow_ledger_dir) if enroll_shadow else None
+    result = engine.run(
+        seed_strategy,
+        market_data,
+        charter=charter,
+        output_dir=Path(output_dir),
+        persist_champion=save_store,
+        shadow_ledger=shadow_ledger,
+        auto_enroll_shadow=enroll_shadow,
+    )
 
     table = Table(title=f"RSI Ratchet Ledger — {result.charter_name}")
     table.add_column("Rd", justify="right", style="cyan")
@@ -280,6 +319,20 @@ def rsi_run(
         f"[bold]Total Lineage Trials:[/bold] {result.total_trials_recorded} | "
         f"[bold]QD Niches:[/bold] {result.archive_summary.total_cells_occupied}"
     )
+    if result.holdout_evaluation is not None:
+        ho = result.holdout_evaluation.overall
+        console.print(
+            f"[bold]Locked Holdout:[/bold] signals={ho.signal_count} | "
+            f"win={ho.win_rate:.1%} | avg={ho.avg_return:.2%} | max_dd={ho.max_drawdown:.1%}"
+        )
+    if result.persisted_factors:
+        console.print(f"[dim]Persisted L2 factors: {', '.join(result.persisted_factors)}[/dim]")
+    if result.enrolled_in_shadow:
+        console.print(
+            f"[green]✓ Enrolled champion in Forward Shadow Ledger: {result.champion_id}[/green]"
+        )
+    if result.run_id:
+        console.print(f"[dim]Run provenance ID: {result.run_id}[/dim]")
     if result.tsv_path:
         console.print(f"[dim]Artifacts written to {result.tsv_path} and {result.report_path}[/dim]")
     console.print(
@@ -400,35 +453,19 @@ def shadow_register(
     ),
 ) -> None:
     """Preregister a strategy candidate into the Forward Shadow Ledger."""
-    import pandas as pd  # type: ignore[import-untyped]
-
-    from alphaevo.backtest.engine import BacktestEngine
-    from alphaevo.evaluator.metrics import Evaluator
+    from alphaevo.alpha_factory.factory import load_registered_factors
     from alphaevo.forward.shadow_ledger import ShadowLedger
-    from alphaevo.models.enums import SamplingMethod
-    from alphaevo.models.execution import SampleBatch
+    from alphaevo.truth.kernel import EvaluationKernel
 
     config = _get_config()
+    if str(config.db_path) != ":memory:" and Path(config.db_path).expanduser().is_file():
+        load_registered_factors(config.db_path, status="active")
     strat = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=False)
-    ds = [
-        pd.to_datetime(df["date"]).dt.date
-        for df in market_data.values()
-        if not df.empty and "date" in df
-    ]
-    start_d = min(s.min() for s in ds)
-    end_d = max(s.max() for s in ds)
-    batch = SampleBatch(
-        batch_id="shadow_reg",
-        strategy_id=strat.meta.id,
-        symbols=sorted(market_data.keys()),
-        date_range=(start_d, end_d),
-        sampling_method=SamplingMethod.REPRESENTATIVE,
-    )
-    bt = BacktestEngine(min_data_days=15).run(strat, market_data, batch)
-    ev = Evaluator().evaluate_fast(bt, strat)
+    kernel = EvaluationKernel(backtest_config=config.backtest, min_data_days=15)
+    outcome = kernel.evaluate(strat, market_data, mode="fast", record_trial=False)
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
-    spec = ledger.register_candidate(strat, ev)
+    spec = ledger.register_candidate(strat, outcome.evaluation)
     console.print(
         f"[green]✓ Registered[/green] {spec.strategy_id} (stage={spec.stage.value}, hash={spec.strategy_hash[:12]})"
     )
@@ -448,9 +485,12 @@ def shadow_emit(
     """Emit point-in-time forward setups strictly truncated to ``--as-of``."""
     import pandas as pd  # type: ignore[import-untyped]
 
+    from alphaevo.alpha_factory.factory import load_registered_factors
     from alphaevo.forward.shadow_ledger import ShadowLedger
 
     config = _get_config()
+    if str(config.db_path) != ":memory:" and Path(config.db_path).expanduser().is_file():
+        load_registered_factors(config.db_path, status="active")
     strat = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=live)
     max_avail = max(

@@ -25,6 +25,7 @@ from alphaevo.optimizer.scoring import (
     candidate_sort_key,
     normalize_objective,
     objective_value,
+    record_optimizer_trials,
 )
 from alphaevo.optimizer.summary import (
     format_best_candidate_markdown,
@@ -175,6 +176,7 @@ class ExitOptimizer:
         max_walk_forward_gap: float | None = None,
         min_walk_forward_pass_rate: float | None = None,
         parallel_workers: int = 1,
+        trial_ledger: Any = None,
     ) -> ExitOptimizationResult:
         """Evaluate a bounded grid of exit/risk candidates on existing data."""
         normalized_spaces = _normalize_spaces(spaces)
@@ -261,6 +263,7 @@ class ExitOptimizer:
                     market_data=data,
                     contexts=contexts,
                     backtest_config=self.backtest_config,
+                    trial_ledger=trial_ledger,
                 )
                 candidate.evaluation_mode = "full"
                 candidate.gate_reasons = _gate_reasons(
@@ -285,6 +288,17 @@ class ExitOptimizer:
                 key=lambda candidate: _candidate_sort_key(candidate, normalized_objective),
                 reverse=True,
             )
+        best_id = ranked[0].candidate_id if ranked else None
+        if trial_ledger is not None:
+            record_optimizer_trials(
+                trial_ledger,
+                base_strategy=strategy,
+                candidates=ranked,
+                backtest_results=backtest_results,
+                best_candidate_id=best_id,
+                data=data,
+                notes="exit_optimizer",
+            )
         return ExitOptimizationResult(
             base_strategy_id=strategy.meta.id,
             spaces=list(normalized_spaces),
@@ -303,7 +317,7 @@ class ExitOptimizer:
             max_walk_forward_gap=max_walk_forward_gap,
             min_walk_forward_pass_rate=min_walk_forward_pass_rate,
             candidates=ranked,
-            best_candidate_id=ranked[0].candidate_id if ranked else None,
+            best_candidate_id=best_id,
         )
 
     def _generate_candidates(

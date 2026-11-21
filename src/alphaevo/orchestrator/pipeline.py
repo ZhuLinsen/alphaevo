@@ -105,6 +105,9 @@ class RunResult:
     report_path: Path | None = field(default=None)
     data_source_health: list[DataSourceHealth] = field(default_factory=list)
     data_quality: DataQualityReport = field(default_factory=DataQualityReport)
+    run_id: str | None = field(default=None)
+    artifact_dir: Path | None = field(default=None)
+    manifest: Any | None = field(default=None)
     # Retained for post-hoc analysis (param sensitivity, etc.)
     _engine: object | None = field(default=None, repr=False)
     _data: dict | None = field(default=None, repr=False)
@@ -190,6 +193,8 @@ class RunPipeline:
         date_range: tuple[date, date] | None = None,
         report_dir: Path | None = None,
         on_progress: Callable[[str], None] | None = None,
+        protocol: str = "full_research_v1",
+        save_provenance: bool = True,
     ) -> RunResult:
         """Execute the full research pipeline for *strategy_id*."""
 
@@ -317,6 +322,43 @@ class RunPipeline:
             _progress(f"Report saved to {report_path}")
 
         final_result.report_path = report_path
+        if report_dir is not None and save_provenance and final_result._data:
+            try:
+                from alphaevo.provenance.contracts import ProtocolName
+                from alphaevo.provenance.store import RunArtifactStore
+
+                valid_protos = {"fast_research_v1", "full_research_v1", "official_v1"}
+                req_proto = cast(
+                    "ProtocolName",
+                    protocol if protocol in valid_protos else "full_research_v1",
+                )
+                md_text = (
+                    report_path.read_text(encoding="utf-8")
+                    if report_path is not None and report_path.is_file()
+                    else None
+                )
+                manifest = RunArtifactStore(
+                    artifact_root=report_dir,
+                    db_path=self.config.db_path,
+                ).save_run(
+                    kind="run",
+                    strategy=strategy,
+                    evaluation=final_result.evaluation,
+                    market_data=final_result._data,
+                    trades=final_result.backtest_result.signals,
+                    config=self.config,
+                    adapter_name=self.config.data.adapter,
+                    requested_protocol=req_proto,
+                    data_reproducibility="refetch_dependent",
+                    data_mutability="mutable_provider",
+                    report_markdown=md_text,
+                    min_signals_official=self.config.evolution.min_signal_count,
+                )
+                final_result.run_id = manifest.run_id
+                final_result.artifact_dir = Path(manifest.artifacts.artifact_dir)
+                final_result.manifest = manifest
+            except Exception:
+                logger.debug("Provenance persistence skipped", exc_info=True)
         return final_result
 
     # -- helpers ---------------------------------------------------------

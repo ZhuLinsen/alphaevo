@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
@@ -96,6 +96,9 @@ class BacktestEngine:
         data: dict[str, pd.DataFrame],
         batch: SampleBatch,
         contexts: dict[str, IndicatorContext] | None = None,
+        *,
+        min_entry_date: date | None = None,
+        max_entry_date: date | None = None,
     ) -> BacktestResult:
         """Run backtest for all symbols in batch.
 
@@ -106,6 +109,9 @@ class BacktestEngine:
                   Optionally: prev_close, amount.
             batch: Sample batch definition.
             contexts: Optional per-symbol IndicatorContext for L2/L3 indicators.
+            min_entry_date: Optional inclusive lower bound on signal/entry date
+                so prior bars act strictly as causal warmup.
+            max_entry_date: Optional inclusive upper bound on signal/entry date.
 
         Returns:
             BacktestResult with all trade signals.
@@ -148,6 +154,8 @@ class BacktestEngine:
                 ctx,
                 timing,
                 effective_slippage,
+                min_entry_date=min_entry_date,
+                max_entry_date=max_entry_date,
             )
             all_signals.extend(signals)
 
@@ -213,6 +221,9 @@ class BacktestEngine:
         ctx: IndicatorContext | None,
         timing: str,
         slippage: float,
+        *,
+        min_entry_date: date | None = None,
+        max_entry_date: date | None = None,
     ) -> list[TradeSignal]:
         """Run backtest on a single symbol."""
         signals: list[TradeSignal] = []
@@ -257,6 +268,13 @@ class BacktestEngine:
                 continue  # Don't check entry while holding
 
             # ── No position: check entry ──
+            if min_entry_date is not None or max_entry_date is not None:
+                bar_date = self._get_date(df, idx)
+                if min_entry_date is not None and bar_date < min_entry_date:
+                    continue
+                if max_entry_date is not None and bar_date > max_entry_date:
+                    continue
+
             if timing == "close" and not self._can_buy(df, idx, rules, symbol, stock_name, is_st):
                 continue
 
@@ -283,6 +301,11 @@ class BacktestEngine:
                     precomputed=precomputed,
                 )
                 if position is None:
+                    continue
+                if (min_entry_date is not None and position.entry_date < min_entry_date) or (
+                    max_entry_date is not None and position.entry_date > max_entry_date
+                ):
+                    position = None
                     continue
                 # Capture indicator snapshot for failure analysis
                 position.indicator_snapshot = self._capture_indicators(
@@ -804,6 +827,8 @@ class BacktestEngine:
         val = df.iloc[idx].get("date", None)
         if val is None:
             return date.today()
+        if isinstance(val, datetime):
+            return val.date()
         if isinstance(val, date):
             return val
         try:

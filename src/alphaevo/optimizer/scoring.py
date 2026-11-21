@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
-from alphaevo.models.execution import EvaluationReport
+from alphaevo.models.enums import RSILevel
+from alphaevo.models.execution import BacktestResult, EvaluationReport
+
+if TYPE_CHECKING:
+    from alphaevo.models.strategy import Strategy
 
 OptimizationObjective = Literal[
     "confidence",
@@ -182,3 +187,54 @@ def candidate_sort_key(
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return min(upper, max(lower, value))
+
+
+def record_optimizer_trials(
+    trial_ledger: Any,
+    *,
+    base_strategy: Strategy,
+    candidates: Sequence[Any],
+    backtest_results: Mapping[str, BacktestResult],
+    best_candidate_id: str | None,
+    data: Mapping[str, Any],
+    notes: str,
+) -> None:
+    """Persist optimizer evaluations into ``TrialLedger`` without duplicating loop code."""
+    if trial_ledger is None or not candidates:
+        return
+
+    from alphaevo.evaluator.metrics import Evaluator
+    from alphaevo.truth.ledger import compute_data_fingerprint
+
+    family_id = trial_ledger.resolve_trial_family_id(base_strategy)
+    data_fp = compute_data_fingerprint(dict(data))
+
+    for cand in candidates:
+        changes = getattr(cand, "changes", [])
+        if changes == ["baseline"]:
+            continue
+        ev = cand.evaluation
+        bt_res = backtest_results.get(cand.candidate_id)
+        executed = [s for s in bt_res.signals if s.exit_price is not None] if bt_res else []
+        returns: list[float]
+        if ev.overall.metrics_basis == "daily_mtm" and data and executed:
+            returns = Evaluator.compute_daily_mtm_returns(executed, dict(data))[0]
+        else:
+            returns = [s.return_pct for s in executed]
+        is_accepted = bool(cand.candidate_id == best_candidate_id and cand.passed_gate)
+        trial_rec = trial_ledger.record_trial(
+            strategy=cand.strategy,
+            trial_family_id=family_id,
+            data_fingerprint=data_fp,
+            rsi_level=RSILevel.L1_STRATEGY,
+            round_num=0,
+            signal_count=ev.overall.signal_count,
+            sharpe_ratio=ev.overall.sharpe_ratio,
+            returns=returns,
+            confidence_score=ev.confidence_score,
+            passed_null_control=ev.null_control_passed,
+            accepted=is_accepted,
+            notes=notes,
+        )
+        ev.family_trial_count = trial_ledger.count_family_trials(family_id)
+        ev.deflated_sharpe_prob = trial_rec.deflated_sharpe_prob

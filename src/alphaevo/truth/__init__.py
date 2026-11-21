@@ -1,5 +1,14 @@
 """L0 Immutable Anti-Delusion Truth Kernel package."""
 
+from alphaevo.truth.kernel import (
+    EvaluationKernel,
+    KernelEvaluationOutcome,
+    LockedHoldoutSplit,
+    LockedHoldoutVault,
+    PortfolioGateConfig,
+    PortfolioGateVerdict,
+    split_market_data_with_holdout,
+)
 from alphaevo.truth.ledger import (
     DeflatedSharpeResult,
     TrialLedger,
@@ -25,11 +34,17 @@ from alphaevo.truth.pit_probe import (
 
 __all__ = [
     "DeflatedSharpeResult",
+    "EvaluationKernel",
+    "KernelEvaluationOutcome",
+    "LockedHoldoutSplit",
+    "LockedHoldoutVault",
     "NullControlReport",
     "NullDistributionStats",
     "NullSignalController",
     "PITProbeResult",
     "PITProbeViolation",
+    "PortfolioGateConfig",
+    "PortfolioGateVerdict",
     "SystemNullAuditReport",
     "SystemNullWorldResult",
     "TrialLedger",
@@ -40,4 +55,5 @@ __all__ = [
     "compute_strategy_hash",
     "generate_block_shuffled_market",
     "probe_point_in_time_invariance",
+    "split_market_data_with_holdout",
 ]

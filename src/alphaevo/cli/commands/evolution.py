@@ -127,6 +127,11 @@ def run_command(
     stress_window_top_k: int | None = typer.Option(
         None, "--stress-window-top-k", help="Stress window top-k"
     ),
+    protocol: str = typer.Option(
+        "full_research_v1",
+        "--protocol",
+        help="Evaluation protocol: fast_research_v1 | full_research_v1 | official_v1",
+    ),
 ) -> None:
     """Run the full research loop: sample → backtest → evaluate → report."""
     overrides: dict = {}
@@ -199,6 +204,7 @@ def run_command(
             "date_range": dr,
             "report_dir": Path(report_dir),
             "on_progress": on_progress,
+            "protocol": protocol,
         }
         if sampling_method is not None:
             run_kwargs["sampling_method"] = sampling_method
@@ -297,6 +303,10 @@ def run_command(
 
     if result.report_path:
         console.print(f"\n📄 Report saved to: {result.report_path}")
+    if getattr(result, "run_id", None):
+        console.print(
+            f"🧾 Provenance ID: [cyan]{result.run_id}[/cyan] ({getattr(result, 'artifact_dir', None)})"
+        )
 
 
 def _print_data_quality_summary(data_quality: object) -> None:
@@ -598,9 +608,11 @@ def optimize_command(
         render_param_optimization_report,
     )
     from alphaevo.orchestrator.pipeline import RunPipeline
+    from alphaevo.truth.ledger import TrialLedger
 
     pipeline = RunPipeline(config)
     pipeline.ensure_builtin_strategies()
+    trial_ledger = TrialLedger(config.db_path)
 
     with Progress(
         SpinnerColumn(),
@@ -665,6 +677,7 @@ def optimize_command(
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             except ValueError as e:
                 console.print(f"[red]Exit optimization failed: {e}[/red]")
@@ -705,6 +718,7 @@ def optimize_command(
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             except ValueError as e:
                 console.print(f"[red]Parameter optimization failed: {e}[/red]")
@@ -752,6 +766,7 @@ def optimize_command(
                     max_walk_forward_gap=max_walk_forward_gap,
                     min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                     parallel_workers=parallel_workers,
+                    trial_ledger=trial_ledger,
                 )
             except ValueError as e:
                 console.print(f"[red]Joint optimization failed: {e}[/red]")
@@ -1082,6 +1097,11 @@ def evolve_command(
     ),
     stress_window_top_k: int | None = typer.Option(
         None, "--stress-window-top-k", help="Stress window top-k"
+    ),
+    protocol: str = typer.Option(
+        "full_research_v1",
+        "--protocol",
+        help="Evaluation protocol: fast_research_v1 | full_research_v1 | official_v1",
     ),
 ) -> None:
     """Self-evolve a strategy through multi-round improvement."""
