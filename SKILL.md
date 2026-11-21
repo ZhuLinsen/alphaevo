@@ -27,8 +27,10 @@ Add AlphaEvo's zero-dependency STDIO MCP server to Claude Code, Cursor, OpenClaw
 Available MCP tools:
 - `alphaevo_list_strategies` — list stored & built-in strategies
 - `alphaevo_draft_strategy` — compile natural language ideas into executable YAML DSL (zero LLM needed)
+- `alphaevo_diagnose_bottlenecks` — X-ray per-condition pass rates without consuming L0 trials
 - `alphaevo_evaluate_strategy` — evaluate through `EvaluationKernel` (`daily_mtm`, DSR, null control, ResearchCommittee) and persist immutable artifacts
-- `alphaevo_evolve_rsi` — run Karpathy `program.md`-steered L1/L2 keep/revert ratchets
+- `alphaevo_evolve_rsi` — run Karpathy `program.md`-steered L1/L2 keep/revert ratchets (with Co-STEER PIT-safe factor synthesis)
+- `alphaevo_mechanism_ab` — compare L3 Meta-RSI harnesses (Naive vs L0+Pinned Scars+L2) across chronological OOS cutoffs
 - `alphaevo_null_audit` — Tier-2 audit verifying 0 false promotions under shuffled returns
 - `alphaevo_shadow_simulate` — run rolling bitemporal forward shadow commitments & SHA-256 chain checks
 - `alphaevo_audit_factors` — audit dynamic Alpha Factory factors on OOS IC/IR decay & runtime PIT safety

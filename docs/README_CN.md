@@ -49,7 +49,7 @@ alphaevo web
 # 或一条 Docker 命令直接启动 Web Studio：
 # docker compose up --build
 ```
-浏览器打开 `http://127.0.0.1:8765` 即可：一句话起草策略 YAML、通过 SSE（`/api/rsi/stream`）实时观看每轮 Stock RSI 进化与否决、查看 **Proposer vs. Prosecutor 对抗辩论卡片**、**进化家谱树 SVG**、**过拟合处决坟场分布** 与 **单笔交易买卖点 K 线复盘图**，还能跑前瞻影子账本仿真、因子 OOS/PIT 审计与因果风险配权。
+浏览器打开 `http://127.0.0.1:8765` 即可：一句话起草策略 YAML、零试验消耗做 **入场条件通过率 X 射线诊断**（`/api/strategies/diagnose`）、开启 **L2 Co-STEER 动态因子合成**并通过 SSE（`/api/rsi/stream`）实时观看 Stock RSI 进化与否决、查看 **Proposer vs. Prosecutor 对抗辩论卡片**、**3×3 MAP-Elites 行为生态位网格**、**进化家谱树 SVG**、**过拟合处决坟场分布** 与 **单笔交易 K 线复盘图**，一键导出 **DPO 偏好训练对**，或运行 **L3 元机制 A/B 校准实验**、前瞻影子账本仿真与因果风险配权。
 
 ### 2. 策略进化观测站（Overfit Graveyard）& 单文件交互 HTML 战报（30 秒无需 Key）
 ```bash
@@ -65,7 +65,7 @@ alphaevo arena run --rounds 2           # 策略进化观测站 -> reports/arena
   }
 }
 ```
-开箱提供 9 个标准化研究工具（`alphaevo_draft_strategy`、`alphaevo_evaluate_strategy`、`alphaevo_evolve_rsi`、`alphaevo_null_audit`、`alphaevo_shadow_simulate`、`alphaevo_audit_factors`、`alphaevo_allocate_portfolio` 等）及宪章/策略库 Resource。详情见 [SKILL.md](../SKILL.md)。
+开箱提供 11 个标准化研究工具（`alphaevo_draft_strategy`、`alphaevo_diagnose_bottlenecks`、`alphaevo_evaluate_strategy`、`alphaevo_evolve_rsi`、`alphaevo_mechanism_ab`、`alphaevo_null_audit`、`alphaevo_shadow_simulate`、`alphaevo_audit_factors`、`alphaevo_allocate_portfolio` 等）及宪章/策略库 Resource。详情见 [SKILL.md](../SKILL.md)。
 
 ### 4. Fork 即部署 GitHub Pages 进化观测站 + 自动推送（零服务器成本）
 1. Fork 本仓库并启用 Actions；如需在线站点，在仓库 `Settings -> Pages` 中选择 **GitHub Actions** 即可发布交互式进化观测站。

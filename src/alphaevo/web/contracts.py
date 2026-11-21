@@ -252,6 +252,12 @@ def default_web_manifest() -> WebManifest:
                 purpose="Launch a research run and stream progress.",
             ),
             WebRouteSpec(
+                name="diagnose_strategy",
+                path="/api/strategies/diagnose",
+                method="POST",
+                purpose="X-ray entry condition/guard pass rates without consuming L0 trials.",
+            ),
+            WebRouteSpec(
                 name="evolve_rsi",
                 path="/api/rsi/run",
                 method="POST",
@@ -262,6 +268,12 @@ def default_web_manifest() -> WebManifest:
                 path="/api/rsi/stream",
                 method="POST",
                 purpose="Stream real-time SSE council debates, rounds, and final results.",
+            ),
+            WebRouteSpec(
+                name="mechanism_ab",
+                path="/api/rsi/mechanism-ab",
+                method="POST",
+                purpose="Compare L3 Meta-RSI verification harnesses across chronological cutoffs.",
             ),
             WebRouteSpec(
                 name="evolve_strategy",

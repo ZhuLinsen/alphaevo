@@ -81,6 +81,8 @@ class ArenaStrategyEntry(BaseModel):
     evolution_nodes: list[EvolutionNodeView] = Field(default_factory=list)
     deliberations: list[dict[str, Any]] = Field(default_factory=list)
     veto_breakdown: dict[str, int] = Field(default_factory=dict)
+    map_elites_cells: list[dict[str, Any]] = Field(default_factory=list)
+    synthesized_factors: list[str] = Field(default_factory=list)
     trade_replays: list[TradeReplayView] = Field(default_factory=list)
     committee_verdicts: list[dict[str, Any]] = Field(default_factory=list)
     champion_yaml: str = ""
@@ -101,6 +103,7 @@ class ArenaSnapshot(BaseModel):
     total_vetoes: int = 0
     total_deliberations: int = 0
     total_prosecutor_vetoes: int = 0
+    total_l2_factors_synthesized: int = 0
     veto_breakdown: dict[str, int] = Field(default_factory=dict)
     chain_verified: bool = True
     entries: list[ArenaStrategyEntry] = Field(default_factory=list)

@@ -27,6 +27,7 @@ from alphaevo.reflection.experience import ExperienceRecord, ExperienceStore
 from alphaevo.reflection.mutator import StrategyMutator
 from alphaevo.rsi.co_steer import BlindSpotMiner, ScarRegistry
 from alphaevo.rsi.council import HeterogeneousCouncil
+from alphaevo.rsi.diagnostics import analyze_entry_bottlenecks
 from alphaevo.rsi.program import RSICharter
 from alphaevo.rsi.qd_archive import ArchiveSummary, MAPElitesArchive
 from alphaevo.strategy.dsl.serializer import StrategySerializer
@@ -408,6 +409,9 @@ class StockRSIEngine:
                 allowed_levels=cfg.allowed_levels,
                 stagnant_l1_rounds=stagnant_l1,
             )
+            bottleneck = analyze_entry_bottlenecks(parent_strategy, search_market)
+            if bottleneck.diagnosis_summary:
+                steer.cluster.bottleneck_hint = bottleneck.diagnosis_summary
             if (
                 steer.persisted_to_store
                 and steer.synthesized_factor_name
@@ -423,6 +427,8 @@ class StockRSIEngine:
                 mission_notes=cfg.mission_notes,
                 max_candidates=cfg.max_candidates_per_round,
                 exclude_sigs=parent_tried,
+                blind_spot=steer.cluster,
+                bottleneck=bottleneck,
             )
 
             approved = []
@@ -868,6 +874,8 @@ class StockRSIEngine:
         )
 
         if output_dir is not None:
+            from alphaevo.rsi.trajectory import export_rsi_trajectory
+
             output_dir.mkdir(parents=True, exist_ok=True)
             tsv_path = output_dir / "results.tsv"
             report_path = output_dir / "rsi_run_report.md"
@@ -876,6 +884,8 @@ class StockRSIEngine:
             md_text = self.render_markdown(result)
             report_path.write_text(md_text, encoding="utf-8")
             StrategySerializer().to_file(verified_champion_strategy, yaml_path)
+            with contextlib.suppress(Exception):
+                export_rsi_trajectory(result, output_dir)
             result.tsv_path = tsv_path
             result.report_path = report_path
             result.champion_yaml_path = yaml_path
