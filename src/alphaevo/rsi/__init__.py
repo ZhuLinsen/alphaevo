@@ -23,6 +23,7 @@ from alphaevo.rsi.mechanism import (
     HarnessVariant,
     MechanismEvaluator,
     MechanismExperimentResult,
+    MechanismFoldComparison,
     PairedMechanismRun,
 )
 from alphaevo.rsi.program import RSICharter, parse_rsi_program
@@ -50,6 +51,7 @@ __all__ = [
     "MAPElitesArchive",
     "MechanismEvaluator",
     "MechanismExperimentResult",
+    "MechanismFoldComparison",
     "ModelSpec",
     "NicheCoord",
     "OfflineFactorTemplate",

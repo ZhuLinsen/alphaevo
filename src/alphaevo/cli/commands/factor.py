@@ -256,3 +256,125 @@ def _build_forward_returns(df: Any, horizon: int = 5) -> Any:
         raise ValueError("Historical data must include a 'close' column")
     close = df["close"].astype(float)
     return close.shift(-horizon) / close - 1.0
+
+
+def _load_governance_market_data(
+    bundle: str | None,
+    bundle_root: str,
+) -> dict[str, Any]:
+    """Load market data from a verified immutable bundle or bundled showcase snapshot."""
+    if bundle:
+        from alphaevo.provenance.bundle import DataBundleStore
+
+        store = DataBundleStore(bundle_root)
+        data, _manifest = store.load_bundle(bundle, verify=True)
+        return data
+
+    from alphaevo.cli.demo import load_showcase_snapshot
+
+    data, _ = load_showcase_snapshot()
+    return data
+
+
+@factor_app.command("audit")
+def factor_audit(
+    bundle: str | None = typer.Option(
+        None, "--bundle", help="Optional immutable data bundle ID for OOS audit"
+    ),
+    bundle_root: str = typer.Option(
+        "reports/bundles", "--bundle-root", help="Root directory for data bundles"
+    ),
+    min_oos_ic: float = typer.Option(0.015, "--min-oos-ic", help="Minimum directional OOS IC"),
+    min_oos_ir: float = typer.Option(0.20, "--min-oos-ir", help="Minimum directional OOS IR"),
+    output_file: str | None = typer.Option(
+        None, "--output", "-o", help="Optional Markdown report output path"
+    ),
+) -> None:
+    """Audit active dynamic factors on OOS IC/IR decay, PIT invariance, and redundancy."""
+    from alphaevo.alpha_factory.governance import FactorGovernanceConfig, FactorGovernanceEngine
+
+    config = _get_config()
+    market_data = _load_governance_market_data(bundle, bundle_root)
+    gov_cfg = FactorGovernanceConfig(min_oos_ic=min_oos_ic, min_oos_ir=min_oos_ir)
+    engine = FactorGovernanceEngine(db_path=config.db_path, config=gov_cfg)
+    report = engine.audit_factors(market_data, auto_retire=False)
+
+    if report.total_audited == 0:
+        console.print("[yellow]No active dynamic factors found in FactorStore.[/yellow]")
+        return
+
+    table = Table(title="Alpha Factory Governance Audit")
+    table.add_column("Factor", style="cyan")
+    table.add_column("Health")
+    table.add_column("PIT", justify="center")
+    table.add_column("Train IC", justify="right")
+    table.add_column("OOS IC", justify="right")
+    table.add_column("OOS IR", justify="right")
+    table.add_column("Decay", justify="right")
+    table.add_column("MaxCorr", justify="right")
+    table.add_column("Strategies")
+
+    for entry in report.entries:
+        health_color = "green" if entry.health == "healthy" else "red"
+        decay_str = f"{entry.ic_decay_ratio:.2f}x" if entry.ic_decay_ratio is not None else "n/a"
+        refs = ", ".join(entry.referenced_strategies[:3]) if entry.referenced_strategies else "—"
+        table.add_row(
+            entry.name,
+            f"[{health_color}]{entry.health}[/{health_color}]",
+            "PASS" if entry.pit_passed else "FAIL",
+            f"{entry.train_ic:+.4f}",
+            f"{entry.oos_ic:+.4f}",
+            f"{entry.oos_ir:+.2f}",
+            decay_str,
+            f"{entry.max_peer_corr:.2f}",
+            refs,
+        )
+    console.print(table)
+    console.print(
+        f"Summary: total={report.total_audited} healthy={report.healthy_count} "
+        f"decayed={report.decayed_count} redundant={report.redundant_count} "
+        f"pit_unsafe={report.pit_unsafe_count}"
+    )
+
+    if output_file:
+        out_path = Path(output_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(engine.render_markdown(report), encoding="utf-8")
+        console.print(f"[dim]Governance report saved to {out_path}[/dim]")
+
+
+@factor_app.command("prune")
+def factor_prune(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview retirements without modifying FactorStore"
+    ),
+    bundle: str | None = typer.Option(
+        None, "--bundle", help="Optional immutable data bundle ID for OOS audit"
+    ),
+    bundle_root: str = typer.Option(
+        "reports/bundles", "--bundle-root", help="Root directory for data bundles"
+    ),
+    min_oos_ic: float = typer.Option(0.015, "--min-oos-ic", help="Minimum directional OOS IC"),
+    min_oos_ir: float = typer.Option(0.20, "--min-oos-ir", help="Minimum directional OOS IR"),
+) -> None:
+    """Retire PIT-unsafe, decayed, or redundant factors from FactorStore."""
+    from alphaevo.alpha_factory.governance import FactorGovernanceConfig, FactorGovernanceEngine
+
+    config = _get_config()
+    market_data = _load_governance_market_data(bundle, bundle_root)
+    gov_cfg = FactorGovernanceConfig(min_oos_ic=min_oos_ic, min_oos_ir=min_oos_ir)
+    engine = FactorGovernanceEngine(db_path=config.db_path, config=gov_cfg)
+    report = engine.audit_factors(market_data, auto_retire=not dry_run)
+
+    flagged = [e for e in report.entries if e.health != "healthy"]
+    if not flagged:
+        console.print("[green]✓ All active factors passed governance thresholds.[/green]")
+        return
+
+    verb = "Would retire" if dry_run else "Retired"
+    for entry in flagged:
+        reason = "; ".join(entry.reasons) or entry.health
+        console.print(f"[yellow]{verb}[/yellow] {entry.name} [{entry.health}]: {reason}")
+    console.print(
+        f"\n[bold]{verb} {len(flagged)} factor(s)[/bold] ({report.healthy_count} kept healthy)."
+    )

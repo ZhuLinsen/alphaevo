@@ -45,7 +45,7 @@
 | **Leaderboard** | `src/alphaevo/leaderboard/` | 策略排行榜，严格区分 local / official scope |
 | **Provenance** | `src/alphaevo/provenance/` | 不可变 run artifact 清单、SHA-256 数据包 (`DataBundleStore`)、脱敏配置快照、`official_v1` 降级门控与 `compare_runs` |
 | **Utils** | `src/alphaevo/utils/` | 公共工具函数 (utcnow, fmt_pct, safe_div 等) |
-| **Alpha Factory** | `src/alphaevo/alpha_factory/` | LLM 驱动因子合成、验证、注册 |
+| **Alpha Factory** | `src/alphaevo/alpha_factory/` | LLM 驱动因子合成、验证、注册、OOS 衰变/冗余/PIT 生命周期治理 (`FactorGovernanceEngine`) |
 | **Research Log** | `src/alphaevo/research_log/` | 进化过程结构化记录与渲染 |
 | **Experience Store** | `src/alphaevo/reflection/experience.py` | 进化经验持久化 (SQLite)，跨策略学习 |
 | **Self-Critic** | `src/alphaevo/reflection/critic.py` | 变更质量门控 + 多候选排名 |
@@ -622,6 +622,8 @@ alphaevo factor list                  # 查看已发现因子
 alphaevo factor show <name>           # 查看因子详情和代码
 alphaevo factor retire <name>         # 退役一个因子
 alphaevo factor discover <symbol>     # LLM 驱动因子发现 (需要 [llm])
+alphaevo factor audit                 # 因子 OOS IC/IR 衰变、相关性冗余、PIT 与血缘治理审计
+alphaevo factor prune                 # 自动退役 PIT 不安全 / OOS 衰变 / 冗余因子（支持 --dry-run）
 
 # 核心闭环
 alphaevo run <strategy_id>            # 运行完整闭环（采样→回测→评估→报告→不可变 provenance 工件）
@@ -636,6 +638,8 @@ alphaevo rsi run <strategy_id>        # 运行受 L0 真相核约束的 Stock RS
   --portfolio-gate                    #   启用 Layer-2 组合回撤/收益硬否决门禁
   --enroll-shadow                     #   晋升冠军自动注册进前瞻影子账本
   --save-store / --no-save-store      #   控制是否将晋升冠军保存至 StrategyStore
+alphaevo rsi mechanism-ab <id>        # L3 Meta-RSI 配对/多切分点（--cutoffs）机制校准评测
+alphaevo shadow simulate <id>         # 滚动逐日双时态前瞻影子承诺与晋升/熔断仿真
 alphaevo optimize <strategy_id>       # 优化入口阈值、指标周期、退出/风控规则（全量试错写入 TrialLedger）
   --spaces entry,params,indicator,exit,stoploss,takeprofit,holding,all
   --objective quality                 #   排序目标: confidence / win_rate / avg_return / drawdown / quality / profit_quality / robust_profit_quality

@@ -198,6 +198,11 @@ class WalkForwardFoldMetrics(BaseModel):
     train_win_rate: float = 0.0
     test_win_rate: float = 0.0
     gap: float = 0.0
+    train_start_date: date | None = None
+    train_end_date: date | None = None
+    test_start_date: date | None = None
+    test_end_date: date | None = None
+    purged_signal_count: int = 0
 
 
 class WalkForwardProtocol(BaseModel):
@@ -209,6 +214,9 @@ class WalkForwardProtocol(BaseModel):
     test_pct: float = 0.3
     pass_gap: float = 0.10
     min_signals_per_split: int = 5
+    split_mode: Literal["signal_index", "calendar_purged"] = "signal_index"
+    purge_overlap: bool = False
+    total_purged_signals: int = 0
 
 
 class RegimeHoldoutCase(BaseModel):

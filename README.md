@@ -66,6 +66,7 @@ Different data windows and protocols should not be ranked directly; the snapshot
 | Dual-Clock RSI Ratchet & Forward Shadow Ledger | **Implemented** | `FactorStore`-persisted Co-STEER L2 factors, unified `ExperienceStore` metrics, SHA-256 hash chain & optional auto-enrollment |
 | Immutable Run Provenance & Scoped Leaderboard | **Implemented** | `RunArtifactStore` manifests, secret-free config snapshots, `DataBundleStore` SHA-256 bundles, `runs rerun-official` & `leaderboard --scope local\|official` |
 | Multi-Strategy Regime-Adaptive Allocator | **Implemented** | Causal inverse-vol, regime haircut, pairwise correlation penalty & drawdown deleveraging (`alphaevo portfolio allocate`) |
+| Alpha Factory Lifecycle Governance | **Implemented** | OOS IC/IR decay auditing, PIT re-probing, pairwise redundancy pruning & strategy lineage (`alphaevo factor audit/prune`) |
 | Heterogeneous CLI / LiteLLM Multi-Model Council | **Implemented** | Deterministic general heuristic fallback when API keys unavailable |
 | Event/News & Sector Context Indicators (L2/L3) | **Experimental** | Degrades to price/volume proxy or static snapshot with explicit warnings |
 | Web UI Dashboard | **Planned** | Next-stage web research workspace |
@@ -336,8 +337,12 @@ alphaevo portfolio allocate <s1> <s2>  # Causal regime-adaptive multi-strategy r
 alphaevo evolve <id> --method llm --rounds 3 --output reports/  # LLM-first evolution
 alphaevo rsi run <id> --holdout-pct 0.20 --portfolio-gate --enroll-shadow
 alphaevo rsi null-audit <id>      # Verify 0 false promotions under shuffled returns
+alphaevo rsi mechanism-ab <id> --cutoffs 0.55,0.70  # L3 multi-cutoff kernel mechanism audit
+alphaevo shadow simulate <id>     # Rolling bitemporal forward shadow ledger simulation
 alphaevo shadow status            # Forward shadow ledger & promotion stages
 alphaevo truth trials             # Inspect append-only TrialLedger & DSR records
+alphaevo factor audit             # Audit OOS IC/IR decay, PIT invariance & redundancy
+alphaevo factor prune --dry-run   # Retire decayed, redundant, or PIT-unsafe factors
 alphaevo factor discover <symbol> # LLM-driven factor discovery
 alphaevo leaderboard --scope local  # Strategy rankings (use --scope official for verified runs)
 alphaevo tree <id>                # Evolution tree visualization

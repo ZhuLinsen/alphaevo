@@ -392,6 +392,22 @@ def rsi_null_audit(
 def rsi_mechanism_ab(
     strategy_id: str = typer.Argument("rsi_reversion_v1", help="Seed strategy ID or YAML path"),
     rounds: int = typer.Option(3, "--rounds", "-r", help="Budget per harness variant"),
+    cutoffs: str | None = typer.Option(
+        None,
+        "--cutoffs",
+        help="Comma-separated train cutoff ratios for multi-cutoff L3 evaluation (e.g. 0.55,0.70)",
+    ),
+    portfolio_gate: bool = typer.Option(
+        False,
+        "--portfolio-gate",
+        help="Enable Layer-2 portfolio hard veto gate in the guarded harness",
+    ),
+    output_file: str | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Optional Markdown report path",
+    ),
 ) -> None:
     """L3 Meta-RSI paired AB experiment comparing harness calibration on unseen forward bars."""
     from alphaevo.rsi.mechanism import HarnessVariant, MechanismEvaluator
@@ -399,6 +415,9 @@ def rsi_mechanism_ab(
     config = _get_config()
     seed_strategy = _resolve_strategy(strategy_id, config)
     market_data = _load_market_data(live=False)
+    cutoff_list: list[float] | None = None
+    if cutoffs:
+        cutoff_list = [float(part.strip()) for part in cutoffs.split(",") if part.strip()]
 
     naive = HarnessVariant(
         variant_id="naive_no_null",
@@ -411,20 +430,25 @@ def rsi_mechanism_ab(
         name="AlphaEvo Anti-Delusion Harness (Null Control + Pinned Scars)",
         require_null_control=True,
         enable_pinned_scars=True,
+        require_portfolio_gate=portfolio_gate,
     )
-    exp = MechanismEvaluator().evaluate_ab(
+    evaluator = MechanismEvaluator()
+    exp = evaluator.evaluate_ab(
         seed_strategy,
         market_data,
         baseline_variant=naive,
         candidate_variant=guarded,
         max_rounds=rounds,
+        cutoff_ratios=cutoff_list,
     )
 
     table = Table(title="L3 Meta-RSI Paired Mechanism AB Experiment (Forward Calibration)")
     table.add_column("Harness Variant")
     table.add_column("Champion")
+    table.add_column("Promos", justify="right")
     table.add_column("Train AvgRet", justify="right")
     table.add_column("Fwd AvgRet", justify="right")
+    table.add_column("Fwd Sharpe", justify="right")
     table.add_column("Decay Ratio", justify="right")
     table.add_column("False Promo", justify="center")
     table.add_column("Calibration", justify="right", style="bold")
@@ -433,14 +457,21 @@ def rsi_mechanism_ab(
         table.add_row(
             run.variant_name,
             run.champion_id,
+            str(run.promotions_count),
             f"{run.train_avg_return:.2%}",
             f"{run.forward_avg_return:.2%}",
+            f"{run.forward_sharpe:.2f}",
             decay_str,
             "YES" if run.false_promotion else "NO",
             f"{run.calibration_score:.4f}",
         )
     console.print(table)
     console.print(f"[bold]Winner:[/bold] {exp.winner_variant_id} — {exp.rationale}")
+    if output_file:
+        out_path = Path(output_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(evaluator.render_markdown(exp), encoding="utf-8")
+        console.print(f"[dim]Report written to {out_path}[/dim]")
 
 
 # ── alphaevo shadow ... ─────────────────────────────────────────────────
@@ -623,6 +654,92 @@ def shadow_verify() -> None:
         for err in errs:
             console.print(f"[red]✗ {err}[/red]")
         raise typer.Exit(1)
+
+
+@shadow_app.command("simulate")
+def shadow_simulate(
+    strategy_id: str = typer.Argument(
+        "rsi_reversion_v1", help="Strategy ID or YAML path to simulate in Shadow Ledger"
+    ),
+    days: int = typer.Option(45, "--days", help="Number of trailing trading days to simulate"),
+    step_days: int = typer.Option(1, "--step-days", help="Simulate every N trading days"),
+    horizon: int = typer.Option(10, "--horizon", help="Outcome horizon: 5, 10, or 20"),
+    min_days: int = typer.Option(10, "--min-days", help="Min mature trading days to promote"),
+    min_signals: int = typer.Option(10, "--min-signals", help="Min mature signals to promote"),
+    min_eff: float = typer.Option(5.0, "--min-eff", help="Min cluster-adjusted N_eff to promote"),
+    live: bool = typer.Option(False, "--live", help="Fetch live market data"),
+    output_file: str | None = typer.Option(
+        None, "--output", "-o", help="Optional Markdown report path"
+    ),
+) -> None:
+    """Simulate chronological day-by-day bitemporal shadow commitments & promotion gates."""
+    import tempfile
+
+    import pandas as pd  # type: ignore[import-untyped]
+
+    from alphaevo.alpha_factory.factory import load_registered_factors
+    from alphaevo.forward.shadow_ledger import ShadowLedger
+
+    config = _get_config()
+    if str(config.db_path) != ":memory:" and Path(config.db_path).expanduser().is_file():
+        load_registered_factors(config.db_path, status="active")
+    try:
+        strat = _resolve_strategy(strategy_id, config)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from None
+
+    market_data = _load_market_data(live=live)
+    all_dates = sorted(
+        {
+            d
+            for df in market_data.values()
+            if not df.empty and "date" in df.columns
+            for d in pd.to_datetime(df["date"], errors="coerce").dt.date.dropna().tolist()
+        }
+    )
+    if not all_dates:
+        console.print("[red]No market dates available for shadow simulation.[/red]")
+        raise typer.Exit(1)
+
+    start_d = all_dates[max(0, len(all_dates) - max(5, days))]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ledger = ShadowLedger(tmpdir)
+        report = ledger.simulate_rolling(
+            strat,
+            market_data,
+            start_date=start_d,
+            end_date=all_dates[-1],
+            step_days=step_days,
+            horizon_days=horizon,
+            min_trading_days=min_days,
+            min_mature_signals=min_signals,
+            min_effective_signals=min_eff,
+            is_replay=not live,
+        )
+
+    decay = report.final_decay_report
+    decay_txt = f"{decay.decay_ratio:.2f}x" if decay.decay_ratio is not None else "n/a"
+    table = Table(title=f"Rolling Forward Shadow Simulation — {strat.meta.id}")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_row("Window", f"{report.start_date} -> {report.end_date}")
+    table.add_row("Stage Transition", f"{report.initial_stage.value} -> {report.final_stage.value}")
+    table.add_row("Steps / Commits", f"{report.total_steps} / {report.total_commits}")
+    table.add_row("Committed Signals", str(report.total_committed_signals))
+    table.add_row(f"Mature Signals (T+{report.horizon_days})", str(decay.mature_signals))
+    table.add_row("Effective Sample N_eff", f"{decay.effective_signals:.1f}")
+    table.add_row("Forward Avg Return", f"{decay.forward_avg_post_cost_return:+.2%}")
+    table.add_row("Decay Ratio vs Backtest", decay_txt)
+    table.add_row("Max Forward Drawdown", f"{decay.max_forward_drawdown:.1%}")
+    table.add_row("SHA-256 Chain Integrity", "VERIFIED" if report.chain_verified else "FAILED")
+    console.print(table)
+
+    if output_file:
+        out_path = Path(output_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(ShadowLedger.render_simulation_markdown(report), encoding="utf-8")
+        console.print(f"[dim]Report written to {out_path}[/dim]")
 
 
 # ── alphaevo truth ... ──────────────────────────────────────────────────

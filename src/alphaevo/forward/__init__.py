@@ -9,6 +9,8 @@ from alphaevo.forward.contracts import (
     OutcomeHorizon,
     PromotionDecision,
     SetupInstance,
+    ShadowRollingSimulationReport,
+    ShadowSimulationStep,
     StageTransition,
 )
 from alphaevo.forward.shadow_ledger import ShadowLedger
@@ -23,5 +25,7 @@ __all__ = [
     "PromotionDecision",
     "SetupInstance",
     "ShadowLedger",
+    "ShadowRollingSimulationReport",
+    "ShadowSimulationStep",
     "StageTransition",
 ]
