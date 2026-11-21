@@ -5,6 +5,20 @@ All notable changes to AlphaEvo will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-21
+
+### Added
+- **Strategy Evolution Observatory & Overfit Graveyard (`alphaevo arena`)**: Multi-strategy self-evolution tournament with evolution lineage tree SVGs (`render_evolution_tree_svg`), adversarial Proposer vs. Prosecutor debate transcripts, L0 overfit veto graveyard breakdowns (`veto_breakdown`), trade K-line OHLC replay SVGs (`render_trade_kline_svg`), causal risk budgets, and single-file interactive HTML dashboards + Markdown digest alerts (`arena-daily.yml` with GitHub Pages deployment).
+- **Local Web Research Studio & Live SSE Stream (`alphaevo web`)**: Zero-dependency stdlib HTTP 4-tab Workbench with plain-language YAML drafting, live Server-Sent Events (`/api/rsi/stream`), session-only adversarial Council model/key controls (never persisted), inline SVG lineage trees, colorized diffs, trade K-line candlestick replay, Shadow Ledger simulator, and Alpha Factory/portfolio audit views.
+- **Native AI Agent Integration (`alphaevo mcp` & `SKILL.md`)**: Stdlib JSON-RPC 2.0 STDIO MCP server exposing 9 research, RSI, null-audit, shadow-simulation, factor-audit, and risk-allocation tools plus charter/strategy resources.
+- **7-Channel Push Notifier (`alphaevo arena notify-test`)**: Zero-dependency delivery across Feishu, WeCom, DingTalk, Telegram, Discord, Slack, and generic webhooks with automated secret scrubbing.
+- **Zero-Bypass L0 Truth Kernel & Immutable Provenance (`truth` / `provenance` / `runs`)**: Canonical `EvaluationKernel`, `LockedHoldoutVault`, Layer-2 portfolio veto gate, append-only `TrialLedger` + DSR, block-shuffled & strategy-rerun null worlds, runtime PIT probes, `DataBundleStore` SHA-256 bundles, `RunArtifactStore` manifests, and scoped `official` vs. `local` leaderboards.
+- **Causal Multi-Strategy Risk Budgeting & Factor Governance (`portfolio` / `factor`)**: Causal inverse-vol + regime-adaptive allocator (`RegimeAdaptiveAllocator`) and OOS IC/IR + PIT + redundancy lifecycle governance (`FactorGovernanceEngine`).
+- **One-Command Docker Web Studio (`Dockerfile` & `docker-compose.yml`)**: Non-editable package install serving `alphaevo web` on port `8765` with health checks and persistent workspace volume.
+
+### Changed
+- **28.9× O(N) Vectorized Engine & Realistic Execution**: Precomputed indicators, causal regime detection, gap-aware SL/TP fills, frozen entry ATR, `daily_mtm` primary evaluation metrics, and lazy CLI startup (`~0.1s`).
+
 ## [Unreleased]
 
 ### Added

@@ -40,6 +40,7 @@ class WebCapabilityFlags(BaseModel):
     factor_factory: bool = True
     leaderboard: bool = True
     async_jobs: bool = True
+    sse_progress: bool = True
     websocket_progress: bool = False
 
 
@@ -249,6 +250,18 @@ def default_web_manifest() -> WebManifest:
                 path="/api/runs",
                 method="POST",
                 purpose="Launch a research run and stream progress.",
+            ),
+            WebRouteSpec(
+                name="evolve_rsi",
+                path="/api/rsi/run",
+                method="POST",
+                purpose="Launch an L0-guarded Stock RSI evolution ratchet.",
+            ),
+            WebRouteSpec(
+                name="stream_rsi",
+                path="/api/rsi/stream",
+                method="POST",
+                purpose="Stream real-time SSE council debates, rounds, and final results.",
             ),
             WebRouteSpec(
                 name="evolve_strategy",

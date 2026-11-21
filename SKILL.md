@@ -5,7 +5,9 @@ description: Autonomous recursive self-improvement (RSI) engine for equity tradi
 
 # AlphaEvo Agent Skill
 
-AlphaEvo separates **fast offline hypothesis search** (which can only *veto*) from **slow bitemporal forward shadow ledgers** (which govern *promotion*). Strategies live as inspectable YAML DSL files rather than opaque code blobs.
+AlphaEvo is a **stock trading strategy self-evolution, backtesting, and anti-overfitting research engine** — not a full-market daily stock screener or trade-recommendation bot.
+
+It separates **fast offline hypothesis search** (which can only *veto*) from **slow bitemporal forward shadow ledgers** (which govern *promotion*). Trading strategies live as inspectable YAML DSL files rather than opaque code blobs.
 
 ## Connect via MCP (Recommended)
 

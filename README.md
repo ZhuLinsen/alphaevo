@@ -41,18 +41,20 @@ Most open-source AI finance projects stop at **one-shot LLM stock chatter**, **o
 
 ## ⚡ 4 Zero-Friction Ways to Start
 
-### 1. Local Web Research Studio (Zero Extra Dependencies)
+### 1. Local Web Research Studio & Live SSE Evolution (Zero Extra Dependencies)
 ```bash
 git clone https://github.com/ZhuLinsen/alphaevo.git && cd alphaevo
 pip install -e .
 alphaevo web
+# Or run via Docker in one command:
+# docker compose up --build
 ```
-Draft strategies in plain language, inspect SVG equity/drawdown curves, run RSI evolution ratchets, simulate the SHA-256 Shadow Ledger, audit factors, and allocate multi-strategy risk budgets in your browser (`http://127.0.0.1:8765`).
+Open `http://127.0.0.1:8765` to draft YAML strategies from plain language, stream round-by-round Stock RSI evolution over SSE (`/api/rsi/stream`), inspect **Proposer vs. Prosecutor debate cards**, view **Evolution Lineage Trees** & **Overfit Graveyard** veto bars, replay executed trades on **OHLC K-line charts**, simulate the SHA-256 Shadow Ledger, audit factors, and allocate risk budgets.
 
-### 2. Live Self-Evolving Arena & Shareable HTML Report (30s, No Key Required)
+### 2. Evolution Observatory, Overfit Graveyard & HTML Reports (30s, No Key Required)
 ```bash
-alphaevo showcase                       # 30s bundled snapshot evolution (writes report.md + report.html)
-alphaevo arena run --rounds 2           # Multi-strategy Arena -> reports/arena/index.html + digest.md
+alphaevo showcase                       # 30s bundled snapshot evolution (report.md + interactive K-line report.html)
+alphaevo arena run --rounds 2           # Strategy Evolution Observatory -> reports/arena/index.html + digest.md
 ```
 
 ### 3. Connect to Claude Code, OpenClaw, Cursor, Codex, or Antigravity (Native MCP + `SKILL.md`)
@@ -65,10 +67,10 @@ alphaevo arena run --rounds 2           # Multi-strategy Arena -> reports/arena/
 ```
 Exposes 9 research tools (`alphaevo_draft_strategy`, `alphaevo_evaluate_strategy`, `alphaevo_evolve_rsi`, `alphaevo_null_audit`, `alphaevo_shadow_simulate`, `alphaevo_audit_factors`, `alphaevo_allocate_portfolio`, etc.) plus `alphaevo://program` and `alphaevo://strategies` resources. See [SKILL.md](SKILL.md).
 
-### 4. Fork & Run Daily Autonomous Arena + Push Alerts (Free Cloud via GitHub Actions)
-1. Fork this repository and enable **GitHub Actions** (`Settings` -> `Actions`).
+### 4. Fork & Deploy GitHub Pages Evolution Observatory + Push Alerts (Free Cloud via Actions)
+1. Fork this repository, enable **GitHub Actions**, and optionally enable **GitHub Pages -> GitHub Actions** (`Settings -> Pages`) to publish `https://<owner>.github.io/<repo>/`.
 2. Optionally add Secrets (`ALPHAEVO_FEISHU_WEBHOOK`, `ALPHAEVO_WECOM_WEBHOOK`, `ALPHAEVO_DINGTALK_WEBHOOK`, `ALPHAEVO_TELEGRAM_BOT_TOKEN` + `ALPHAEVO_TELEGRAM_CHAT_ID`, `ALPHAEVO_DISCORD_WEBHOOK`, `ALPHAEVO_SLACK_WEBHOOK`, `ALPHAEVO_WEBHOOK_URL`, `ALPHAEVO_API_KEY`).
-3. [arena-daily.yml](.github/workflows/arena-daily.yml) automatically evolves strategies on weekdays, verifies the shadow hash chain, posts `digest.md` to Step Summary, uploads interactive `index.html`, and notifies your channels.
+3. [arena-daily.yml](.github/workflows/arena-daily.yml) automatically evolves strategies on weekdays, builds the **Evolution Observatory & Overfit Graveyard** single-file dashboard, deploys to GitHub Pages (when enabled), posts `digest.md` to Step Summary, and notifies your channels.
 
 ## 🧭 Why AlphaEvo vs. Alternatives
 
@@ -431,7 +433,7 @@ AlphaEvo adapts these ideas to falsifiable quantitative equity strategy research
 - [x] Phase 4: Open-Source Polish — CI/CD, docs, English templates, CHANGELOG
 - [x] Phase 5: Recursive Stock Self-Improvement & Shadow Ledger — `TrialLedger` + DSR, null controls, runtime PIT probe, MAP-Elites, heterogeneous council, bitemporal forward tracking
 - [x] Phase 6: Market Regime Adaptive Gating & Canonical Data Bundles — causal multi-strategy `RegimeAdaptiveAllocator`, risk budgets, SHA-256 `DataBundleStore`, unified `EvaluationKernel`, and `runs rerun-official`
-- [ ] Phase 7: Web UI Dashboard — interactive strategy lineage, RSI ratchets & shadow ledger exploration
+- [x] Phase 7: Web Studio, Evolution Observatory & Agent Ecosystem — zero-dep `alphaevo web` with live SSE `/api/rsi/stream`, Adversarial Council Debate cards, Evolution Lineage Tree & Trade K-Line Replay SVGs, Overfit Graveyard `alphaevo arena`, `alphaevo mcp` + `SKILL.md`, 7-channel push alerts, Docker Web Studio & GitHub Pages deployment
 
 ## 🤝 Contributing
 

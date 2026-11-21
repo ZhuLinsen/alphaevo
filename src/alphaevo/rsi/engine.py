@@ -6,8 +6,9 @@ import contextlib
 import hashlib
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -51,11 +52,44 @@ if TYPE_CHECKING:
     from alphaevo.provenance.store import RunArtifactStore
 
 
+class DeliberationRecord(BaseModel):
+    """Structured record of one Proposer vs. Prosecutor deliberation and L0 outcome."""
+
+    round_num: int
+    parent_strategy_id: str
+    candidate_strategy_id: str | None = None
+    proposer_model: str
+    proposer_family: str
+    rationale: str = ""
+    proposed_changes: list[str] = Field(default_factory=list)
+    prosecutor_model: str
+    prosecutor_family: str
+    prosecutor_approved: bool
+    prosecutor_objections: list[str] = Field(default_factory=list)
+    committee_status: str = "pass"
+    l0_outcome: Literal[
+        "prosecutor_vetoed",
+        "keep",
+        "stepping_stone",
+        "revert",
+        "evaluated_non_best",
+        "mutation_failed",
+        "duplicate",
+    ] = "evaluated_non_best"
+    veto_reasons: list[str] = Field(default_factory=list)
+    fitness_before: float = 0.0
+    fitness_after: float | None = None
+    dsr_probability: float | None = None
+    null_passed: bool | None = None
+    signals: int | None = None
+
+
 class RSIRoundRow(BaseModel):
     """One row of the Karpathy-style ``results.tsv`` RSI experiment log."""
 
     round_num: int
     strategy_id: str
+    parent_id: str | None = None
     level: RSILevel
     signals: int
     win_rate: float
@@ -67,6 +101,7 @@ class RSIRoundRow(BaseModel):
     fitness_score: float
     status: Literal["baseline", "keep", "stepping_stone", "revert", "vetoed"]
     description: str
+    veto_reasons: list[str] = Field(default_factory=list)
 
 
 class RSIRunResult(BaseModel):
@@ -88,6 +123,8 @@ class RSIRunResult(BaseModel):
     kernel_hash_after: str
     kernel_intact: bool
     rows: list[RSIRoundRow] = Field(default_factory=list)
+    deliberations: list[DeliberationRecord] = Field(default_factory=list)
+    veto_breakdown: dict[str, int] = Field(default_factory=dict)
     archive_summary: ArchiveSummary
     scars_created: int = 0
     holdout_evaluation: EvaluationReport | None = None
@@ -98,6 +135,41 @@ class RSIRunResult(BaseModel):
     tsv_path: Path | None = None
     report_path: Path | None = None
     champion_yaml_path: Path | None = None
+
+
+def _diagnose_gate_failures(
+    cand_fit: float,
+    verified_champion_fitness: float,
+    cand_eval: EvaluationReport,
+    cand_outcome: KernelEvaluationOutcome,
+    cfg: RSICharter,
+    dsr_prob: float,
+    *,
+    rerun_null_failed: bool = False,
+) -> list[str]:
+    """Return structured L0 gate failure codes explaining why a candidate was rejected."""
+    reasons: list[str] = []
+    if cand_fit <= verified_champion_fitness + 1e-4:
+        reasons.append("no_fitness_gain")
+    if cand_eval.overall.avg_return <= 0.0:
+        reasons.append("negative_expectancy")
+    if cand_eval.overall.max_drawdown > cfg.max_drawdown:
+        reasons.append("max_drawdown")
+    if cand_eval.anti_overfit.is_overfit:
+        reasons.append("overfit_gate")
+    if cand_eval.overall.signal_count < cfg.min_signals:
+        reasons.append("min_signals")
+    if dsr_prob < cfg.min_dsr_prob:
+        reasons.append("dsr_gate")
+    if cfg.require_null_control and cand_eval.null_control_passed is not True:
+        reasons.append("null_control")
+    if cfg.require_portfolio_gate and (
+        cand_outcome.portfolio_verdict is None or not cand_outcome.portfolio_verdict.passed
+    ):
+        reasons.append("portfolio_gate")
+    if rerun_null_failed:
+        reasons.append("strategy_rerun_null")
+    return reasons
 
 
 def _compute_rsi_fitness(
@@ -205,8 +277,16 @@ class StockRSIEngine:
         shadow_ledger: ShadowLedger | None = None,
         auto_enroll_shadow: bool = False,
         artifact_store: RunArtifactStore | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RSIRunResult:
         """Execute a bounded L1/L2 RSI evolution session and persist traceable outputs."""
+
+        def _emit(payload: dict[str, Any]) -> None:
+            if on_event is None:
+                return
+            with contextlib.suppress(Exception):
+                on_event(payload)
+
         cfg = charter or RSICharter(seed_strategy_id=seed_strategy.meta.id)
         kernel_before = compute_kernel_fingerprint()
 
@@ -271,23 +351,31 @@ class StockRSIEngine:
         has_verified_promotion = False
         archive.insert(working_strategy, working_eval, working_fitness)
 
-        rows: list[RSIRoundRow] = [
-            RSIRoundRow(
-                round_num=0,
-                strategy_id=seed_strategy.meta.id,
-                level=RSILevel.L1_STRATEGY,
-                signals=base_eval.overall.signal_count,
-                win_rate=base_eval.overall.win_rate,
-                avg_return=base_eval.overall.avg_return,
-                sharpe_ratio=base_eval.overall.sharpe_ratio,
-                dsr_probability=float(base_eval.deflated_sharpe_prob or 0.0),
-                null_threshold=base_null.worst_null_threshold if base_null else 0.0,
-                null_passed=bool(base_eval.null_control_passed),
-                fitness_score=working_fitness,
-                status="baseline",
-                description="Initial seed strategy",
-            )
-        ]
+        base_row = RSIRoundRow(
+            round_num=0,
+            strategy_id=seed_strategy.meta.id,
+            parent_id=None,
+            level=RSILevel.L1_STRATEGY,
+            signals=base_eval.overall.signal_count,
+            win_rate=base_eval.overall.win_rate,
+            avg_return=base_eval.overall.avg_return,
+            sharpe_ratio=base_eval.overall.sharpe_ratio,
+            dsr_probability=float(base_eval.deflated_sharpe_prob or 0.0),
+            null_threshold=base_null.worst_null_threshold if base_null else 0.0,
+            null_passed=bool(base_eval.null_control_passed),
+            fitness_score=working_fitness,
+            status="baseline",
+            description="Initial seed strategy",
+        )
+        rows: list[RSIRoundRow] = [base_row]
+        _emit({"type": "baseline", "row": base_row.model_dump(mode="json")})
+
+        deliberations: list[DeliberationRecord] = []
+        veto_breakdown: dict[str, int] = {}
+
+        def _bump_veto(reasons: list[str]) -> None:
+            for r in reasons:
+                veto_breakdown[r] = veto_breakdown.get(r, 0) + 1
 
         stagnant_l1 = 0
         kept_rounds = 0
@@ -328,7 +416,7 @@ class StockRSIEngine:
                 persisted_factors.append(steer.synthesized_factor_name)
 
             parent_tried = tried_by_parent.setdefault(parent_strategy.meta.id, set())
-            deliberations = self._council.generate_candidates(
+            raw_deliberations = self._council.generate_candidates(
                 parent_strategy,
                 parent_eval,
                 extra_changes=[steer.proposed_changes] if steer.proposed_changes else None,
@@ -336,24 +424,68 @@ class StockRSIEngine:
                 max_candidates=cfg.max_candidates_per_round,
                 exclude_sigs=parent_tried,
             )
-            approved = [d for d in deliberations if d.audit.approved]
-            if not approved:
-                rows.append(
-                    RSIRoundRow(
+
+            approved = []
+            for d in raw_deliberations:
+                prop = d.proposal
+                aud = d.audit
+                change_strs = [
+                    f"{c.target}: {c.from_value} -> {c.to_value} ({c.reason})" for c in prop.changes
+                ]
+                if not aud.approved:
+                    vetoed_rec = DeliberationRecord(
                         round_num=rnd,
-                        strategy_id=parent_strategy.meta.id,
-                        level=steer.chosen_level,
-                        signals=parent_eval.overall.signal_count,
-                        win_rate=parent_eval.overall.win_rate,
-                        avg_return=parent_eval.overall.avg_return,
-                        sharpe_ratio=parent_eval.overall.sharpe_ratio,
-                        dsr_probability=float(parent_eval.deflated_sharpe_prob or 0.0),
-                        null_threshold=0.0,
-                        null_passed=bool(parent_eval.null_control_passed),
-                        fitness_score=working_fitness,
-                        status="vetoed",
-                        description="All proposals blocked by Adversarial Prosecutor / Pinned Scars",
+                        parent_strategy_id=parent_strategy.meta.id,
+                        proposer_model=prop.proposer_model,
+                        proposer_family=prop.proposer_family,
+                        rationale=prop.rationale,
+                        proposed_changes=change_strs,
+                        prosecutor_model=aud.prosecutor_model,
+                        prosecutor_family=aud.prosecutor_family,
+                        prosecutor_approved=False,
+                        prosecutor_objections=list(aud.objections),
+                        committee_status=aud.committee_status,
+                        l0_outcome="prosecutor_vetoed",
+                        veto_reasons=["prosecutor_veto"],
+                        fitness_before=working_fitness,
                     )
+                    deliberations.append(vetoed_rec)
+                    _bump_veto(["prosecutor_veto"])
+                    _emit(
+                        {
+                            "type": "council_deliberation",
+                            "round": rnd,
+                            "deliberation": vetoed_rec.model_dump(mode="json"),
+                        }
+                    )
+                else:
+                    approved.append(d)
+
+            if not approved:
+                veto_row = RSIRoundRow(
+                    round_num=rnd,
+                    strategy_id=parent_strategy.meta.id,
+                    parent_id=parent_strategy.meta.id,
+                    level=steer.chosen_level,
+                    signals=parent_eval.overall.signal_count,
+                    win_rate=parent_eval.overall.win_rate,
+                    avg_return=parent_eval.overall.avg_return,
+                    sharpe_ratio=parent_eval.overall.sharpe_ratio,
+                    dsr_probability=float(parent_eval.deflated_sharpe_prob or 0.0),
+                    null_threshold=0.0,
+                    null_passed=bool(parent_eval.null_control_passed),
+                    fitness_score=working_fitness,
+                    status="vetoed",
+                    description="All proposals blocked by Adversarial Prosecutor / Pinned Scars",
+                    veto_reasons=["prosecutor_veto"],
+                )
+                rows.append(veto_row)
+                _emit(
+                    {
+                        "type": "round_complete",
+                        "round": rnd,
+                        "row": veto_row.model_dump(mode="json"),
+                    }
                 )
                 stagnant_l1 += 1
                 continue
@@ -365,14 +497,36 @@ class StockRSIEngine:
                     float,
                     list[StrategyChange],
                     RSILevel,
+                    DeliberationRecord,
                 ]
                 | None
             ) = None
+            round_approved_records: list[DeliberationRecord] = []
 
             for delib in approved:
+                prop = delib.proposal
+                aud = delib.audit
+                changes = prop.changes
+                change_strs = [
+                    f"{c.target}: {c.from_value} -> {c.to_value} ({c.reason})" for c in changes
+                ]
+                cand_rec = DeliberationRecord(
+                    round_num=rnd,
+                    parent_strategy_id=parent_strategy.meta.id,
+                    proposer_model=prop.proposer_model,
+                    proposer_family=prop.proposer_family,
+                    rationale=prop.rationale,
+                    proposed_changes=change_strs,
+                    prosecutor_model=aud.prosecutor_model,
+                    prosecutor_family=aud.prosecutor_family,
+                    prosecutor_approved=True,
+                    prosecutor_objections=list(aud.objections),
+                    committee_status=aud.committee_status,
+                    fitness_before=working_fitness,
+                )
+
                 if self._trial_ledger.count_family_trials(family_id) >= cfg.max_trials_budget:
                     break
-                changes = delib.proposal.changes
                 parent_tried.add(
                     tuple(sorted((c.change_type.value, c.target, str(c.to_value)) for c in changes))
                 )
@@ -388,6 +542,10 @@ class StockRSIEngine:
                 try:
                     cand_strategy = mutator.mutate(parent_strategy, changes, atomic=True)
                 except Exception:
+                    cand_rec.l0_outcome = "mutation_failed"
+                    cand_rec.veto_reasons = ["mutation_failed"]
+                    deliberations.append(cand_rec)
+                    round_approved_records.append(cand_rec)
                     continue
 
                 cand_id = f"{family_id}_v{next_version}"
@@ -397,6 +555,9 @@ class StockRSIEngine:
 
                 shash = _structural_strategy_hash(cand_strategy)
                 if shash in seen_hashes:
+                    cand_rec.l0_outcome = "duplicate"
+                    deliberations.append(cand_rec)
+                    round_approved_records.append(cand_rec)
                     continue
                 seen_hashes.add(shash)
 
@@ -419,6 +580,27 @@ class StockRSIEngine:
                     min_signals=cfg.min_signals,
                     max_drawdown=cfg.max_drawdown,
                 )
+                cand_dsr = (
+                    float(cand_eval.deflated_sharpe_prob)
+                    if cand_eval.deflated_sharpe_prob is not None
+                    else 0.0
+                )
+                cand_reasons = _diagnose_gate_failures(
+                    cand_fit,
+                    verified_champion_fitness,
+                    cand_eval,
+                    cand_outcome,
+                    cfg,
+                    cand_dsr,
+                )
+                cand_rec.candidate_strategy_id = cand_id
+                cand_rec.fitness_after = cand_fit
+                cand_rec.dsr_probability = cand_dsr
+                cand_rec.null_passed = bool(cand_eval.null_control_passed)
+                cand_rec.signals = int(cand_eval.overall.signal_count)
+                cand_rec.veto_reasons = cand_reasons
+                deliberations.append(cand_rec)
+                round_approved_records.append(cand_rec)
 
                 archive.insert(cand_strategy, cand_eval, cand_fit)
 
@@ -468,14 +650,25 @@ class StockRSIEngine:
                         cand_fit,
                         changes,
                         level_used,
+                        cand_rec,
                     )
                 next_version += 1
 
             if best_cand_bundle is None:
+                for rec in round_approved_records:
+                    if rec.veto_reasons:
+                        _bump_veto(rec.veto_reasons)
+                    _emit(
+                        {
+                            "type": "council_deliberation",
+                            "round": rnd,
+                            "deliberation": rec.model_dump(mode="json"),
+                        }
+                    )
                 stagnant_l1 += 1
                 continue
 
-            cand_strat, cand_outcome, cand_fit, chs, lvl = best_cand_bundle
+            cand_strat, cand_outcome, cand_fit, chs, lvl, best_rec = best_cand_bundle
             cand_eval = cand_outcome.evaluation
             cand_null = cand_outcome.null_control
             best_trial = cand_outcome.trial_record
@@ -500,6 +693,7 @@ class StockRSIEngine:
                     )
                 )
             )
+            rerun_null_failed = False
             if passes_base_gates and cfg.require_strategy_rerun_null:
                 rerun_null = self._null_ctrl.evaluate_strategy_against_null_worlds(
                     cand_strat,
@@ -511,6 +705,7 @@ class StockRSIEngine:
                 )
                 cand_outcome.strategy_rerun_null = rerun_null
                 if not rerun_null.passed:
+                    rerun_null_failed = True
                     cand_eval.null_control_passed = False
                     cand_eval.null_p_value = round(
                         max(float(cand_eval.null_p_value or 0.0), rerun_null.worst_p_value),
@@ -519,6 +714,16 @@ class StockRSIEngine:
                 passes_gate = rerun_null.passed
             else:
                 passes_gate = passes_base_gates
+
+            best_reasons = _diagnose_gate_failures(
+                cand_fit,
+                verified_champion_fitness,
+                cand_eval,
+                cand_outcome,
+                cfg,
+                dsr_prob,
+                rerun_null_failed=rerun_null_failed,
+            )
 
             is_stepping_stone = (
                 not passes_gate
@@ -551,6 +756,7 @@ class StockRSIEngine:
                 promotions += 1
                 stagnant_l1 = 0
                 status: Literal["keep", "stepping_stone", "revert"] = "keep"
+                best_rec.veto_reasons = []
             elif is_stepping_stone:
                 # Escape a 0-signal dead zone for search continuity without counting as L0 promotion.
                 working_strategy = cand_strat
@@ -559,26 +765,51 @@ class StockRSIEngine:
                 kept_rounds += 1
                 stagnant_l1 = 0
                 status = "stepping_stone"
+                best_rec.veto_reasons = best_reasons
             else:
                 stagnant_l1 += 1
                 status = "revert"
+                best_rec.veto_reasons = best_reasons
 
-            rows.append(
-                RSIRoundRow(
-                    round_num=rnd,
-                    strategy_id=cand_strat.meta.id,
-                    level=lvl,
-                    signals=cand_eval.overall.signal_count,
-                    win_rate=cand_eval.overall.win_rate,
-                    avg_return=cand_eval.overall.avg_return,
-                    sharpe_ratio=cand_eval.overall.sharpe_ratio,
-                    dsr_probability=float(cand_eval.deflated_sharpe_prob or 0.0),
-                    null_threshold=cand_null.worst_null_threshold if cand_null else 0.0,
-                    null_passed=bool(cand_eval.null_control_passed),
-                    fitness_score=cand_fit,
-                    status=status,
-                    description=desc,
+            best_rec.l0_outcome = status
+            for rec in round_approved_records:
+                if rec is best_rec:
+                    if status == "revert" and rec.veto_reasons:
+                        _bump_veto(rec.veto_reasons)
+                elif rec.l0_outcome == "evaluated_non_best" and rec.veto_reasons:
+                    _bump_veto(rec.veto_reasons)
+                _emit(
+                    {
+                        "type": "council_deliberation",
+                        "round": rnd,
+                        "deliberation": rec.model_dump(mode="json"),
+                    }
                 )
+
+            round_row = RSIRoundRow(
+                round_num=rnd,
+                strategy_id=cand_strat.meta.id,
+                parent_id=parent_strategy.meta.id,
+                level=lvl,
+                signals=cand_eval.overall.signal_count,
+                win_rate=cand_eval.overall.win_rate,
+                avg_return=cand_eval.overall.avg_return,
+                sharpe_ratio=cand_eval.overall.sharpe_ratio,
+                dsr_probability=float(cand_eval.deflated_sharpe_prob or 0.0),
+                null_threshold=cand_null.worst_null_threshold if cand_null else 0.0,
+                null_passed=bool(cand_eval.null_control_passed),
+                fitness_score=cand_fit,
+                status=status,
+                description=desc,
+                veto_reasons=list(best_rec.veto_reasons),
+            )
+            rows.append(round_row)
+            _emit(
+                {
+                    "type": "round_complete",
+                    "round": rnd,
+                    "row": round_row.model_dump(mode="json"),
+                }
             )
 
         holdout_eval: EvaluationReport | None = None
@@ -626,6 +857,8 @@ class StockRSIEngine:
             kernel_hash_after=kernel_after,
             kernel_intact=(kernel_before == kernel_after),
             rows=rows,
+            deliberations=deliberations,
+            veto_breakdown=veto_breakdown,
             archive_summary=archive.coverage_summary(),
             scars_created=scars_created,
             holdout_evaluation=holdout_eval,
@@ -677,6 +910,15 @@ class StockRSIEngine:
             except Exception:
                 pass
 
+        _emit(
+            {
+                "type": "complete",
+                "champion_id": result.champion_id,
+                "promotions": result.promotions,
+                "kept_rounds": result.kept_rounds,
+                "kernel_intact": result.kernel_intact,
+            }
+        )
         return result
 
     def _eval_with_kernel(
@@ -786,4 +1028,4 @@ class StockRSIEngine:
         return "\n".join(lines) + "\n"
 
 
-__all__ = ["RSIRoundRow", "RSIRunResult", "StockRSIEngine"]
+__all__ = ["DeliberationRecord", "RSIRoundRow", "RSIRunResult", "StockRSIEngine"]

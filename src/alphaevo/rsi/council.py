@@ -116,12 +116,15 @@ class HeterogeneousCouncil:
         *,
         critic: SelfCritic | None = None,
         scars: list[ExecutableScar] | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.config = config or HeterogeneousCouncilConfig()
         self._critic = critic or SelfCritic(scars=scars or [])
         if scars is not None:
             self._critic.set_scars(scars)
         self._committee = ResearchCommittee()
+        # Transient session credential only; never stored in config or serialized.
+        self._api_key = api_key
 
     def set_scars(self, scars: list[ExecutableScar]) -> None:
         self._critic.set_scars(scars)
@@ -393,7 +396,7 @@ class HeterogeneousCouncil:
 
             cfg = ConfigManager().load()
             cfg.llm.model = p_spec.model
-            api_key = ConfigManager().get_llm_api_key()
+            api_key = self._api_key or ConfigManager().get_llm_api_key()
             if not api_key:
                 return None
             llm = LLMClient(cfg.llm, api_key=api_key)
@@ -509,8 +512,8 @@ class HeterogeneousCouncil:
             )
         return []
 
-    @staticmethod
     def _try_litellm_prosecutor(
+        self,
         strategy: Strategy,
         evaluation: EvaluationReport,
         changes: list[StrategyChange],
@@ -523,7 +526,7 @@ class HeterogeneousCouncil:
 
             cfg = ConfigManager().load()
             cfg.llm.model = q_spec.model
-            api_key = ConfigManager().get_llm_api_key()
+            api_key = self._api_key or ConfigManager().get_llm_api_key()
             if not api_key:
                 return []
             llm = LLMClient(cfg.llm, api_key=api_key)
