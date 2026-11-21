@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -383,10 +384,11 @@ def test_ablation_benchmark_and_cli_surface(tmp_path: Path) -> None:
 
     runner = CliRunner()
     assert runner.invoke(app, ["rsi", "benchmark", "--help"]).exit_code == 0
-    r_arena = runner.invoke(app, ["arena", "run", "--help"])
+    r_arena = runner.invoke(app, ["arena", "run", "--help"], env={"NO_COLOR": "1", "TERM": "dumb"})
     assert r_arena.exit_code == 0
-    assert "--crossover" in r_arena.output
-    assert "--proposer-model" in r_arena.output
+    clean_arena_out = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", r_arena.output)
+    assert "--crossover" in clean_arena_out
+    assert "--proposer-model" in clean_arena_out
 
 
 def test_web_save_champion_benchmark_and_mcp_tool(tmp_path: Path) -> None:
