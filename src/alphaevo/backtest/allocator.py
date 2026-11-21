@@ -7,7 +7,7 @@ from collections import Counter
 from collections.abc import Sequence
 from datetime import date, datetime
 from statistics import mean, stdev
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -208,15 +208,18 @@ def _build_causal_market_proxy(
         highs.append(level * hi_r)
         lows.append(level * lo_r)
 
-    return pd.DataFrame(
-        {
-            "date": all_dates,
-            "open": closes,
-            "high": highs,
-            "low": lows,
-            "close": closes,
-            "volume": [1_000_000.0] * n_days,
-        }
+    return cast(
+        "pd.DataFrame",
+        pd.DataFrame(
+            {
+                "date": all_dates,
+                "open": closes,
+                "high": highs,
+                "low": lows,
+                "close": closes,
+                "volume": [1_000_000.0] * n_days,
+            }
+        ),
     )
 
 
