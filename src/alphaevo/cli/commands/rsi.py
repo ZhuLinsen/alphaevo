@@ -629,15 +629,17 @@ def shadow_emit(
         for df in market_data.values()
         if not df.empty and "date" in df
     )
+    if replay is False and not live:
+        raise typer.BadParameter("Live non-replay commitments require --live market data.")
     eval_date = datetime.strptime(as_of, "%Y-%m-%d").date() if as_of else max_avail
-    is_replay = replay if replay is not None else (as_of is not None)
+    is_replay = replay if replay is not None else (not live or as_of is not None)
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
     commit = ledger.commit_signals(
         strat,
         market_data,
         as_of=eval_date,
         is_replay=is_replay,
-        enforce_wall_clock=not is_replay and live,
+        enforce_wall_clock=not is_replay,
     )
     console.print(
         f"[green]✓ Committed[/green] {commit.commit_id} | as_of={commit.as_of} | "
@@ -665,7 +667,14 @@ def shadow_backfill(
     )
     eval_date = datetime.strptime(as_of, "%Y-%m-%d").date() if as_of else max_avail
     ledger = ShadowLedger(config.rsi.shadow_ledger_dir)
-    events = ledger.backfill_outcomes(market_data, evaluated_as_of=eval_date)
+    bench_df = (
+        ShadowLedger.build_equal_weight_benchmark(market_data) if len(market_data) >= 2 else None
+    )
+    events = ledger.backfill_outcomes(
+        market_data,
+        evaluated_as_of=eval_date,
+        benchmark_df=bench_df,
+    )
     mature_10 = sum(1 for ev in events if 10 in ev.horizons and ev.horizons[10].mature)
     console.print(
         f"[green]✓ Backfilled[/green] {len(events)} signals as of {eval_date} "
@@ -717,6 +726,11 @@ def shadow_status(
 def shadow_promote(
     strategy_id: str = typer.Argument(..., help="Registered strategy ID to evaluate for promotion"),
     horizon: int = typer.Option(10, "--horizon", help="Evaluation horizon: 5, 10, or 20"),
+    require_benchmark: bool = typer.Option(
+        False,
+        "--require-benchmark/--no-require-benchmark",
+        help="Require >=80% benchmark coverage for excess-return promotion gate",
+    ),
 ) -> None:
     """Evaluate asymmetric promotion/halt gates for a Forward Shadow candidate."""
     from alphaevo.forward.shadow_ledger import ShadowLedger
@@ -729,6 +743,7 @@ def shadow_promote(
         min_trading_days=config.rsi.min_shadow_trading_days,
         min_mature_signals=config.rsi.min_shadow_signals,
         min_effective_signals=float(config.rsi.min_effective_signals),
+        require_benchmark=require_benchmark,
     )
     console.print(
         f"[bold]{decision.strategy_id}[/bold]: {decision.previous_stage.value} -> "

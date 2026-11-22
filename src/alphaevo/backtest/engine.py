@@ -87,6 +87,9 @@ class BacktestEngine:
         self._rule_checker_supports_meta = (
             "symbol" in inspect.signature(self.rule_checker.can_buy).parameters
         )
+        self._rule_checker_supports_price = (
+            "price_col" in inspect.signature(self.rule_checker.can_buy).parameters
+        )
         self._regime_cache: dict[tuple[int, int], MarketRegime | None] = {}
         self._regime_series_cache: dict[int, tuple[list[date] | None, list[MarketRegime]]] = {}
 
@@ -178,7 +181,21 @@ class BacktestEngine:
         symbol: str,
         stock_name: str,
         is_st: bool | None,
+        *,
+        price_col: str = "close",
+        price: float | None = None,
     ) -> bool:
+        if self._rule_checker_supports_meta and self._rule_checker_supports_price:
+            return self.rule_checker.can_buy(
+                df,
+                idx,
+                rules,
+                symbol=symbol,
+                stock_name=stock_name,
+                is_st=is_st,
+                price_col=price_col,
+                price=price,
+            )
         if self._rule_checker_supports_meta:
             return self.rule_checker.can_buy(
                 df,
@@ -199,7 +216,22 @@ class BacktestEngine:
         symbol: str,
         stock_name: str,
         is_st: bool | None,
+        *,
+        price_col: str = "close",
+        price: float | None = None,
     ) -> bool:
+        if self._rule_checker_supports_meta and self._rule_checker_supports_price:
+            return self.rule_checker.can_sell(
+                df,
+                idx,
+                entry_idx,
+                rules,
+                symbol=symbol,
+                stock_name=stock_name,
+                is_st=is_st,
+                price_col=price_col,
+                price=price,
+            )
         if self._rule_checker_supports_meta:
             return self.rule_checker.can_sell(
                 df,
@@ -252,13 +284,26 @@ class BacktestEngine:
         for idx in range(start_idx, len(df)):
             # ── Holding a position: check exit ──
             if position is not None:
-                if not self._can_sell(
+                if rules and rules.t_plus_1 and idx <= position.entry_idx:
+                    continue
+                if rules and rules.suspension and _row_is_suspended(df, idx):
+                    continue
+                if not (rules and rules.limit_up_down) and not self._can_sell(
                     df, idx, position.entry_idx, rules, symbol, stock_name, is_st
                 ):
                     continue
 
-                exit_result = self._check_exit(
-                    position, strategy, df, idx, ctx, precomputed=precomputed
+                exit_result = self._check_exit_with_rules(
+                    position=position,
+                    strategy=strategy,
+                    df=df,
+                    idx=idx,
+                    ctx=ctx,
+                    rules=rules,
+                    symbol=symbol,
+                    stock_name=stock_name,
+                    is_st=is_st,
+                    precomputed=precomputed,
                 )
                 if exit_result is not None:
                     reason, exit_price = exit_result
@@ -316,12 +361,45 @@ class BacktestEngine:
                     precomputed=precomputed,
                 )
 
-        # Force close any remaining position at end
+        # Force close remaining position at end if permitted; else preserve unclosed TradeSignal
         if position is not None:
-            signal = self._close_position(
-                position, df, len(df) - 1, df["close"].iloc[-1], ExitReason.MAX_HOLD, slippage
-            )
-            signals.append(signal)
+            last_idx = len(df) - 1
+            if self._can_sell(
+                df,
+                last_idx,
+                position.entry_idx,
+                rules,
+                symbol,
+                stock_name,
+                is_st,
+                price_col="close",
+            ):
+                signal = self._close_position(
+                    position,
+                    df,
+                    last_idx,
+                    float(df["close"].iloc[-1]),
+                    ExitReason.MAX_HOLD,
+                    slippage,
+                )
+                signals.append(signal)
+            else:
+                signals.append(
+                    TradeSignal(
+                        symbol=position.symbol,
+                        signal_date=position.entry_date,
+                        direction=SignalDirection.LONG,
+                        entry_price=position.entry_price,
+                        exit_price=None,
+                        exit_date=None,
+                        exit_reason=None,
+                        return_pct=0.0,
+                        holding_days=max(0, last_idx - position.entry_idx),
+                        regime=position.regime,
+                        sector=position.sector,
+                        indicator_snapshot=position.indicator_snapshot or {},
+                    )
+                )
 
         return signals
 
@@ -361,8 +439,17 @@ class BacktestEngine:
             entry_idx = signal_idx + 1
             entry_price = float(df["open"].iloc[entry_idx])
 
-        # Enforce market rules on the actual entry bar
-        if rules is not None and not self._can_buy(df, entry_idx, rules, symbol, stock_name, is_st):
+        # Enforce market rules on the actual entry bar using execution price column
+        entry_price_col = "close" if timing == "close" else "open"
+        if rules is not None and not self._can_buy(
+            df,
+            entry_idx,
+            rules,
+            symbol,
+            stock_name,
+            is_st,
+            price_col=entry_price_col,
+        ):
             return None
 
         # Apply slippage (buy slightly higher)
@@ -387,6 +474,80 @@ class BacktestEngine:
             sector=self._get_sector(ctx),
             entry_atr=entry_atr,
         )
+
+    def _check_exit_with_rules(
+        self,
+        *,
+        position: _Position,
+        strategy: Strategy,
+        df: pd.DataFrame,
+        idx: int,
+        ctx: IndicatorContext | None,
+        rules: MarketRuleConfig,
+        symbol: str,
+        stock_name: str,
+        is_st: bool | None,
+        precomputed: dict[str, list[IndicatorValue]] | None = None,
+    ) -> tuple[ExitReason, float] | None:
+        """Select highest-priority exit whose fill price complies with market rules."""
+        exit_cfg = strategy.exit
+        current_price = float(df["close"].iloc[idx])
+        holding_days = idx - position.entry_idx
+
+        def _sellable(res: tuple[ExitReason, float] | None) -> bool:
+            if res is None:
+                return False
+            reason, px = res
+            sell_px = None if reason in {ExitReason.MAX_HOLD, ExitReason.SIGNAL} else px
+            return self._can_sell(
+                df,
+                idx,
+                position.entry_idx,
+                rules,
+                symbol,
+                stock_name,
+                is_st,
+                price_col="close",
+                price=sell_px,
+            )
+
+        # 1. Max holding days (at close)
+        if holding_days >= exit_cfg.max_holding_days and _sellable(
+            (ExitReason.MAX_HOLD, current_price)
+        ):
+            return (ExitReason.MAX_HOLD, current_price)
+
+        # 2 & 3. Intraday stop-loss vs take-profit (fallback to the sellable leg if one is limit-locked)
+        stop_result = self._check_stop_loss(
+            position, strategy, df, idx, ctx, precomputed=precomputed
+        )
+        take_profit_result = self._check_take_profit(position, strategy, df, idx, ctx)
+        stop_ok = _sellable(stop_result)
+        tp_ok = _sellable(take_profit_result)
+        if stop_ok and tp_ok:
+            assert stop_result is not None and take_profit_result is not None
+            return self._resolve_intrabar_conflict(
+                stop_result,
+                take_profit_result,
+                position,
+                current_price,
+            )
+        if stop_ok:
+            return stop_result
+        if tp_ok:
+            return take_profit_result
+
+        # 4. Explicit exit triggers (close execution)
+        for trigger in exit_cfg.triggers:
+            hit = (
+                self.evaluator.evaluate_condition(trigger, df, idx, ctx, precomputed=precomputed)
+                if self._cond_supports_precomputed
+                else self.evaluator.evaluate_condition(trigger, df, idx, ctx)
+            )
+            if hit and _sellable((ExitReason.SIGNAL, current_price)):
+                return (ExitReason.SIGNAL, current_price)
+
+        return None
 
     def _check_exit(
         self,
@@ -876,6 +1037,14 @@ def _indicator_warmup(indicator_names: list[str]) -> int:
     # EMA convergence needs ~2x period; SMA needs exactly period
     buffer = max_period if has_ema_indicator else max(5, max_period // 4)
     return max(30, max_period + buffer)
+
+
+def _row_is_suspended(df: pd.DataFrame, idx: int) -> bool:
+    """Return True when row *idx* has explicit zero trading volume."""
+    if "volume" not in df.columns:
+        return False
+    val = df["volume"].iloc[idx]
+    return val is not None and pd.notna(val) and float(val) == 0.0
 
 
 def _normalize_fill_policy(fill_policy: str) -> FillPolicy:
