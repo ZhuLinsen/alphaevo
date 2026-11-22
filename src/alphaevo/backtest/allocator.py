@@ -127,32 +127,38 @@ def _series_metrics(daily_returns: Sequence[float]) -> tuple[float, float, float
 
 
 def _apply_weight_cap(weights: list[float], cap: float) -> list[float]:
-    """Cap weights while preserving as much total unit budget as the cap allows."""
+    """Cap weights cleanly, conserving budget across active strategies without reviving inactive ones."""
     n = len(weights)
     if n == 0:
         return []
-    if n * cap <= 1.0 + 1e-12:
-        return [min(w, cap) for w in weights]
-
     out = list(weights)
-    for _ in range(n):
-        over = [i for i, w in enumerate(out) if w > cap + 1e-12]
-        if not over:
-            break
-        excess = sum(out[i] - cap for i in over)
-        for i in over:
+    if not any(w > cap + 1e-12 for w in out):
+        return out
+
+    pool = 0.0
+    for i in range(n):
+        if out[i] > cap + 1e-12:
+            pool += out[i] - cap
             out[i] = cap
-        under = [i for i, w in enumerate(out) if w < cap - 1e-12]
-        if not under:
+
+    for _ in range(n):
+        if pool <= 1e-12:
             break
-        under_total = sum(out[i] for i in under)
+        under_active = [i for i, w in enumerate(out) if 1e-12 < w < cap - 1e-12]
+        if not under_active:
+            break
+        under_total = sum(out[i] for i in under_active)
         if under_total <= 0:
-            share = excess / len(under)
-            for i in under:
-                out[i] = min(cap, out[i] + share)
-        else:
-            for i in under:
-                out[i] = min(cap, out[i] + excess * (out[i] / under_total))
+            break
+        used = 0.0
+        for i in under_active:
+            room = max(0.0, cap - out[i])
+            add = min(room, pool * (out[i] / under_total))
+            out[i] += add
+            used += add
+        if used <= 1e-12:
+            break
+        pool -= used
     return out
 
 
@@ -169,31 +175,79 @@ def _build_causal_market_proxy(
     cnt_ret = [0] * n_days
     sum_hi_ratio = [0.0] * n_days
     sum_lo_ratio = [0.0] * n_days
+    sum_co_ratio = [0.0] * n_days
     cnt_hl = [0] * n_days
+    cnt_co = [0] * n_days
 
     for df in market_data.values():
         if df is None or df.empty or "date" not in df.columns or "close" not in df.columns:
             continue
-        pairs: list[tuple[date, float, float, float]] = []
+        by_date: dict[date, tuple[float, float, float, float | None]] = {}
+        has_open = "open" in df.columns
+        has_high = "high" in df.columns
+        has_low = "low" in df.columns
         for idx in range(len(df)):
-            raw_d = pd.Timestamp(df["date"].iloc[idx]).date()
-            c_v = float(df["close"].iloc[idx])
-            h_v = float(df["high"].iloc[idx]) if "high" in df.columns else c_v
-            l_v = float(df["low"].iloc[idx]) if "low" in df.columns else c_v
-            if c_v > 0:
-                pairs.append((raw_d, c_v, h_v, l_v))
-        pairs.sort(key=lambda item: item[0])
-        for pos, (bar_d, c_v, h_v, l_v) in enumerate(pairs):
+            ts = pd.to_datetime(df["date"].iloc[idx], errors="coerce")
+            if pd.isna(ts):
+                continue
+            bar_d = ts.date()
+            try:
+                c_v = float(df["close"].iloc[idx])
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(c_v) and c_v > 0):
+                continue
+            o_v: float | None = None
+            if has_open:
+                try:
+                    raw_o = float(df["open"].iloc[idx])
+                    if math.isfinite(raw_o) and raw_o > 0:
+                        o_v = raw_o
+                except (TypeError, ValueError):
+                    pass
+            h_v = c_v
+            l_v = c_v
+            if has_high:
+                try:
+                    raw_h = float(df["high"].iloc[idx])
+                    if math.isfinite(raw_h) and raw_h > 0:
+                        h_v = max(raw_h, c_v)
+                except (TypeError, ValueError):
+                    pass
+            if has_low:
+                try:
+                    raw_l = float(df["low"].iloc[idx])
+                    if math.isfinite(raw_l) and raw_l > 0:
+                        l_v = min(raw_l, c_v)
+                except (TypeError, ValueError):
+                    pass
+            by_date[bar_d] = (c_v, h_v, l_v, o_v)
+
+        sorted_bars = sorted(by_date.items(), key=lambda item: item[0])
+        prev_t_idx: int | None = None
+        prev_close: float | None = None
+        for bar_d, (c_v, h_v, l_v, o_v) in sorted_bars:
             t_idx = date_index.get(bar_d)
             if t_idx is None:
                 continue
             sum_hi_ratio[t_idx] += h_v / c_v
             sum_lo_ratio[t_idx] += l_v / c_v
             cnt_hl[t_idx] += 1
-            if pos > 0 and pairs[pos - 1][1] > 0:
-                sum_ret[t_idx] += (c_v / pairs[pos - 1][1]) - 1.0
+            if o_v is not None and o_v > 0:
+                sum_co_ratio[t_idx] += c_v / o_v
+                cnt_co[t_idx] += 1
+            if (
+                prev_t_idx is not None
+                and prev_t_idx == t_idx - 1
+                and prev_close is not None
+                and prev_close > 0
+            ):
+                sum_ret[t_idx] += (c_v / prev_close) - 1.0
                 cnt_ret[t_idx] += 1
+            prev_t_idx = t_idx
+            prev_close = c_v
 
+    opens: list[float] = []
     closes: list[float] = []
     highs: list[float] = []
     lows: list[float] = []
@@ -201,22 +255,27 @@ def _build_causal_market_proxy(
     for t in range(n_days):
         if cnt_ret[t] > 0:
             level *= max(0.01, 1.0 + sum_ret[t] / cnt_ret[t])
+        co_r = (sum_co_ratio[t] / cnt_co[t]) if cnt_co[t] > 0 else 1.0
+        open_t = level / max(0.01, co_r)
         hi_r = (sum_hi_ratio[t] / cnt_hl[t]) if cnt_hl[t] > 0 else 1.0
         lo_r = (sum_lo_ratio[t] / cnt_hl[t]) if cnt_hl[t] > 0 else 1.0
+        opens.append(open_t)
         closes.append(level)
-        highs.append(level * hi_r)
-        lows.append(level * lo_r)
+        highs.append(max(level * hi_r, open_t))
+        lows.append(min(level * lo_r, open_t))
 
     return cast(
         "pd.DataFrame",
         pd.DataFrame(
             {
                 "date": all_dates,
-                "open": closes,
+                "open": opens,
                 "high": highs,
                 "low": lows,
                 "close": closes,
                 "volume": [1_000_000.0] * n_days,
+                "observed_count": cnt_hl,
+                "return_count": cnt_ret,
             }
         ),
     )
@@ -274,21 +333,85 @@ class RegimeAdaptiveAllocator:
             sampling_method=SamplingMethod.REPRESENTATIVE,
         )
 
-        from alphaevo.evaluator.metrics import Evaluator
+        close_lookup: dict[str, tuple[list[date], list[float]]] = {}
+        for sym, df in market_data.items():
+            if df is None or df.empty or "date" not in df.columns or "close" not in df.columns:
+                continue
+            sym_pairs: dict[date, float] = {}
+            for idx in range(len(df)):
+                ts = pd.to_datetime(df["date"].iloc[idx], errors="coerce")
+                if pd.isna(ts):
+                    continue
+                try:
+                    c_v = float(df["close"].iloc[idx])
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(c_v) and c_v > 0:
+                    sym_pairs[ts.date()] = c_v
+            if sym_pairs:
+                s_items = sorted(sym_pairs.items(), key=lambda it: it[0])
+                close_lookup[sym] = ([it[0] for it in s_items], [it[1] for it in s_items])
 
         strat_rets: list[list[float]] = []
         standalone_stats: list[tuple[float, float, float, int]] = []
         for strat in strategies:
             bt = bt_engine.run(strat, market_data, batch)
             executed = [s for s in bt.signals if s.exit_price is not None]
-            cal, rets, _act, _dd, _sh, _tot = Evaluator.compute_daily_mtm_series(
-                executed, market_data
-            )
-            ret_by_date = dict(zip(cal, rets, strict=True)) if cal else {}
+            open_sigs = [s for s in bt.signals if s.exit_price is None]
+            # Aggregate EVERY position uniformly per-position per day so appending later
+            # open positions never alters earlier historical returns.
+            from bisect import bisect_left, bisect_right
+
+            day_pos: dict[date, list[float]] = {}
+            for sig in executed:
+                if sig.symbol not in close_lookup or sig.entry_price <= 0:
+                    continue
+                s_dates, s_closes = close_lookup[sig.symbol]
+                end_d = sig.exit_date or sig.signal_date
+                if end_d <= sig.signal_date:
+                    day_pos.setdefault(end_d, []).append(float(sig.return_pct))
+                    continue
+                lo = bisect_left(s_dates, sig.signal_date)
+                hi = bisect_right(s_dates, end_d)
+                entry_p = float(sig.entry_price)
+                prev_mark = entry_p
+                target_end = entry_p * (1.0 + float(sig.return_pct))
+                booked_exit = False
+                for pos in range(lo, hi):
+                    bar_d = s_dates[pos]
+                    close_p = s_closes[pos]
+                    if bar_d == end_d:
+                        bar_ret = (target_end / prev_mark) - 1.0 if prev_mark > 0 else 0.0
+                        booked_exit = True
+                    elif prev_mark > 0:
+                        bar_ret = (close_p / prev_mark) - 1.0
+                        prev_mark = close_p
+                    else:
+                        bar_ret = 0.0
+                    day_pos.setdefault(bar_d, []).append(bar_ret)
+                if not booked_exit:
+                    day_pos.setdefault(end_d, []).append(
+                        (target_end / prev_mark) - 1.0 if prev_mark > 0 else float(sig.return_pct)
+                    )
+
+            for sig in open_sigs:
+                if sig.symbol not in close_lookup or sig.entry_price <= 0:
+                    continue
+                s_dates, s_closes = close_lookup[sig.symbol]
+                prev_mark = float(sig.entry_price)
+                for bar_d, close_p in zip(s_dates, s_closes, strict=True):
+                    if bar_d < sig.signal_date:
+                        continue
+                    bar_ret = (close_p / prev_mark) - 1.0 if prev_mark > 0 else 0.0
+                    prev_mark = close_p
+                    day_pos.setdefault(bar_d, []).append(bar_ret)
+
+            ret_by_date = {d: sum(vals) / len(vals) for d, vals in day_pos.items() if vals}
+
             aligned = [float(ret_by_date.get(d, 0.0)) for d in all_dates]
             strat_rets.append(aligned)
             st_tot, st_dd, st_sh = _series_metrics(aligned)
-            standalone_stats.append((st_tot, st_sh, st_dd, len(executed)))
+            standalone_stats.append((st_tot, st_sh, st_dd, len(bt.signals)))
 
         cfg = self.config
         n_strats = len(strategies)
@@ -311,14 +434,19 @@ class RegimeAdaptiveAllocator:
             causal_regime: MarketRegime = regimes[t - 1] if t > 0 else regimes[0]
             regime_counts[regimes[t].value] += 1
 
+            hists = [strat_rets[i][win_start:t] for i in range(n_strats)]
+            active_flags = [
+                len(hists[i]) >= 2 and sum(1 for v in hists[i] if abs(v) > 1e-12) >= 2
+                for i in range(n_strats)
+            ]
+            any_active = any(active_flags)
+
             raw_scores: list[float] = []
             for i in range(n_strats):
-                hist = strat_rets[i][win_start:t]
-                non_zero = sum(1 for v in hist if abs(v) > 1e-12)
-                if len(hist) >= 2 and non_zero >= 2:
-                    vol_i = max(cfg.vol_floor, stdev(hist))
-                else:
-                    vol_i = cfg.vol_floor
+                if any_active and not active_flags[i]:
+                    raw_scores.append(0.0)
+                    continue
+                vol_i = max(cfg.vol_floor, stdev(hists[i])) if active_flags[i] else cfg.vol_floor
                 score_i = 1.0 / vol_i
                 pref = strategies[i].meta.preferred_regime
                 if pref:
@@ -330,14 +458,17 @@ class RegimeAdaptiveAllocator:
             if n_strats > 1 and (t - win_start) >= 5:
                 penalized = list(raw_scores)
                 for i in range(n_strats):
+                    if raw_scores[i] <= 0.0:
+                        continue
                     pos_rhos: list[float] = []
                     for j in range(n_strats):
-                        if i == j:
+                        if i == j or raw_scores[j] <= 0.0:
                             continue
                         rho = _pearson(strat_rets[i][win_start:t], strat_rets[j][win_start:t])
                         pos_rhos.append(max(0.0, rho))
-                    mean_pos = sum(pos_rhos) / len(pos_rhos)
-                    penalized[i] /= 1.0 + cfg.correlation_penalty_strength * mean_pos
+                    if pos_rhos:
+                        mean_pos = sum(pos_rhos) / len(pos_rhos)
+                        penalized[i] /= 1.0 + cfg.correlation_penalty_strength * mean_pos
                 raw_scores = penalized
 
             total_score = sum(raw_scores)

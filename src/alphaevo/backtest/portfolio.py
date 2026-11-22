@@ -103,9 +103,15 @@ class PortfolioBacktester:
         cash = cfg.initial_capital
         equity = cfg.initial_capital
 
-        # Sort signals chronologically by entry date
+        close_map = _build_close_map(market_data)
+
+        # Include closed trades AND unclosed terminal holds that have daily MTM data
         signals = sorted(
-            [s for s in backtest_result.signals if s.exit_price is not None],
+            [
+                s
+                for s in backtest_result.signals
+                if s.exit_price is not None or (close_map and s.symbol in close_map)
+            ],
             key=lambda s: (s.signal_date, s.symbol),
         )
 
@@ -119,10 +125,9 @@ class PortfolioBacktester:
         open_positions: list[tuple[TradeSignal, float, float]] = []  # (signal, shares, allocated)
         equity_curve: list[PortfolioSnapshot] = []
         max_concurrent = 0
-        total_capital_days = 0.0
+        total_capital_util = 0.0
         total_days = 0
 
-        close_map = _build_close_map(market_data)
         event_dates: set[date] = {s.signal_date for s in signals}
         for s in signals:
             ex = _resolve_exit_date(s)
@@ -133,14 +138,60 @@ class PortfolioBacktester:
         if close_map:
             for sym_dates, _ in close_map.values():
                 for d in sym_dates:
-                    if min_d <= d <= max_d:
+                    if d >= min_d:
                         event_dates.add(d)
+                        max_d = max(max_d, d)
 
         all_dates = sorted(event_dates)
         signal_idx = 0
 
         for current_date in all_dates:
-            # Close positions that have reached or passed their exit date
+            # 1. Size today's morning/open entries using start-of-day equity and prior cash
+            start_of_day_equity = equity
+
+            # Close any stale positions whose exit date strictly preceded current_date
+            stale_open: list[tuple[TradeSignal, float, float]] = []
+            for sig, shares, allocated in open_positions:
+                exit_date = _resolve_exit_date(sig)
+                if exit_date is not None and exit_date < current_date:
+                    pnl_pct = sig.return_pct
+                    pnl = allocated * pnl_pct
+                    cash += allocated + pnl
+                    portfolio_trades.append(
+                        PortfolioTrade(
+                            signal=sig,
+                            shares=shares,
+                            capital_allocated=allocated,
+                            pnl=pnl,
+                            pnl_pct=pnl_pct,
+                        )
+                    )
+                else:
+                    stale_open.append((sig, shares, allocated))
+            open_positions = stale_open
+
+            # 2. Open new positions BEFORE crediting today's exit proceeds or today's close MTM
+            while signal_idx < len(signals) and signals[signal_idx].signal_date == current_date:
+                sig = signals[signal_idx]
+                signal_idx += 1
+
+                if len(open_positions) >= cfg.max_positions:
+                    continue  # Skip — position limit reached
+
+                allocation = min(
+                    cash,
+                    start_of_day_equity * cfg.position_size_pct,
+                )
+                if allocation < sig.entry_price or sig.entry_price <= 0:
+                    continue  # Not enough capital
+
+                shares = allocation / sig.entry_price
+                cash -= allocation
+                open_positions.append((sig, shares, allocation))
+
+            max_concurrent = max(max_concurrent, len(open_positions))
+
+            # 3. Close positions that reach their exit date at today's close/exit
             still_open: list[tuple[TradeSignal, float, float]] = []
             for sig, shares, allocated in open_positions:
                 exit_date = _resolve_exit_date(sig)
@@ -161,33 +212,7 @@ class PortfolioBacktester:
                     still_open.append((sig, shares, allocated))
             open_positions = still_open
 
-            # Recompute current mark-to-market equity before sizing new entries
-            equity = cash + sum(
-                _mark_to_market(sig, shares, current_date, close_map=close_map)
-                for sig, shares, _alloc in open_positions
-            )
-
-            # Open new positions from today's signals
-            while signal_idx < len(signals) and signals[signal_idx].signal_date == current_date:
-                sig = signals[signal_idx]
-                signal_idx += 1
-
-                if len(open_positions) >= cfg.max_positions:
-                    continue  # Skip — position limit reached
-
-                allocation = min(
-                    cash * cfg.position_size_pct,
-                    equity * cfg.position_size_pct,
-                )
-                if allocation < sig.entry_price or sig.entry_price <= 0:
-                    continue  # Not enough capital
-
-                shares = allocation / sig.entry_price
-                cash -= allocation
-                open_positions.append((sig, shares, allocation))
-
-            max_concurrent = max(max_concurrent, len(open_positions))
-
+            # 4. Compute end-of-day mark-to-market equity
             invested_mtm = 0.0
             for sig, shares, _alloc in open_positions:
                 invested_mtm += _mark_to_market(sig, shares, current_date, close_map=close_map)
@@ -206,12 +231,20 @@ class PortfolioBacktester:
                 )
             )
 
-            total_capital_days += len(open_positions) * cfg.position_size_pct
+            day_util = (invested_mtm / current_equity) if current_equity > 0 else 0.0
+            total_capital_util += max(0.0, min(1.0, day_util))
             total_days += 1
 
-        # Close any remaining positions at their net trade returns
+        # Close or mark any remaining positions at final equity
+        end_mark_date = all_dates[-1]
         for sig, shares, allocated in open_positions:
-            pnl = allocated * sig.return_pct
+            if sig.exit_price is None and close_map and sig.symbol in close_map:
+                final_val = _mark_to_market(sig, shares, end_mark_date, close_map=close_map)
+                pnl = final_val - allocated
+                pnl_pct = (pnl / allocated) if allocated > 0 else 0.0
+            else:
+                pnl_pct = sig.return_pct
+                pnl = allocated * pnl_pct
             cash += allocated + pnl
             portfolio_trades.append(
                 PortfolioTrade(
@@ -219,17 +252,15 @@ class PortfolioBacktester:
                     shares=shares,
                     capital_allocated=allocated,
                     pnl=pnl,
-                    pnl_pct=sig.return_pct,
+                    pnl_pct=pnl_pct,
                 )
             )
 
         final_equity = cash
         total_return = (final_equity / cfg.initial_capital - 1) if cfg.initial_capital > 0 else 0.0
-        max_dd = _compute_max_drawdown(equity_curve)
+        max_dd = _compute_max_drawdown(equity_curve, initial_capital=cfg.initial_capital)
         sharpe = _compute_portfolio_sharpe(equity_curve)
-        cap_util = (
-            (total_capital_days / (total_days * cfg.max_positions)) if total_days > 0 else 0.0
-        )
+        cap_util = (total_capital_util / total_days) if total_days > 0 else 0.0
 
         return PortfolioResult(
             config=cfg,
@@ -269,7 +300,9 @@ def _build_close_map(
 
 
 def _resolve_exit_date(signal: TradeSignal) -> date | None:
-    """Prefer actual realized exit_date over weekend-only estimate."""
+    """Prefer actual realized exit_date; return None for still-open signals."""
+    if signal.exit_price is None:
+        return None
     return signal.exit_date or _estimate_exit_date(signal)
 
 
@@ -320,11 +353,15 @@ def _estimate_exit_date(signal: TradeSignal) -> date | None:
     return current
 
 
-def _compute_max_drawdown(curve: list[PortfolioSnapshot]) -> float:
-    """Compute maximum drawdown from equity curve."""
+def _compute_max_drawdown(
+    curve: list[PortfolioSnapshot],
+    *,
+    initial_capital: float | None = None,
+) -> float:
+    """Compute maximum drawdown from equity curve, anchored to initial_capital when provided."""
     if not curve:
         return 0.0
-    peak = curve[0].equity
+    peak = max(initial_capital, curve[0].equity) if initial_capital is not None else curve[0].equity
     max_dd = 0.0
     for snap in curve:
         if snap.equity > peak:

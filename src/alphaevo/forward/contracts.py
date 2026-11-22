@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ class CandidateSpec(BaseModel):
     strategy_id: str
     family_id: str
     strategy_hash: str
+    market: str = ""
     stage: PromotionStage = PromotionStage.SHADOW
     backtest_avg_return: float = 0.0
     backtest_win_rate: float = 0.0
@@ -60,6 +61,8 @@ class SetupInstance(BaseModel):
     quality_grade: Literal["A", "B", "C"] = "B"
     conviction_score: float = 0.5
     ready_now: bool = True
+    stock_name: str = ""
+    is_st: bool | None = None
 
 
 class ForecastCommit(BaseModel):
@@ -67,12 +70,16 @@ class ForecastCommit(BaseModel):
 
     commit_id: str
     strategy_id: str
+    strategy_hash: str = ""
+    market: str = ""
+    market_rules: dict[str, Any] = Field(default_factory=dict)
     as_of: date
     committed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     market_temperature: Literal["normal", "cautious", "defensive"] = "normal"
     total_raw_candidates: int = 0
     sector_capped_count: int = 0
     is_replay: bool = False
+    wall_clock_enforced: bool = False
     signals: list[SetupInstance] = Field(default_factory=list)
     prev_hash: str = "0" * 64
     record_hash: str = ""
@@ -83,10 +90,13 @@ class OutcomeHorizon(BaseModel):
 
     horizon_days: Literal[5, 10, 20]
     mature: bool = False
+    entry_date: date | None = None
+    horizon_end_date: date | None = None
     exit_date: date | None = None
     raw_signal_return: float = 0.0
     tradable_post_cost_return: float = 0.0
     benchmark_return: float = 0.0
+    benchmark_available: bool = False
     excess_return: float = 0.0
     stopped_out: bool = False
 
@@ -96,6 +106,8 @@ class OutcomeEvent(BaseModel):
 
     signal_id: str
     strategy_id: str
+    strategy_hash: str = ""
+    is_replay: bool = False
     symbol: str
     sector: str = "unknown"
     as_of: date
@@ -114,6 +126,7 @@ class ForwardDecayReport(BaseModel):
     mature_signals: int = 0
     immature_signals: int = 0
     effective_signals: float = 0.0
+    benchmark_coverage_ratio: float = 0.0
     forward_win_rate: float = 0.0
     forward_avg_post_cost_return: float = 0.0
     forward_avg_excess_return: float = 0.0
