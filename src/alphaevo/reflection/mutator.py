@@ -82,6 +82,9 @@ class StrategyMutator:
         if not applied:
             raise MutationError("No changes could be applied")
 
+        if any(c.change_type == ChangeType.ADJUST_EXIT for c in applied):
+            prune_dangling_exit_tunables(new)
+
         # Enforce complexity limit on total entry trigger/filter rules.
         n_conditions = _entry_rule_count(new)
         if n_conditions > self.complexity_limit:
@@ -131,6 +134,46 @@ def _loosen_filter(strategy: Strategy, change: StrategyChange) -> None:
     _update_condition_value(strategy, change)
 
 
+def promote_legacy_conditions_to_triggers(
+    strategy: Strategy,
+    new_trigger: StrategyCondition,
+) -> None:
+    """Promote legacy entry.conditions into entry.triggers (+ guards for multi-AND) and retarget tunables."""
+    if strategy.entry.logic == "and" and len(strategy.entry.conditions) >= 2:
+        orig_conds = list(strategy.entry.conditions)
+        guard_offset = len(strategy.entry.guards)
+        promoted_first = orig_conds[0]
+        moved_guards = orig_conds[1:]
+        strategy.entry.triggers = [promoted_first, new_trigger]
+        strategy.entry.guards.extend(moved_guards)
+        strategy.entry.conditions = []
+        first_ind = promoted_first.indicator
+        for param in strategy.params.tunable:
+            if not param.target.startswith("entry.conditions["):
+                continue
+            m = re.match(r"^entry\.conditions\[(\d+)\](.*)$", param.target)
+            if m is not None:
+                idx = int(m.group(1))
+                suffix = m.group(2)
+                if idx == 0:
+                    param.target = f"entry.triggers[0]{suffix}"
+                elif 1 <= idx < len(orig_conds):
+                    param.target = f"entry.guards[{guard_offset + idx - 1}]{suffix}"
+            else:
+                replacement_bucket = (
+                    "entry.triggers["
+                    if f"[indicator={first_ind}]" in param.target
+                    else "entry.guards["
+                )
+                param.target = param.target.replace("entry.conditions[", replacement_bucket, 1)
+    else:
+        strategy.entry.triggers = [*strategy.entry.conditions, new_trigger]
+        strategy.entry.conditions = []
+        for param in strategy.params.tunable:
+            if param.target.startswith("entry.conditions["):
+                param.target = param.target.replace("entry.conditions[", "entry.triggers[", 1)
+
+
 def _add_condition(strategy: Strategy, change: StrategyChange) -> None:
     """Add a new entry condition."""
     if not isinstance(change.to_value, dict):
@@ -147,7 +190,38 @@ def _add_condition(strategy: Strategy, change: StrategyChange) -> None:
             f"Available: {IndicatorRegistry.available()}"
         )
 
+    if (
+        change.target.startswith("entry.triggers")
+        and not strategy.entry.triggers
+        and strategy.entry.conditions
+    ):
+        promote_legacy_conditions_to_triggers(strategy, new_cond)
+        return
+
     _entry_bucket(strategy, change.target).append(new_cond)
+
+
+def prune_dangling_exit_tunables(strategy: Strategy) -> None:
+    """Drop tunable targets referencing exit fields no longer active after exit changes."""
+    sl = strategy.exit.stop_loss
+    tp = strategy.exit.take_profit
+    kept = []
+    for param in strategy.params.tunable:
+        tgt = param.target.strip()
+        if tgt == "exit.stop_loss.value" and sl.value is None:
+            continue
+        if tgt in {"exit.stop_loss.multiplier", "exit.stop_loss.atr_period"} and (sl.type != "atr"):
+            continue
+        if tgt == "exit.take_profit.value" and tp.value is None:
+            continue
+        if tgt == "exit.take_profit.target" and tp.type != "target_ma":
+            continue
+        if tgt in {"exit.take_profit.trigger_pct", "exit.take_profit.trail_pct"} and (
+            tp.type != "trailing"
+        ):
+            continue
+        kept.append(param)
+    strategy.params.tunable = kept
 
 
 def _remove_condition(strategy: Strategy, change: StrategyChange) -> None:
@@ -173,9 +247,30 @@ def _remove_condition(strategy: Strategy, change: StrategyChange) -> None:
 def _adjust_exit(strategy: Strategy, change: StrategyChange) -> None:
     """Modify exit parameters (stop loss, take profit, max holding days)."""
     target = change.target
-    val = _sanitize_condition_value(change.to_value)
-    if "stop_loss.value" in target and val is not None:
-        strategy.exit.stop_loss.value = float(val)
+    raw_val = change.to_value
+    if "stop_loss.conditions" in target:
+        if raw_val is None:
+            strategy.exit.stop_loss.conditions = None
+        elif isinstance(raw_val, list):
+            strategy.exit.stop_loss.conditions = [
+                c if isinstance(c, StrategyCondition) else StrategyCondition(**c) for c in raw_val
+            ]
+        else:
+            raise MutationError(f"Invalid stop_loss.conditions value: {raw_val}")
+        return
+    if "exit.triggers" in target or target == "triggers":
+        if raw_val is None:
+            strategy.exit.triggers = []
+        elif isinstance(raw_val, list):
+            strategy.exit.triggers = [
+                c if isinstance(c, StrategyCondition) else StrategyCondition(**c) for c in raw_val
+            ]
+        else:
+            raise MutationError(f"Invalid exit.triggers value: {raw_val}")
+        return
+    val = _sanitize_condition_value(raw_val)
+    if "stop_loss.value" in target:
+        strategy.exit.stop_loss.value = None if val is None else float(val)
     elif "stop_loss.type" in target and val is not None:
         new_type = str(val)
         strategy.exit.stop_loss.type = new_type
@@ -198,18 +293,25 @@ def _adjust_exit(strategy: Strategy, change: StrategyChange) -> None:
             strategy.exit.stop_loss.atr_period = None
             strategy.exit.stop_loss.reference = None
             strategy.exit.stop_loss.conditions = None
-    elif "stop_loss.reference" in target and val is not None:
-        strategy.exit.stop_loss.reference = str(val)
-    elif "stop_loss.multiplier" in target and val is not None:
-        strategy.exit.stop_loss.multiplier = float(val)
-    elif "stop_loss.atr_period" in target and val is not None:
-        if not set_tunable_target(strategy, target, val):
+    elif "stop_loss.reference" in target:
+        strategy.exit.stop_loss.reference = None if val is None else str(val)
+    elif "stop_loss.multiplier" in target:
+        strategy.exit.stop_loss.multiplier = None if val is None else float(val)
+    elif "stop_loss.atr_period" in target:
+        if val is None:
+            strategy.exit.stop_loss.atr_period = None
+        elif not set_tunable_target(strategy, target, val):
             raise MutationError(f"Invalid stop_loss.atr_period update: {change.target}")
-    elif "take_profit.value" in target and val is not None:
-        strategy.exit.take_profit.value = float(val)
-    elif "take_profit.target" in target and val is not None:
-        if not set_tunable_target(strategy, target, val):
-            raise MutationError(f"Invalid take_profit.target update: {change.target}")
+    elif "take_profit.value" in target:
+        strategy.exit.take_profit.value = None if val is None else float(val)
+    elif "take_profit.target" in target:
+        if val is None:
+            strategy.exit.take_profit.target = None
+        elif not set_tunable_target(strategy, target, val):
+            if isinstance(val, str) and val.strip():
+                strategy.exit.take_profit.target = val.strip()
+            else:
+                raise MutationError(f"Invalid take_profit.target update: {change.target}")
     elif "take_profit.type" in target and val is not None:
         new_type = str(val)
         strategy.exit.take_profit.type = new_type
@@ -224,10 +326,10 @@ def _adjust_exit(strategy: Strategy, change: StrategyChange) -> None:
             strategy.exit.take_profit.target = None
             strategy.exit.take_profit.trigger_pct = None
             strategy.exit.take_profit.trail_pct = None
-    elif "take_profit.trigger_pct" in target and val is not None:
-        strategy.exit.take_profit.trigger_pct = float(val)
-    elif "take_profit.trail_pct" in target and val is not None:
-        strategy.exit.take_profit.trail_pct = float(val)
+    elif "take_profit.trigger_pct" in target:
+        strategy.exit.take_profit.trigger_pct = None if val is None else float(val)
+    elif "take_profit.trail_pct" in target:
+        strategy.exit.take_profit.trail_pct = None if val is None else float(val)
     elif "max_holding_days" in target and val is not None:
         strategy.exit.max_holding_days = int(val)
     else:

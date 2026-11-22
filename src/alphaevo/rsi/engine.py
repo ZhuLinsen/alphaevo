@@ -17,6 +17,7 @@ from alphaevo.alpha_factory.factory import (
     load_registered_factors,
     register_factor_record,
 )
+from alphaevo.backtest.indicators import IndicatorRegistry
 from alphaevo.core.config import BacktestConfig
 from alphaevo.evaluator.metrics import Evaluator
 from alphaevo.models.enums import EvidenceLevel, RSILevel
@@ -25,7 +26,16 @@ from alphaevo.models.strategy import Strategy
 from alphaevo.reflection.critic import SelfCritic
 from alphaevo.reflection.experience import ExperienceRecord, ExperienceStore
 from alphaevo.reflection.mutator import StrategyMutator
-from alphaevo.rsi.co_steer import BlindSpotMiner, ScarRegistry
+from alphaevo.rsi.co_steer import (
+    BlindSpotMiner,
+    ScarRegistry,
+)
+from alphaevo.rsi.co_steer import (
+    acquire_dynamic_lease as _acquire_dynamic_lease,
+)
+from alphaevo.rsi.co_steer import (
+    release_dynamic_lease as _release_dynamic_lease_entry,
+)
 from alphaevo.rsi.council import HeterogeneousCouncil
 from alphaevo.rsi.crossover import SemanticCrossoverBreeder
 from alphaevo.rsi.diagnostics import analyze_entry_bottlenecks
@@ -225,6 +235,45 @@ def _structural_strategy_hash(strategy: Strategy) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _strategy_uses_indicator(strategy: Strategy, indicator_name: str) -> bool:
+    """Return True if *indicator_name* appears in any entry or exit condition."""
+    conds = (
+        strategy.entry.triggers
+        + strategy.entry.conditions
+        + strategy.entry.guards
+        + strategy.entry.filters
+        + strategy.exit.triggers
+    )
+    stop_conds = getattr(strategy.exit.stop_loss, "conditions", None) or []
+    return any(getattr(cond, "indicator", None) == indicator_name for cond in [*conds, *stop_conds])
+
+
+def _passes_base_l0_gates(
+    cand_fit: float,
+    verified_champion_fitness: float,
+    cand_eval: EvaluationReport,
+    cand_outcome: KernelEvaluationOutcome,
+    cfg: RSICharter,
+    dsr_prob: float,
+) -> bool:
+    """Evaluate all deterministic L0 promotion gates except optional rerun-null worlds."""
+    return (
+        cand_fit > verified_champion_fitness + 1e-4
+        and cand_eval.overall.avg_return > 0.0
+        and cand_eval.overall.max_drawdown <= cfg.max_drawdown
+        and not cand_eval.anti_overfit.is_overfit
+        and cand_eval.overall.signal_count >= cfg.min_signals
+        and dsr_prob >= cfg.min_dsr_prob
+        and (not cfg.require_null_control or cand_eval.null_control_passed is True)
+        and (
+            not cfg.require_portfolio_gate
+            or (
+                cand_outcome.portfolio_verdict is not None and cand_outcome.portfolio_verdict.passed
+            )
+        )
+    )
+
+
 class StockRSIEngine:
     """Self-improving stock strategy/factor loop guarded by L0 Truth & MAP-Elites."""
 
@@ -280,6 +329,21 @@ class StockRSIEngine:
             min_data_days=15,
         )
 
+    def close(self) -> None:
+        """Close backing stores and L2 sandbox worker resources."""
+        self._experience_store.close()
+        self._factor_store.close()
+        self._miner.close()
+        close_fn = getattr(self._trial_ledger, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+    def __enter__(self) -> StockRSIEngine:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def run(
         self,
         seed_strategy: Strategy,
@@ -295,6 +359,40 @@ class StockRSIEngine:
         on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> RSIRunResult:
         """Execute a bounded L1/L2 RSI evolution session and persist traceable outputs."""
+        active_leases: list[Callable[[], None]] = []
+        try:
+            return self._run_impl(
+                seed_strategy,
+                market_data,
+                charter=charter,
+                output_dir=output_dir,
+                seed=seed,
+                persist_champion=persist_champion,
+                shadow_ledger=shadow_ledger,
+                auto_enroll_shadow=auto_enroll_shadow,
+                artifact_store=artifact_store,
+                on_event=on_event,
+                _active_leases=active_leases,
+            )
+        finally:
+            while active_leases:
+                active_leases.pop()()
+
+    def _run_impl(
+        self,
+        seed_strategy: Strategy,
+        market_data: dict[str, pd.DataFrame],
+        *,
+        charter: RSICharter | None = None,
+        output_dir: Path | None = None,
+        seed: int = 42,
+        persist_champion: bool = True,
+        shadow_ledger: ShadowLedger | None = None,
+        auto_enroll_shadow: bool = False,
+        artifact_store: RunArtifactStore | None = None,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+        _active_leases: list[Callable[[], None]] | None = None,
+    ) -> RSIRunResult:
 
         def _emit(payload: dict[str, Any]) -> None:
             if on_event is None:
@@ -308,15 +406,11 @@ class StockRSIEngine:
         vault: LockedHoldoutVault | None = None
         search_market = market_data
         if cfg.locked_holdout_pct > 0.0:
-            try:
-                vault, _split = split_market_data_with_holdout(
-                    market_data,
-                    holdout_pct=cfg.locked_holdout_pct,
-                )
-                search_market = vault.search_data
-            except ValueError:
-                vault = None
-                search_market = market_data
+            vault, _split = split_market_data_with_holdout(
+                market_data,
+                holdout_pct=cfg.locked_holdout_pct,
+            )
+            search_market = vault.search_data
 
         family_id = self._trial_ledger.resolve_trial_family_id(seed_strategy)
         sample_df = next(
@@ -418,22 +512,56 @@ class StockRSIEngine:
                     parent_strategy = elite.strategy
                     parent_eval = elite.evaluation
 
+            pre_registered = set(IndicatorRegistry.available()) | set(
+                IndicatorRegistry.dynamic_names()
+            )
             steer = self._miner.steer(
                 parent_strategy,
                 parent_eval,
                 sample_df,
                 allowed_levels=cfg.allowed_levels,
                 stagnant_l1_rounds=stagnant_l1,
+                persist=False,
+                acquire_lease=True,
             )
+            if getattr(steer, "lease_acquired", False):
+                new_dynamic_factor = steer.synthesized_factor_name
+            else:
+                new_dynamic_factor = _acquire_dynamic_lease(
+                    steer.synthesized_factor_name,
+                    in_pre_registered=(
+                        steer.synthesized_factor_name in pre_registered
+                        if steer.synthesized_factor_name is not None
+                        else False
+                    ),
+                    factor_record=steer.synthesized_factor_record,
+                    factor_store=self._factor_store,
+                )
+            lease_released = False
+
+            def _cleanup_unused_dynamic(
+                *,
+                persisted: bool = False,
+                cand_name: str | None = new_dynamic_factor,
+                cur_work: Strategy = working_strategy,
+                cur_champ: Strategy = verified_champion_strategy,
+            ) -> None:
+                nonlocal lease_released
+                if lease_released:
+                    return
+                lease_released = True
+                _release_dynamic_lease_entry(
+                    cand_name,
+                    persisted=persisted,
+                    protected_strategies=(cur_work, cur_champ),
+                )
+
+            if _active_leases is not None:
+                _active_leases.append(_cleanup_unused_dynamic)
+
             bottleneck = analyze_entry_bottlenecks(parent_strategy, search_market)
             if bottleneck.diagnosis_summary:
                 steer.cluster.bottleneck_hint = bottleneck.diagnosis_summary
-            if (
-                steer.persisted_to_store
-                and steer.synthesized_factor_name
-                and steer.synthesized_factor_name not in persisted_factors
-            ):
-                persisted_factors.append(steer.synthesized_factor_name)
 
             parent_tried = tried_by_parent.setdefault(parent_strategy.meta.id, set())
             raw_deliberations = self._council.generate_candidates(
@@ -565,6 +693,7 @@ class StockRSIEngine:
                     )
 
             if not approved:
+                _cleanup_unused_dynamic()
                 veto_row = RSIRoundRow(
                     round_num=rnd,
                     strategy_id=parent_strategy.meta.id,
@@ -593,7 +722,7 @@ class StockRSIEngine:
                 stagnant_l1 += 1
                 continue
 
-            best_cand_bundle: (
+            evaluated_bundles: list[
                 tuple[
                     Strategy,
                     KernelEvaluationOutcome,
@@ -601,9 +730,10 @@ class StockRSIEngine:
                     list[StrategyChange],
                     RSILevel,
                     DeliberationRecord,
+                    float,
+                    bool,
                 ]
-                | None
-            ) = None
+            ] = []
             round_approved_records: list[DeliberationRecord] = []
 
             for p_model, p_fam, p_rat, changes, aud, prebuilt_strat, sec_parent in approved:
@@ -708,8 +838,6 @@ class StockRSIEngine:
                 deliberations.append(cand_rec)
                 round_approved_records.append(cand_rec)
 
-                archive.insert(cand_strategy, cand_eval, cand_fit)
-
                 if self._enable_pinned_scars and (
                     (working_eval.overall.signal_count > 0 and cand_eval.overall.signal_count == 0)
                     or (cand_fit - working_fitness) < -0.08
@@ -749,18 +877,30 @@ class StockRSIEngine:
                     )
                 )
 
-                if best_cand_bundle is None or cand_fit > best_cand_bundle[2]:
-                    best_cand_bundle = (
+                passes_base = _passes_base_l0_gates(
+                    cand_fit,
+                    verified_champion_fitness,
+                    cand_eval,
+                    cand_outcome,
+                    cfg,
+                    cand_dsr,
+                )
+                evaluated_bundles.append(
+                    (
                         cand_strategy,
                         cand_outcome,
                         cand_fit,
                         changes,
                         level_used,
                         cand_rec,
+                        cand_dsr,
+                        passes_base,
                     )
+                )
                 next_version += 1
 
-            if best_cand_bundle is None:
+            if not evaluated_bundles:
+                _cleanup_unused_dynamic()
                 for rec in round_approved_records:
                     if rec.veto_reasons:
                         _bump_veto(rec.veto_reasons)
@@ -774,52 +914,166 @@ class StockRSIEngine:
                 stagnant_l1 += 1
                 continue
 
-            cand_strat, cand_outcome, cand_fit, chs, lvl, best_rec = best_cand_bundle
+            # TrialLedger (frozen L0) persists sequential insertion-time DSR rows; here we
+            # recompute order-invariant round-end DSR for gates, deliberations, and MAP-Elites
+            # without mutating historical L0 rows.
+            round_end_trials = max(1, self._trial_ledger.count_family_trials(family_id))
+            refreshed_bundles: list[
+                tuple[
+                    Strategy,
+                    KernelEvaluationOutcome,
+                    float,
+                    list[StrategyChange],
+                    RSILevel,
+                    DeliberationRecord,
+                    float,
+                    bool,
+                ]
+            ] = []
+            for bundle in evaluated_bundles:
+                b_strat, b_outcome, b_fit, b_chs, b_lvl, b_rec, b_dsr, b_ok = bundle
+                b_eval = b_outcome.evaluation
+                bt_res = getattr(b_outcome, "backtest_result", None)
+                if bt_res is not None:
+                    executed = [s for s in bt_res.signals if s.exit_price is not None]
+                    dsr_returns = (
+                        self._evaluator.compute_daily_mtm_returns(executed, search_market)[0]
+                        if b_eval.overall.metrics_basis == "daily_mtm" and search_market
+                        else []
+                    )
+                    dsr_input = dsr_returns if dsr_returns else [s.return_pct for s in executed]
+                    dsr_obs = len(dsr_input) if dsr_returns else b_eval.overall.signal_count
+                    dsr_res = self._trial_ledger.compute_dsr_for_trials(
+                        family_id=family_id,
+                        n_trials=round_end_trials,
+                        returns=dsr_input,
+                        observed_sharpe=b_eval.overall.sharpe_ratio,
+                        signal_count=dsr_obs,
+                    )
+                    b_eval.family_trial_count = round_end_trials
+                    b_eval.deflated_sharpe_prob = dsr_res.dsr_probability
+                    b_dsr = float(dsr_res.dsr_probability)
+                    b_fit = _compute_rsi_fitness(
+                        b_eval,
+                        objective=cfg.objective,
+                        min_signals=cfg.min_signals,
+                        max_drawdown=cfg.max_drawdown,
+                    )
+                    b_rec.fitness_after = b_fit
+                    b_rec.dsr_probability = b_dsr
+                    b_rec.veto_reasons = _diagnose_gate_failures(
+                        b_fit,
+                        verified_champion_fitness,
+                        b_eval,
+                        b_outcome,
+                        cfg,
+                        b_dsr,
+                    )
+                    b_ok = _passes_base_l0_gates(
+                        b_fit,
+                        verified_champion_fitness,
+                        b_eval,
+                        b_outcome,
+                        cfg,
+                        b_dsr,
+                    )
+                refreshed_bundles.append(
+                    (b_strat, b_outcome, b_fit, b_chs, b_lvl, b_rec, b_dsr, b_ok)
+                )
+            evaluated_bundles = refreshed_bundles
+            for b_strat, b_outcome, b_fit, *_ in evaluated_bundles:
+                uses_transient = bool(
+                    new_dynamic_factor is not None
+                    and _strategy_uses_indicator(b_strat, new_dynamic_factor)
+                )
+                if not uses_transient:
+                    archive.insert(b_strat, b_outcome.evaluation, b_fit)
+
+            selected_bundle: (
+                tuple[
+                    Strategy,
+                    KernelEvaluationOutcome,
+                    float,
+                    list[StrategyChange],
+                    RSILevel,
+                    DeliberationRecord,
+                    float,
+                    bool,
+                ]
+                | None
+            ) = None
+            passes_gate = False
+
+            base_passing = sorted(
+                [b for b in evaluated_bundles if b[7]],
+                key=lambda b: b[2],
+                reverse=True,
+            )
+            for bundle in base_passing:
+                b_strat, b_outcome, b_fit, _b_chs, _b_lvl, b_rec, b_dsr, _b_ok = bundle
+                b_eval = b_outcome.evaluation
+                if cfg.require_strategy_rerun_null:
+                    rerun_null = self._null_ctrl.evaluate_strategy_against_null_worlds(
+                        b_strat,
+                        search_market,
+                        b_eval,
+                        n_worlds=cfg.strategy_rerun_null_worlds,
+                        seed=seed + rnd,
+                        backtest_engine=self._kernel._build_engine(),
+                    )
+                    b_outcome.strategy_rerun_null = rerun_null
+                    if rerun_null.passed:
+                        selected_bundle = bundle
+                        passes_gate = True
+                        break
+                    b_eval.null_control_passed = False
+                    b_eval.null_p_value = round(
+                        max(float(b_eval.null_p_value or 0.0), rerun_null.worst_p_value),
+                        4,
+                    )
+                    b_rec.null_passed = False
+                    b_rec.veto_reasons = _diagnose_gate_failures(
+                        b_fit,
+                        verified_champion_fitness,
+                        b_eval,
+                        b_outcome,
+                        cfg,
+                        b_dsr,
+                        rerun_null_failed=True,
+                    )
+                else:
+                    selected_bundle = bundle
+                    passes_gate = True
+                    break
+
+            if selected_bundle is None:
+                ordered_all = sorted(evaluated_bundles, key=lambda b: b[2], reverse=True)
+                stepping_candidates = [
+                    b
+                    for b in ordered_all
+                    if promotions == 0
+                    and b[1].evaluation.overall.signal_count >= min(5, cfg.min_signals)
+                    and b[2] > working_fitness + 1e-4
+                    and (
+                        working_eval.overall.signal_count < 5
+                        or (
+                            b[1].evaluation.overall.max_drawdown
+                            <= max(cfg.max_drawdown, working_eval.overall.max_drawdown)
+                            and b[1].evaluation.overall.avg_return
+                            >= working_eval.overall.avg_return
+                        )
+                    )
+                ]
+                selected_bundle = stepping_candidates[0] if stepping_candidates else ordered_all[0]
+
+            cand_strat, cand_outcome, cand_fit, chs, lvl, best_rec, dsr_prob, _ = selected_bundle
             cand_eval = cand_outcome.evaluation
             cand_null = cand_outcome.null_control
             best_trial = cand_outcome.trial_record
-            dsr_prob = (
-                float(cand_eval.deflated_sharpe_prob)
-                if cand_eval.deflated_sharpe_prob is not None
-                else 0.0
+            best_rerun_failed = bool(
+                cand_outcome.strategy_rerun_null is not None
+                and not cand_outcome.strategy_rerun_null.passed
             )
-            passes_base_gates = (
-                cand_fit > verified_champion_fitness + 1e-4
-                and cand_eval.overall.avg_return > 0.0
-                and cand_eval.overall.max_drawdown <= cfg.max_drawdown
-                and not cand_eval.anti_overfit.is_overfit
-                and cand_eval.overall.signal_count >= cfg.min_signals
-                and dsr_prob >= cfg.min_dsr_prob
-                and (not cfg.require_null_control or cand_eval.null_control_passed is True)
-                and (
-                    not cfg.require_portfolio_gate
-                    or (
-                        cand_outcome.portfolio_verdict is not None
-                        and cand_outcome.portfolio_verdict.passed
-                    )
-                )
-            )
-            rerun_null_failed = False
-            if passes_base_gates and cfg.require_strategy_rerun_null:
-                rerun_null = self._null_ctrl.evaluate_strategy_against_null_worlds(
-                    cand_strat,
-                    search_market,
-                    cand_eval,
-                    n_worlds=cfg.strategy_rerun_null_worlds,
-                    seed=seed + rnd,
-                    backtest_engine=self._kernel._build_engine(),
-                )
-                cand_outcome.strategy_rerun_null = rerun_null
-                if not rerun_null.passed:
-                    rerun_null_failed = True
-                    cand_eval.null_control_passed = False
-                    cand_eval.null_p_value = round(
-                        max(float(cand_eval.null_p_value or 0.0), rerun_null.worst_p_value),
-                        4,
-                    )
-                passes_gate = rerun_null.passed
-            else:
-                passes_gate = passes_base_gates
 
             best_reasons = _diagnose_gate_failures(
                 cand_fit,
@@ -828,7 +1082,7 @@ class StockRSIEngine:
                 cand_outcome,
                 cfg,
                 dsr_prob,
-                rerun_null_failed=rerun_null_failed,
+                rerun_null_failed=best_rerun_failed,
             )
 
             is_stepping_stone = (
@@ -846,6 +1100,33 @@ class StockRSIEngine:
                 )
             )
             desc = "; ".join(f"{c.target}->{c.to_value}" for c in chs)
+
+            synthesized_rec = steer.synthesized_factor_record
+            needs_factor_persist = (
+                (passes_gate or is_stepping_stone)
+                and synthesized_rec is not None
+                and _strategy_uses_indicator(cand_strat, synthesized_rec.name)
+            )
+            factor_save_failed = False
+            if needs_factor_persist and synthesized_rec is not None:
+                try:
+                    stored_rec, inserted = self._factor_store.save_if_absent(synthesized_rec)
+                    if inserted or (
+                        stored_rec.status == "active" and stored_rec.code == synthesized_rec.code
+                    ):
+                        steer.persisted_to_store = True
+                        if synthesized_rec.name not in persisted_factors:
+                            persisted_factors.append(synthesized_rec.name)
+                    else:
+                        factor_save_failed = True
+                        passes_gate = False
+                        is_stepping_stone = False
+                        best_reasons = [*best_reasons, "factor_store_conflict"]
+                except Exception:
+                    factor_save_failed = True
+                    passes_gate = False
+                    is_stepping_stone = False
+                    best_reasons = [*best_reasons, "factor_store_save_failed"]
 
             if passes_gate:
                 if best_trial is not None:
@@ -876,6 +1157,17 @@ class StockRSIEngine:
                 stagnant_l1 += 1
                 status = "revert"
                 best_rec.veto_reasons = best_reasons
+
+            if (
+                not factor_save_failed
+                and status in {"keep", "stepping_stone"}
+                and new_dynamic_factor is not None
+                and _strategy_uses_indicator(cand_strat, new_dynamic_factor)
+            ):
+                _cleanup_unused_dynamic(persisted=True)
+                archive.insert(cand_strat, cand_eval, cand_fit)
+            else:
+                _cleanup_unused_dynamic()
 
             best_rec.l0_outcome = status
             if best_rec.secondary_parent_id and status in {"keep", "stepping_stone"}:
@@ -933,12 +1225,16 @@ class StockRSIEngine:
             holdout_eval = holdout_outcome.evaluation
 
         if persist_champion and has_verified_promotion and str(self._db_path) != ":memory:":
+            strat_store: StrategyStore | None = None
             try:
                 strat_store = StrategyStore(self._db_path)
                 strat_store.save(verified_champion_strategy)
                 strat_store.save_evaluation(verified_champion_eval)
             except Exception:
                 pass
+            finally:
+                if strat_store is not None:
+                    strat_store.close()
 
         enrolled_in_shadow = False
         if auto_enroll_shadow and has_verified_promotion and shadow_ledger is not None:

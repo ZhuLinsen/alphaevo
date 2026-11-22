@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
@@ -71,72 +72,122 @@ class FactorStore:
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self._db_path = _normalize_db_path(db_path)
+        self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self._ensure_table()
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+        with self._lock:
+            if self._conn is None:
+                self._conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
+                self._conn.row_factory = sqlite3.Row
+                self._conn.execute("PRAGMA busy_timeout=5000")
+                if self._db_path != ":memory:":
+                    self._conn.execute("PRAGMA journal_mode=WAL")
+            return self._conn
 
     def _ensure_table(self) -> None:
-        conn = self._get_conn()
-        conn.executescript(_FACTOR_SCHEMA)
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            conn.executescript(_FACTOR_SCHEMA)
+            conn.commit()
 
     def save(self, record: FactorRecord) -> None:
         """Insert or update a factor record."""
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            """
-            INSERT INTO factors (
-                name, description, rationale, code, expected_direction,
-                ic_mean, ic_std, ir, monthly_win_rate, turnover,
-                status, usage_count, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                description = excluded.description,
-                rationale = excluded.rationale,
-                code = excluded.code,
-                expected_direction = excluded.expected_direction,
-                ic_mean = excluded.ic_mean,
-                ic_std = excluded.ic_std,
-                ir = excluded.ir,
-                monthly_win_rate = excluded.monthly_win_rate,
-                turnover = excluded.turnover,
-                status = excluded.status,
-                usage_count = excluded.usage_count,
-                updated_at = ?
-            """,
-            (
-                record.name,
-                record.description,
-                record.rationale,
-                record.code,
-                record.expected_direction,
-                record.ic_mean,
-                record.ic_std,
-                record.ir,
-                record.monthly_win_rate,
-                record.turnover,
-                record.status,
-                record.usage_count,
-                record.created_at.isoformat(),
-                now,
-                now,  # updated_at in ON CONFLICT
-            ),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """
+                INSERT INTO factors (
+                    name, description, rationale, code, expected_direction,
+                    ic_mean, ic_std, ir, monthly_win_rate, turnover,
+                    status, usage_count, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    description = excluded.description,
+                    rationale = excluded.rationale,
+                    code = excluded.code,
+                    expected_direction = excluded.expected_direction,
+                    ic_mean = excluded.ic_mean,
+                    ic_std = excluded.ic_std,
+                    ir = excluded.ir,
+                    monthly_win_rate = excluded.monthly_win_rate,
+                    turnover = excluded.turnover,
+                    status = excluded.status,
+                    usage_count = excluded.usage_count,
+                    updated_at = ?
+                """,
+                (
+                    record.name,
+                    record.description,
+                    record.rationale,
+                    record.code,
+                    record.expected_direction,
+                    record.ic_mean,
+                    record.ic_std,
+                    record.ir,
+                    record.monthly_win_rate,
+                    record.turnover,
+                    record.status,
+                    record.usage_count,
+                    record.created_at.isoformat(),
+                    now,
+                    now,  # updated_at in ON CONFLICT
+                ),
+            )
+            conn.commit()
+
+    def save_if_absent(self, record: FactorRecord) -> tuple[FactorRecord, bool]:
+        """Atomically insert ``record`` only if ``name`` does not already exist.
+
+        Returns ``(stored_record, inserted)`` so concurrent writers cannot
+        silently overwrite or reactivate an existing/retired factor.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            now = datetime.now(timezone.utc).isoformat()
+            cursor = conn.execute(
+                """
+                INSERT INTO factors (
+                    name, description, rationale, code, expected_direction,
+                    ic_mean, ic_std, ir, monthly_win_rate, turnover,
+                    status, usage_count, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO NOTHING
+                """,
+                (
+                    record.name,
+                    record.description,
+                    record.rationale,
+                    record.code,
+                    record.expected_direction,
+                    record.ic_mean,
+                    record.ic_std,
+                    record.ir,
+                    record.monthly_win_rate,
+                    record.turnover,
+                    record.status,
+                    record.usage_count,
+                    record.created_at.isoformat(),
+                    now,
+                ),
+            )
+            conn.commit()
+            inserted = cursor.rowcount == 1
+            row = conn.execute("SELECT * FROM factors WHERE name = ?", (record.name,)).fetchone()
+            if row is None:
+                return record, inserted
+            return self._row_to_record(row), inserted
 
     def get(self, name: str) -> FactorRecord | None:
         """Retrieve a factor by name."""
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM factors WHERE name = ?", (name,)).fetchone()
-        if row is None:
-            return None
-        return self._row_to_record(row)
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT * FROM factors WHERE name = ?", (name,)).fetchone()
+            if row is None:
+                return None
+            return self._row_to_record(row)
 
     def list_all(
         self,
@@ -144,15 +195,16 @@ class FactorStore:
         status: str | None = None,
     ) -> list[FactorRecord]:
         """List all factors, optionally filtered by status."""
-        conn = self._get_conn()
-        if status:
-            rows = conn.execute(
-                "SELECT * FROM factors WHERE status = ? ORDER BY ir DESC",
-                (status,),
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM factors ORDER BY ir DESC").fetchall()
-        return [self._row_to_record(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM factors WHERE status = ? ORDER BY ir DESC",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM factors ORDER BY ir DESC").fetchall()
+            return [self._row_to_record(r) for r in rows]
 
     def top_factors(
         self,
@@ -161,53 +213,66 @@ class FactorStore:
         status: str = "active",
     ) -> list[FactorRecord]:
         """Get top factors ranked by IR."""
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM factors WHERE status = ? ORDER BY ir DESC LIMIT ?",
-            (status, limit),
-        ).fetchall()
-        return [self._row_to_record(r) for r in rows]
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT * FROM factors WHERE status = ? ORDER BY ir DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+            return [self._row_to_record(r) for r in rows]
 
     def increment_usage(self, name: str) -> None:
         """Increment usage count for a factor."""
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE factors SET usage_count = usage_count + 1, updated_at = ? WHERE name = ?",
-            (datetime.now(timezone.utc).isoformat(), name),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE factors SET usage_count = usage_count + 1, updated_at = ? WHERE name = ?",
+                (datetime.now(timezone.utc).isoformat(), name),
+            )
+            conn.commit()
 
     def retire(self, name: str) -> None:
         """Mark a factor as retired."""
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE factors SET status = 'retired', updated_at = ? WHERE name = ?",
-            (datetime.now(timezone.utc).isoformat(), name),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE factors SET status = 'retired', updated_at = ? WHERE name = ?",
+                (datetime.now(timezone.utc).isoformat(), name),
+            )
+            conn.commit()
 
     def delete(self, name: str) -> bool:
         """Delete a factor. Returns True if it existed."""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM factors WHERE name = ?", (name,))
-        conn.commit()
-        return cursor.rowcount > 0
+        with self._lock:
+            conn = self._get_conn()
+            cursor = conn.execute("DELETE FROM factors WHERE name = ?", (name,))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def count(self, *, status: str | None = None) -> int:
         """Count factors, optionally by status."""
-        conn = self._get_conn()
-        if status:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM factors WHERE status = ?", (status,)
-            ).fetchone()
-        else:
-            row = conn.execute("SELECT COUNT(*) FROM factors").fetchone()
-        return cast("int", row[0])
+        with self._lock:
+            conn = self._get_conn()
+            if status:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM factors WHERE status = ?", (status,)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) FROM factors").fetchone()
+            return cast("int", row[0])
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """Close the backing SQLite connection if open."""
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+
+    def __enter__(self) -> FactorStore:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> FactorRecord:

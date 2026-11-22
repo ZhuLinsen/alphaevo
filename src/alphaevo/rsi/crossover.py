@@ -11,6 +11,10 @@ from alphaevo.backtest.indicators import IndicatorRegistry
 from alphaevo.models.enums import ChangeType
 from alphaevo.models.execution import StrategyChange
 from alphaevo.models.strategy import Strategy, StrategyCondition
+from alphaevo.reflection.mutator import (
+    promote_legacy_conditions_to_triggers,
+    prune_dangling_exit_tunables,
+)
 
 CrossoverOperator = Literal["exit_graft", "filter_graft", "trigger_blend"]
 
@@ -60,12 +64,19 @@ class SemanticCrossoverBreeder:
         return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
     @staticmethod
+    def _prune_dangling_exit_tunables(strategy: Strategy) -> None:
+        """Drop tunable targets referencing exit fields no longer active after exit grafting."""
+        prune_dangling_exit_tunables(strategy)
+
+    @staticmethod
     def _summarize_exit_changes(primary: Strategy, secondary: Strategy) -> list[StrategyChange]:
         """Build StrategyMutator-compatible exit change descriptors for Prosecutor/Critic."""
         changes: list[StrategyChange] = []
         p_sl, s_sl = primary.exit.stop_loss, secondary.exit.stop_loss
         p_tp, s_tp = primary.exit.take_profit, secondary.exit.take_profit
-        if s_sl.type != p_sl.type:
+        sl_type_changed = s_sl.type != p_sl.type
+        tp_type_changed = s_tp.type != p_tp.type
+        if sl_type_changed:
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -75,7 +86,7 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover stop_loss.type from {secondary.meta.id}",
                 )
             )
-        if s_sl.value is not None and s_sl.value != p_sl.value:
+        if s_sl.value != p_sl.value or (sl_type_changed and s_sl.value is not None):
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -85,7 +96,7 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover stop_loss.value from {secondary.meta.id}",
                 )
             )
-        if s_sl.multiplier is not None and s_sl.multiplier != p_sl.multiplier:
+        if s_sl.multiplier != p_sl.multiplier or (sl_type_changed and s_sl.multiplier is not None):
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -95,7 +106,45 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover stop_loss.multiplier from {secondary.meta.id}",
                 )
             )
-        if s_tp.type != p_tp.type:
+        if s_sl.atr_period != p_sl.atr_period or (sl_type_changed and s_sl.atr_period is not None):
+            changes.append(
+                StrategyChange(
+                    change_type=ChangeType.ADJUST_EXIT,
+                    target="exit.stop_loss.atr_period",
+                    from_value=p_sl.atr_period,
+                    to_value=s_sl.atr_period,
+                    reason=f"Crossover stop_loss.atr_period from {secondary.meta.id}",
+                )
+            )
+        if s_sl.reference != p_sl.reference or (sl_type_changed and s_sl.reference is not None):
+            changes.append(
+                StrategyChange(
+                    change_type=ChangeType.ADJUST_EXIT,
+                    target="exit.stop_loss.reference",
+                    from_value=p_sl.reference,
+                    to_value=s_sl.reference,
+                    reason=f"Crossover stop_loss.reference from {secondary.meta.id}",
+                )
+            )
+        if s_sl.conditions != p_sl.conditions or (sl_type_changed and s_sl.conditions is not None):
+            changes.append(
+                StrategyChange(
+                    change_type=ChangeType.ADJUST_EXIT,
+                    target="exit.stop_loss.conditions",
+                    from_value=(
+                        None
+                        if p_sl.conditions is None
+                        else [c.model_dump(mode="json") for c in p_sl.conditions]
+                    ),
+                    to_value=(
+                        None
+                        if s_sl.conditions is None
+                        else [c.model_dump(mode="json") for c in s_sl.conditions]
+                    ),
+                    reason=f"Crossover stop_loss.conditions from {secondary.meta.id}",
+                )
+            )
+        if tp_type_changed:
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -105,7 +154,7 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover take_profit.type from {secondary.meta.id}",
                 )
             )
-        if s_tp.value is not None and s_tp.value != p_tp.value:
+        if s_tp.value != p_tp.value or (tp_type_changed and s_tp.value is not None):
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -115,7 +164,19 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover take_profit.value from {secondary.meta.id}",
                 )
             )
-        if s_tp.trigger_pct is not None and s_tp.trigger_pct != p_tp.trigger_pct:
+        if s_tp.target != p_tp.target or (tp_type_changed and s_tp.target is not None):
+            changes.append(
+                StrategyChange(
+                    change_type=ChangeType.ADJUST_EXIT,
+                    target="exit.take_profit.target",
+                    from_value=p_tp.target,
+                    to_value=s_tp.target,
+                    reason=f"Crossover take_profit.target from {secondary.meta.id}",
+                )
+            )
+        if s_tp.trigger_pct != p_tp.trigger_pct or (
+            tp_type_changed and s_tp.trigger_pct is not None
+        ):
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -125,7 +186,7 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover take_profit.trigger_pct from {secondary.meta.id}",
                 )
             )
-        if s_tp.trail_pct is not None and s_tp.trail_pct != p_tp.trail_pct:
+        if s_tp.trail_pct != p_tp.trail_pct or (tp_type_changed and s_tp.trail_pct is not None):
             changes.append(
                 StrategyChange(
                     change_type=ChangeType.ADJUST_EXIT,
@@ -133,6 +194,16 @@ class SemanticCrossoverBreeder:
                     from_value=p_tp.trail_pct,
                     to_value=s_tp.trail_pct,
                     reason=f"Crossover take_profit.trail_pct from {secondary.meta.id}",
+                )
+            )
+        if secondary.exit.triggers != primary.exit.triggers:
+            changes.append(
+                StrategyChange(
+                    change_type=ChangeType.ADJUST_EXIT,
+                    target="exit.triggers",
+                    from_value=[c.model_dump(mode="json") for c in primary.exit.triggers],
+                    to_value=[c.model_dump(mode="json") for c in secondary.exit.triggers],
+                    reason=f"Crossover exit.triggers from {secondary.meta.id}",
                 )
             )
         if secondary.exit.max_holding_days != primary.exit.max_holding_days:
@@ -155,7 +226,7 @@ class SemanticCrossoverBreeder:
                     reason=f"Crossover exit structure from {secondary.meta.id}",
                 )
             )
-        return changes[:3]
+        return changes
 
     @staticmethod
     def _filter_target_bucket(primary: Strategy) -> tuple[str, list[StrategyCondition]]:
@@ -211,6 +282,7 @@ class SemanticCrossoverBreeder:
         if secondary.exit.model_dump(mode="json") != primary.exit.model_dump(mode="json"):
             child_exit = primary.model_copy(deep=True)
             child_exit.exit = secondary.exit.model_copy(deep=True)
+            self._prune_dangling_exit_tunables(child_exit)
             _try_accept(
                 child_exit,
                 "exit_graft",
@@ -263,13 +335,21 @@ class SemanticCrossoverBreeder:
             if donor_trigs:
                 blend_cond = donor_trigs[0].model_copy(deep=True)
                 child_blend = primary.model_copy(deep=True)
+                prev_logic = child_blend.entry.logic
                 if child_blend.entry.triggers:
                     trig_target = "entry.triggers"
                     child_blend.entry.triggers.append(blend_cond)
+                elif (
+                    not child_blend.entry.triggers
+                    and prev_logic == "and"
+                    and len(child_blend.entry.conditions) >= 2
+                ):
+                    # Preserve conjunctive legacy AND filters by migrating extras into entry.guards.
+                    trig_target = "entry.triggers"
+                    promote_legacy_conditions_to_triggers(child_blend, blend_cond)
                 else:
                     trig_target = "entry.conditions"
                     child_blend.entry.conditions.append(blend_cond)
-                prev_logic = child_blend.entry.logic
                 child_blend.entry.logic = "or"
                 changes_blend = [
                     StrategyChange(

@@ -11,6 +11,8 @@ import contextlib
 import json
 import logging
 import sqlite3
+import threading
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -108,9 +110,12 @@ class ExperienceStore:
     def __init__(self, db_path: str | Path = "~/.alphaevo/alphaevo.db") -> None:
         normalized_path, use_memory = _normalize_db_path(db_path)
         self._is_memory = use_memory
+        self._lock = threading.RLock()
         if self._is_memory:
             self._db_path = ":memory:"
-            self._shared_conn: sqlite3.Connection | None = sqlite3.connect(":memory:")
+            self._shared_conn: sqlite3.Connection | None = sqlite3.connect(
+                ":memory:", check_same_thread=False
+            )
             self._shared_conn.execute("PRAGMA foreign_keys=ON")
         else:
             self._db_path = normalized_path
@@ -494,13 +499,47 @@ class ExperienceStore:
             score_metric=str(row[21]) if len(row) > 21 and row[21] else "confidence_score",
         )
 
-    def _connect(self) -> sqlite3.Connection:
-        if self._shared_conn is not None:
-            return self._shared_conn
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def close(self) -> None:
+        """Close persistent in-memory SQLite connection if open."""
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._lock = lock
+        with lock:
+            conn = getattr(self, "_shared_conn", None)
+            if conn is not None:
+                conn.close()
+                self._shared_conn = None
+
+    def __enter__(self) -> ExperienceStore:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        shared_conn = getattr(self, "_shared_conn", None)
+        if shared_conn is not None:
+            lock = getattr(self, "_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                self._lock = lock
+            with lock:
+                if getattr(self, "_shared_conn", None) is None:
+                    raise RuntimeError("ExperienceStore connection is closed")
+                with shared_conn:
+                    yield shared_conn
+            return
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _fuzzy_signature(

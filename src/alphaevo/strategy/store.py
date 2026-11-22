@@ -6,8 +6,11 @@ Uses the StrategySerializer/StrategyParser for YAML ↔ Strategy conversion.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
+import threading
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,11 +69,14 @@ class StrategyStore:
         """
         normalized_path, use_memory = _normalize_db_path(db_path)
         self._is_memory = use_memory
+        self._lock = threading.RLock()
         if self._is_memory:
             self._db_path = ":memory:"
             # Keep a persistent connection for in-memory databases,
             # since each sqlite3.connect(":memory:") creates a *new* DB.
-            self._shared_conn: sqlite3.Connection | None = sqlite3.connect(":memory:")
+            self._shared_conn: sqlite3.Connection | None = sqlite3.connect(
+                ":memory:", check_same_thread=False
+            )
             self._shared_conn.execute("PRAGMA foreign_keys=ON")
         else:
             self._db_path = normalized_path
@@ -287,18 +293,48 @@ class StrategyStore:
 
     # ── Internal helpers ──────────────────────────────────────────────
 
-    def _connect(self) -> sqlite3.Connection:
-        """Return a database connection.
+    def close(self) -> None:
+        """Close persistent in-memory SQLite connection if open."""
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._lock = lock
+        with lock:
+            conn = getattr(self, "_shared_conn", None)
+            if conn is not None:
+                conn.close()
+                self._shared_conn = None
 
-        For file-based DBs: creates a new connection per call (thread-safe).
-        For in-memory DBs: reuses the shared connection.
-        """
-        if self._shared_conn is not None:
-            return self._shared_conn
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        return conn
+    def __enter__(self) -> StrategyStore:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Yield a thread-safe SQLite connection and close file-backed handles."""
+        shared_conn = getattr(self, "_shared_conn", None)
+        if shared_conn is not None:
+            lock = getattr(self, "_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                self._lock = lock
+            with lock:
+                if getattr(self, "_shared_conn", None) is None:
+                    raise RuntimeError("StrategyStore connection is closed")
+                with shared_conn:
+                    yield shared_conn
+            return
+        conn = sqlite3.connect(self._db_path, timeout=30.0)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def _normalize_db_path(db_path: str | Path) -> tuple[str, bool]:
