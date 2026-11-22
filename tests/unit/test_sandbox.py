@@ -188,15 +188,17 @@ class TestExecute:
 
     def test_execute_passes_configured_memory_limit_to_subprocess(self):
         sandbox = FactorSandbox(timeout_seconds=1, max_memory_mb=128)
+        try:
+            with patch("alphaevo.alpha_factory.sandbox._SPAWN_CTX.Process") as MockProcess:
+                proc = MockProcess.return_value
+                proc.is_alive.return_value = False
 
-        with patch("alphaevo.alpha_factory.sandbox.multiprocessing.Process") as MockProcess:
-            proc = MockProcess.return_value
-            proc.is_alive.return_value = False
+                sandbox.execute(_GOOD_CODE, self.df)
 
-            sandbox.execute(_GOOD_CODE, self.df)
-
-        process_args = MockProcess.call_args.kwargs["args"]
-        assert process_args[3] == 128
+            process_args = MockProcess.call_args.kwargs["args"]
+            assert process_args[1] == 128
+        finally:
+            sandbox.close()
 
 
 # ---------------------------------------------------------------------------
@@ -319,10 +321,7 @@ class TestRestrictedBuiltins:
 
     def test_safe_code_still_works(self):
         """Normal factor code using allowed builtins should still work."""
-        code = (
-            "def compute(df, idx):\n"
-            "    return float(max(0, min(df[\'close\'].iloc[idx], 999)))"
-        )
+        code = "def compute(df, idx):\n    return float(max(0, min(df['close'].iloc[idx], 999)))"
         result = self.sandbox.execute(code, _make_df(10))
         assert result.success
 
@@ -346,7 +345,7 @@ class TestRestrictedBuiltins:
         code = (
             "def compute(df, idx):\n"
             "    try:\n"
-            "        __import__(\'os\')\n"
+            "        __import__('os')\n"
             "        return 1.0\n"
             "    except NameError:\n"
             "        return 0.0\n"

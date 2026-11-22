@@ -289,6 +289,31 @@ class ArenaRunner:
         )
         symbols = sorted(market_data.keys())
 
+        min_evo_rows = min(15, self._bt_config.min_data_days)
+        min_shadow_pre_rows = max(15, min_evo_rows)
+        evolution_market = market_data
+        shadow_start_date: date | None = None
+        if len(all_dates) >= min_shadow_pre_rows + 10:
+            evo_cut_pos = max(min_shadow_pre_rows, int(len(all_dates) * 0.70))
+            evo_cut_pos = min(evo_cut_pos, len(all_dates) - 10)
+            evo_cutoff: date = all_dates[evo_cut_pos]
+            sliced_evo: dict[str, pd.DataFrame] = {}
+            for sym, df in market_data.items():
+                if df is None or df.empty or "date" not in df.columns:
+                    continue
+                sym_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+                sub = df.loc[sym_dates < evo_cutoff].copy()
+                if len(sub) >= min_evo_rows:
+                    sliced_evo[sym] = sub.reset_index(drop=True)
+            if (
+                sliced_evo
+                and any(len(sub) >= 15 for sub in sliced_evo.values())
+                and len(all_dates) - evo_cut_pos >= 10
+            ):
+                evolution_market = sliced_evo
+                shadow_start_date = evo_cutoff
+        evo_symbols = sorted(evolution_market.keys())
+
         kernel = EvaluationKernel(
             backtest_config=self._bt_config,
             db_path=self._db_path,
@@ -312,147 +337,135 @@ class ArenaRunner:
         snapshot_veto_breakdown: dict[str, int] = {}
         all_chains_verified = True
 
-        for idx, base_strat in enumerate(strategies):
-            base_outcome = kernel.evaluate(
-                base_strat,
-                market_data,
-                mode="fast",
-                record_trial=False,
-                run_null_control=False,
-                seed=seed + idx,
-            )
-            baseline_score = float(base_outcome.evaluation.confidence_score)
-
-            allowed_lvls = (
-                [RSILevel.L1_STRATEGY, RSILevel.L2_FACTOR]
-                if enable_l2_factors
-                else [RSILevel.L1_STRATEGY]
-            )
-            charter = RSICharter(
-                name=f"arena_{base_strat.meta.id}",
-                seed_strategy_id=base_strat.meta.id,
-                allowed_levels=allowed_lvls,
-                max_rounds=max(1, rounds),
-                max_candidates_per_round=2,
-                max_trials_budget=max(10, rounds * 8 + 4),
-                min_signals=min(15, self._bt_config.min_data_days),
-                require_null_control=True,
-                null_permutations=30,
-            )
-            rsi_res = rsi_engine.run(
-                base_strat,
-                market_data,
-                charter=charter,
-                persist_champion=False,
-                seed=seed + idx,
-            )
-
-            champion = rsi_res.champion_strategy
-            champions.append(champion)
-            champ_outcome = kernel.evaluate(
-                champion,
-                market_data,
-                mode="full",
-                record_trial=False,
-                run_null_control=True,
-                null_permutations=30,
-                seed=seed + idx,
-            )
-            champ_eval = champ_outcome.evaluation
-            ov = champ_eval.overall
-
-            base_yaml = self._serializer.to_yaml(base_strat)
-            champ_yaml = self._serializer.to_yaml(champion)
-            diff_lines = list(
-                difflib.unified_diff(
-                    base_yaml.splitlines(),
-                    champ_yaml.splitlines(),
-                    fromfile=f"{base_strat.meta.id}.yaml",
-                    tofile=f"{champion.meta.id}.yaml",
-                    lineterm="",
+        try:
+            for idx, base_strat in enumerate(strategies):
+                base_outcome = kernel.evaluate(
+                    base_strat,
+                    evolution_market,
+                    mode="fast",
+                    record_trial=False,
+                    run_null_control=False,
+                    seed=seed + idx,
                 )
-            )
+                baseline_score = float(base_outcome.evaluation.confidence_score)
 
-            veto_count = (
-                sum(
-                    1
-                    for d in rsi_res.deliberations
-                    if d.l0_outcome in {"prosecutor_vetoed", "revert"}
+                allowed_lvls = (
+                    [RSILevel.L1_STRATEGY, RSILevel.L2_FACTOR]
+                    if enable_l2_factors
+                    else [RSILevel.L1_STRATEGY]
                 )
-                if rsi_res.deliberations
-                else sum(1 for row in rsi_res.rows if row.status in {"vetoed", "revert"})
-            )
-            total_promotions += rsi_res.promotions
-            total_vetoes += veto_count
-            total_deliberations += len(rsi_res.deliberations)
-            total_prosecutor_vetoes += sum(
-                1 for d in rsi_res.deliberations if d.l0_outcome == "prosecutor_vetoed"
-            )
-            for v_key, v_cnt in rsi_res.veto_breakdown.items():
-                snapshot_veto_breakdown[v_key] = snapshot_veto_breakdown.get(v_key, 0) + v_cnt
+                charter = RSICharter(
+                    name=f"arena_{base_strat.meta.id}",
+                    seed_strategy_id=base_strat.meta.id,
+                    allowed_levels=allowed_lvls,
+                    max_rounds=max(1, rounds),
+                    max_candidates_per_round=2,
+                    max_trials_budget=max(10, rounds * 8 + 4),
+                    min_signals=min(15, self._bt_config.min_data_days),
+                    require_null_control=True,
+                    null_permutations=30,
+                )
+                rsi_res = rsi_engine.run(
+                    base_strat,
+                    evolution_market,
+                    charter=charter,
+                    persist_champion=False,
+                    seed=seed + idx,
+                )
 
-            nodes: list[EvolutionNodeView] = []
-            for row in rsi_res.rows:
-                row_diff = (
-                    diff_lines if row.strategy_id == champion.meta.id and row.round_num > 0 else []
+                champion = rsi_res.champion_strategy
+                champions.append(champion)
+                champ_outcome = kernel.evaluate(
+                    champion,
+                    evolution_market,
+                    mode="full",
+                    record_trial=False,
+                    run_null_control=True,
+                    null_permutations=30,
+                    seed=seed + idx,
                 )
-                nodes.append(
-                    EvolutionNodeView(
-                        round_num=row.round_num,
-                        strategy_id=row.strategy_id,
-                        parent_id=row.parent_id
-                        or (base_strat.meta.id if row.round_num > 0 else None),
-                        secondary_parent_id=row.secondary_parent_id,
-                        status=row.status,
-                        level=row.level.value,
-                        score=round(float(row.fitness_score), 4),
-                        win_rate=round(float(row.win_rate), 4),
-                        avg_return=round(float(row.avg_return), 6),
-                        signals=int(row.signals),
-                        dsr_prob=round(float(row.dsr_probability), 4),
-                        null_passed=bool(row.null_passed),
-                        description=row.description,
-                        veto_reasons=list(row.veto_reasons),
-                        yaml_diff=row_diff[:40],
+                champ_eval = champ_outcome.evaluation
+                ov = champ_eval.overall
+
+                base_yaml = self._serializer.to_yaml(base_strat)
+                champ_yaml = self._serializer.to_yaml(champion)
+                diff_lines = list(
+                    difflib.unified_diff(
+                        base_yaml.splitlines(),
+                        champ_yaml.splitlines(),
+                        fromfile=f"{base_strat.meta.id}.yaml",
+                        tofile=f"{champion.meta.id}.yaml",
+                        lineterm="",
                     )
                 )
 
-            committee_verdict = self._committee.review(
-                champion,
-                champ_eval,
-                data_source=data_source,
-                symbols=symbols,
-            )
-            verdicts_json = [v.model_dump(mode="json") for v in committee_verdict.verdicts]
+                veto_count = (
+                    sum(
+                        1
+                        for d in rsi_res.deliberations
+                        if d.l0_outcome in {"prosecutor_vetoed", "revert"}
+                    )
+                    if rsi_res.deliberations
+                    else sum(1 for row in rsi_res.rows if row.status in {"vetoed", "revert"})
+                )
+                total_promotions += rsi_res.promotions
+                total_vetoes += veto_count
+                total_deliberations += len(rsi_res.deliberations)
+                total_prosecutor_vetoes += sum(
+                    1 for d in rsi_res.deliberations if d.l0_outcome == "prosecutor_vetoed"
+                )
+                for v_key, v_cnt in rsi_res.veto_breakdown.items():
+                    snapshot_veto_breakdown[v_key] = snapshot_veto_breakdown.get(v_key, 0) + v_cnt
 
-            shadow_stage = "shadow"
-            shadow_mature = 0
-            shadow_avg = 0.0
-            shadow_verified = True
-            if len(all_dates) >= 25:
-                try:
-                    if shadow_dir is not None:
-                        s_dir = Path(shadow_dir) / champion.meta.id
-                        ledger = ShadowLedger(s_dir)
-                        sim_rep = ledger.simulate_rolling(
-                            champion,
-                            market_data,
-                            start_date=all_dates[max(15, int(len(all_dates) * 0.65))],
-                            end_date=all_dates[-1],
-                            step_days=2,
-                            horizon_days=5,
-                            min_trading_days=5,
-                            min_mature_signals=5,
-                            min_effective_signals=3.0,
-                            is_replay=True,
+                nodes: list[EvolutionNodeView] = []
+                for row in rsi_res.rows:
+                    row_diff = (
+                        diff_lines
+                        if row.strategy_id == champion.meta.id and row.round_num > 0
+                        else []
+                    )
+                    nodes.append(
+                        EvolutionNodeView(
+                            round_num=row.round_num,
+                            strategy_id=row.strategy_id,
+                            parent_id=row.parent_id
+                            or (base_strat.meta.id if row.round_num > 0 else None),
+                            secondary_parent_id=row.secondary_parent_id,
+                            status=row.status,
+                            level=row.level.value,
+                            score=round(float(row.fitness_score), 4),
+                            win_rate=round(float(row.win_rate), 4),
+                            avg_return=round(float(row.avg_return), 6),
+                            signals=int(row.signals),
+                            dsr_prob=round(float(row.dsr_probability), 4),
+                            null_passed=bool(row.null_passed),
+                            description=row.description,
+                            veto_reasons=list(row.veto_reasons),
+                            yaml_diff=row_diff[:40],
                         )
-                    else:
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            ledger = ShadowLedger(tmpdir)
+                    )
+
+                committee_verdict = self._committee.review(
+                    champion,
+                    champ_eval,
+                    data_source=data_source,
+                    symbols=evo_symbols,
+                )
+                verdicts_json = [v.model_dump(mode="json") for v in committee_verdict.verdicts]
+
+                shadow_stage = "shadow"
+                shadow_mature = 0
+                shadow_avg = 0.0
+                shadow_verified = False
+                if shadow_start_date is not None:
+                    try:
+                        if shadow_dir is not None:
+                            s_dir = Path(shadow_dir) / champion.meta.id
+                            ledger = ShadowLedger(s_dir)
                             sim_rep = ledger.simulate_rolling(
                                 champion,
                                 market_data,
-                                start_date=all_dates[max(15, int(len(all_dates) * 0.65))],
+                                start_date=shadow_start_date,
                                 end_date=all_dates[-1],
                                 step_days=2,
                                 horizon_days=5,
@@ -461,70 +474,87 @@ class ArenaRunner:
                                 min_effective_signals=3.0,
                                 is_replay=True,
                             )
-                    shadow_stage = sim_rep.final_stage.value
-                    shadow_mature = sim_rep.final_decay_report.mature_signals
-                    shadow_avg = sim_rep.final_decay_report.forward_avg_post_cost_return
-                    shadow_verified = sim_rep.chain_verified
-                except Exception:
-                    shadow_verified = True
-            all_chains_verified = all_chains_verified and shadow_verified
+                        else:
+                            with tempfile.TemporaryDirectory() as tmpdir:
+                                ledger = ShadowLedger(tmpdir)
+                                sim_rep = ledger.simulate_rolling(
+                                    champion,
+                                    market_data,
+                                    start_date=shadow_start_date,
+                                    end_date=all_dates[-1],
+                                    step_days=2,
+                                    horizon_days=5,
+                                    min_trading_days=5,
+                                    min_mature_signals=5,
+                                    min_effective_signals=3.0,
+                                    is_replay=True,
+                                )
+                        shadow_stage = sim_rep.final_stage.value
+                        shadow_mature = sim_rep.final_decay_report.mature_signals
+                        shadow_avg = sim_rep.final_decay_report.forward_avg_post_cost_return
+                        shadow_verified = bool(sim_rep.chain_verified)
+                    except Exception:
+                        shadow_verified = False
+                all_chains_verified = all_chains_verified and shadow_verified
 
-            equity_curve = self.compute_equity_curve(
-                champ_outcome.backtest_result.signals, market_data
-            )
-            trade_replays = self.build_trade_replays(
-                champ_outcome.backtest_result.signals, market_data
-            )
-            champ_score = float(champ_eval.confidence_score)
-
-            entries.append(
-                ArenaStrategyEntry(
-                    strategy_id=base_strat.meta.id,
-                    champion_id=champion.meta.id,
-                    name=champion.meta.name,
-                    category=champion.meta.category.value,
-                    market=champion.meta.market.value,
-                    baseline_score=round(baseline_score, 4),
-                    champion_score=round(champ_score, 4),
-                    score_delta=round(champ_score - baseline_score, 4),
-                    win_rate=round(float(ov.win_rate), 4),
-                    avg_return=round(float(ov.avg_return), 6),
-                    total_return=round(float(ov.total_return), 6),
-                    sharpe_ratio=round(float(ov.sharpe_ratio), 4),
-                    max_drawdown=round(float(ov.max_drawdown), 4),
-                    signal_count=int(ov.signal_count),
-                    dsr_prob=round(float(champ_eval.deflated_sharpe_prob or 0.0), 4),
-                    null_passed=bool(champ_eval.null_control_passed),
-                    promotions=rsi_res.promotions,
-                    vetoes=veto_count,
-                    trials_recorded=rsi_res.total_trials_recorded,
-                    shadow_stage=shadow_stage,
-                    shadow_mature_signals=shadow_mature,
-                    shadow_avg_return=round(float(shadow_avg), 6),
-                    shadow_chain_verified=shadow_verified,
-                    equity_curve=equity_curve,
-                    evolution_nodes=nodes,
-                    deliberations=[d.model_dump(mode="json") for d in rsi_res.deliberations],
-                    veto_breakdown=dict(rsi_res.veto_breakdown),
-                    map_elites_cells=[
-                        {
-                            "regime_bucket": cell.niche.regime_bucket,
-                            "style_bucket": cell.niche.style_bucket,
-                            "horizon_bucket": cell.niche.horizon_bucket,
-                            "strategy_id": cell.strategy_id,
-                            "fitness_score": round(float(cell.fitness_score), 4),
-                        }
-                        for cell in rsi_res.archive_summary.cells
-                    ],
-                    synthesized_factors=list(rsi_res.persisted_factors),
-                    crossovers_kept=int(rsi_res.crossovers_kept),
-                    trade_replays=trade_replays,
-                    committee_verdicts=verdicts_json,
-                    champion_yaml=champ_yaml,
-                    baseline_yaml=base_yaml,
-                    yaml_diff=diff_lines[:80],
+                equity_curve = self.compute_equity_curve(
+                    champ_outcome.backtest_result.signals, evolution_market
                 )
-            )
+                trade_replays = self.build_trade_replays(
+                    champ_outcome.backtest_result.signals, evolution_market
+                )
+                champ_score = float(champ_eval.confidence_score)
+
+                entries.append(
+                    ArenaStrategyEntry(
+                        strategy_id=base_strat.meta.id,
+                        champion_id=champion.meta.id,
+                        name=champion.meta.name,
+                        category=champion.meta.category.value,
+                        market=champion.meta.market.value,
+                        baseline_score=round(baseline_score, 4),
+                        champion_score=round(champ_score, 4),
+                        score_delta=round(champ_score - baseline_score, 4),
+                        win_rate=round(float(ov.win_rate), 4),
+                        avg_return=round(float(ov.avg_return), 6),
+                        total_return=round(float(ov.total_return), 6),
+                        sharpe_ratio=round(float(ov.sharpe_ratio), 4),
+                        max_drawdown=round(float(ov.max_drawdown), 4),
+                        signal_count=int(ov.signal_count),
+                        dsr_prob=round(float(champ_eval.deflated_sharpe_prob or 0.0), 4),
+                        null_passed=bool(champ_eval.null_control_passed),
+                        promotions=rsi_res.promotions,
+                        vetoes=veto_count,
+                        trials_recorded=rsi_res.total_trials_recorded,
+                        shadow_stage=shadow_stage,
+                        shadow_mature_signals=shadow_mature,
+                        shadow_avg_return=round(float(shadow_avg), 6),
+                        shadow_chain_verified=shadow_verified,
+                        equity_curve=equity_curve,
+                        evolution_nodes=nodes,
+                        deliberations=[d.model_dump(mode="json") for d in rsi_res.deliberations],
+                        veto_breakdown=dict(rsi_res.veto_breakdown),
+                        map_elites_cells=[
+                            {
+                                "regime_bucket": cell.niche.regime_bucket,
+                                "style_bucket": cell.niche.style_bucket,
+                                "horizon_bucket": cell.niche.horizon_bucket,
+                                "strategy_id": cell.strategy_id,
+                                "fitness_score": round(float(cell.fitness_score), 4),
+                            }
+                            for cell in rsi_res.archive_summary.cells
+                        ],
+                        synthesized_factors=list(rsi_res.persisted_factors),
+                        crossovers_kept=int(rsi_res.crossovers_kept),
+                        trade_replays=trade_replays,
+                        committee_verdicts=verdicts_json,
+                        champion_yaml=champ_yaml,
+                        baseline_yaml=base_yaml,
+                        yaml_diff=diff_lines[:80],
+                    )
+                )
+        finally:
+            rsi_engine.close()
 
         entries.sort(key=lambda e: (e.champion_score, e.sharpe_ratio), reverse=True)
 
@@ -534,7 +564,7 @@ class ArenaRunner:
             try:
                 alloc_report = RegimeAdaptiveAllocator().allocate(
                     champions,
-                    market_data,
+                    evolution_market,
                     backtest_config=self._bt_config,
                 )
                 latest_weights = (
@@ -564,11 +594,12 @@ class ArenaRunner:
             "pit_unsafe": 0,
         }
         try:
-            gov_rep = FactorGovernanceEngine(db_path=self._db_path).audit_factors(
-                market_data,
-                strategies=champions,
-                auto_retire=False,
-            )
+            with FactorGovernanceEngine(db_path=self._db_path) as gov_engine:
+                gov_rep = gov_engine.audit_factors(
+                    market_data,
+                    strategies=champions,
+                    auto_retire=False,
+                )
             gov_summary = {
                 "total_audited": gov_rep.total_audited,
                 "healthy": gov_rep.healthy_count,

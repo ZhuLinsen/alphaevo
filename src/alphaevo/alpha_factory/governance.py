@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, cast
@@ -20,9 +21,10 @@ from alphaevo.alpha_factory.validator import FactorValidator, ValidationThreshol
 from alphaevo.models.strategy import Strategy
 from alphaevo.strategy.dsl.parser import StrategyParser
 from alphaevo.strategy.store import StrategyStore
-from alphaevo.truth.pit_probe import probe_point_in_time_invariance
 
 logger = logging.getLogger(__name__)
+
+_OOS_WARMUP_BARS = 60
 
 FactorHealthStatus = Literal[
     "healthy",
@@ -82,15 +84,26 @@ class FactorGovernanceReport(BaseModel):
     entries: list[FactorAuditEntry] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _SplitPanelData:
+    """Purged train/OOS factor evaluation slices with causal OOS warmup bars."""
+
+    train_ohlcv: pd.DataFrame
+    train_fwd_ret: pd.Series
+    oos_eval_ohlcv: pd.DataFrame
+    oos_mask: pd.Series
+    oos_fwd_ret: pd.Series
+    sample_df: pd.DataFrame | None
+
+
 def _split_panel(
     market_data: dict[str, pd.DataFrame],
     *,
     train_ratio: float,
     forward_horizon: int,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None]:
-    """Chronologically split symbol OHLCVs into stacked train and OOS evaluation panels."""
-    train_frames: list[pd.DataFrame] = []
-    oos_frames: list[pd.DataFrame] = []
+) -> _SplitPanelData:
+    """Chronologically split symbol OHLCVs into purged train and warmup-backed OOS panels."""
+    ordered_by_sym: dict[str, pd.DataFrame] = {}
     sample_df: pd.DataFrame | None = None
 
     for sym in sorted(market_data):
@@ -103,25 +116,91 @@ def _split_panel(
             else df.reset_index(drop=True)
         )
         if sample_df is None or len(ordered) > len(sample_df):
-            sample_df = ordered
-        close = pd.to_numeric(ordered["close"], errors="coerce").astype(float)
+            sample_df = ordered.copy()
         ordered = ordered.copy()
         ordered["_symbol"] = sym
-        ordered["_fwd_ret"] = close.shift(-forward_horizon) / close - 1.0
+        ordered_by_sym[sym] = ordered
 
-        split_idx = max(12, int(len(ordered) * train_ratio))
-        split_idx = min(split_idx, len(ordered) - 10)
-        if split_idx < 10 or len(ordered) - split_idx < 10:
+    split_date = None
+    if ordered_by_sym and all("date" in df.columns for df in ordered_by_sym.values()):
+        all_dates = sorted(
+            {
+                d
+                for df in ordered_by_sym.values()
+                for d in pd.to_datetime(df["date"], errors="coerce").dt.date.dropna().tolist()
+            }
+        )
+        if len(all_dates) >= 25:
+            cut_pos = max(12, min(len(all_dates) - 10, int(len(all_dates) * train_ratio)))
+            split_date = all_dates[cut_pos]
+
+    train_frames: list[pd.DataFrame] = []
+    train_fwd_parts: list[pd.Series] = []
+    oos_frames: list[pd.DataFrame] = []
+    oos_mask_parts: list[pd.Series] = []
+    oos_fwd_parts: list[pd.Series] = []
+
+    for sym in sorted(ordered_by_sym):
+        ordered = ordered_by_sym[sym]
+        n_bars = len(ordered)
+        if split_date is not None:
+            sym_dates = pd.to_datetime(ordered["date"], errors="coerce").dt.date
+            split_idx = int((sym_dates < split_date).sum())
+        else:
+            split_idx = max(12, int(n_bars * train_ratio))
+            split_idx = min(split_idx, n_bars - 10)
+        if (
+            split_idx - forward_horizon < 5
+            or n_bars - split_idx <= forward_horizon
+            or n_bars - split_idx < 10
+        ):
             continue
-        train_frames.append(ordered.iloc[:split_idx].copy())
-        oos_frames.append(ordered.iloc[split_idx:].copy())
 
-    train_panel = pd.concat(train_frames, ignore_index=True) if train_frames else pd.DataFrame()
-    oos_panel = pd.concat(oos_frames, ignore_index=True) if oos_frames else pd.DataFrame()
-    return (
-        cast("pd.DataFrame", train_panel),
-        cast("pd.DataFrame", oos_panel),
-        sample_df,
+        train_df = ordered.iloc[:split_idx].copy()
+        train_close = pd.to_numeric(train_df["close"], errors="coerce").astype(float)
+        # Purge the final forward_horizon bars of train so targets never cross split_idx.
+        train_fwd = train_close.shift(-forward_horizon) / train_close - 1.0
+
+        warmup_start = max(0, split_idx - _OOS_WARMUP_BARS)
+        oos_eval_df = ordered.iloc[warmup_start:].copy()
+        oos_only_len = n_bars - split_idx
+        warmup_len = split_idx - warmup_start
+        sym_mask = pd.Series([False] * warmup_len + [True] * oos_only_len, dtype=bool)
+        oos_close = pd.to_numeric(oos_eval_df["close"], errors="coerce").astype(float)
+        oos_fwd = (oos_close.shift(-forward_horizon) / oos_close - 1.0).iloc[warmup_len:]
+
+        train_frames.append(train_df)
+        train_fwd_parts.append(train_fwd)
+        oos_frames.append(oos_eval_df)
+        oos_mask_parts.append(sym_mask)
+        oos_fwd_parts.append(oos_fwd)
+
+    empty_df = cast("pd.DataFrame", pd.DataFrame())
+    empty_series = pd.Series(dtype=float)
+    empty_mask = pd.Series(dtype=bool)
+    return _SplitPanelData(
+        train_ohlcv=(
+            cast("pd.DataFrame", pd.concat(train_frames, ignore_index=True))
+            if train_frames
+            else empty_df
+        ),
+        train_fwd_ret=(
+            pd.concat(train_fwd_parts, ignore_index=True) if train_fwd_parts else empty_series
+        ),
+        oos_eval_ohlcv=(
+            cast("pd.DataFrame", pd.concat(oos_frames, ignore_index=True))
+            if oos_frames
+            else empty_df
+        ),
+        oos_mask=(
+            pd.concat(oos_mask_parts, ignore_index=True).astype(bool)
+            if oos_mask_parts
+            else empty_mask
+        ),
+        oos_fwd_ret=(
+            pd.concat(oos_fwd_parts, ignore_index=True) if oos_fwd_parts else empty_series
+        ),
+        sample_df=sample_df,
     )
 
 
@@ -172,6 +251,16 @@ class FactorGovernanceEngine:
             )
         )
 
+    def close(self) -> None:
+        """Terminate and reap the backing sandbox worker process."""
+        self._sandbox.close()
+
+    def __enter__(self) -> FactorGovernanceEngine:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
     def audit_factors(
         self,
         market_data: dict[str, pd.DataFrame],
@@ -191,10 +280,30 @@ class FactorGovernanceEngine:
 
             loaded_strategies = self._resolve_strategies(strategies)
             strat_lineage, fam_lineage = _collect_factor_lineage(loaded_strategies)
-            train_panel, oos_panel, sample_df = _split_panel(
+            split_data = _split_panel(
                 market_data,
                 train_ratio=self.config.train_ratio,
                 forward_horizon=self.config.forward_horizon,
+            )
+            sample_df = split_data.sample_df
+            train_panel = split_data.train_ohlcv
+            train_fwd_ret = split_data.train_fwd_ret.reset_index(drop=True)
+            oos_eval_panel = split_data.oos_eval_ohlcv
+            oos_mask = split_data.oos_mask.reset_index(drop=True)
+            oos_fwd_ret = split_data.oos_fwd_ret.reset_index(drop=True)
+            oos_only_df = (
+                oos_eval_panel.loc[oos_mask].reset_index(drop=True)
+                if not oos_eval_panel.empty and len(oos_mask) == len(oos_eval_panel)
+                else pd.DataFrame()
+            )
+            has_valid_labels = (not train_fwd_ret.dropna().empty) and (
+                not oos_fwd_ret.dropna().empty
+            )
+            insufficient_panel = (
+                train_panel.empty
+                or oos_eval_panel.empty
+                or oos_only_df.empty
+                or not has_valid_labels
             )
 
             oos_series_by_name: dict[str, pd.Series] = {}
@@ -204,7 +313,7 @@ class FactorGovernanceEngine:
                 reasons: list[str] = []
                 pit_ok = True
                 if self.config.require_pit_invariance and sample_df is not None:
-                    pit_res = probe_point_in_time_invariance(rec.code, sample_df)
+                    pit_res = self._sandbox.probe_pit(rec.code, sample_df)
                     pit_ok = pit_res.passed
                     if not pit_ok:
                         if pit_res.error:
@@ -222,36 +331,60 @@ class FactorGovernanceEngine:
                 oos_ic, oos_ir, turnover = 0.0, 0.0, 0.0
                 exec_ok = True
 
-                if train_panel.empty or oos_panel.empty:
+                if insufficient_panel:
                     exec_ok = False
-                    reasons.append("Market panel too short to split train/OOS slices")
+                    reasons.append("Market panel too short to compute train/OOS forward labels")
                 else:
                     tr_vals, tr_err = _execute_factor_series(
-                        rec.code, train_panel, self._sandbox, verify_pit=False
+                        rec.code,
+                        train_panel,
+                        self._sandbox,
+                        verify_pit=False,
+                        enforce_pit_slice=True,
                     )
-                    te_vals, te_err = _execute_factor_series(
-                        rec.code, oos_panel, self._sandbox, verify_pit=False
+                    te_raw_vals, te_err = _execute_factor_series(
+                        rec.code,
+                        oos_eval_panel,
+                        self._sandbox,
+                        verify_pit=False,
+                        enforce_pit_slice=True,
                     )
-                    if tr_vals is None or te_vals is None:
+                    if tr_vals is None or te_raw_vals is None:
                         exec_ok = False
                         reasons.append(f"Sandbox execution failed: {te_err or tr_err}")
                     else:
-                        train_ic, train_ir = self._validator._compute_ic(
-                            tr_vals,
-                            train_panel["_fwd_ret"],
-                            dates=train_panel["date"] if "date" in train_panel.columns else None,
-                            symbols=train_panel["_symbol"],
+                        tr_aligned = tr_vals.reset_index(drop=True)
+                        te_vals = (
+                            te_raw_vals.reset_index(drop=True).loc[oos_mask].reset_index(drop=True)
                         )
-                        oos_ic, oos_ir = self._validator._compute_ic(
+                        train_dates = (
+                            train_panel["date"].reset_index(drop=True)
+                            if "date" in train_panel.columns
+                            else None
+                        )
+                        oos_dates = (
+                            oos_only_df["date"].reset_index(drop=True)
+                            if "date" in oos_only_df.columns
+                            else None
+                        )
+                        train_ic, train_ic_std = self._validator._compute_ic(
+                            tr_aligned,
+                            train_fwd_ret,
+                            dates=train_dates,
+                            symbols=train_panel["_symbol"].reset_index(drop=True),
+                        )
+                        train_ir = train_ic / train_ic_std if train_ic_std > 1e-10 else 0.0
+                        oos_ic, oos_ic_std = self._validator._compute_ic(
                             te_vals,
-                            oos_panel["_fwd_ret"],
-                            dates=oos_panel["date"] if "date" in oos_panel.columns else None,
-                            symbols=oos_panel["_symbol"],
+                            oos_fwd_ret,
+                            dates=oos_dates,
+                            symbols=oos_only_df["_symbol"].reset_index(drop=True),
                         )
+                        oos_ir = oos_ic / oos_ic_std if oos_ic_std > 1e-10 else 0.0
                         turnover = self._validator._compute_turnover(
                             te_vals,
-                            dates=oos_panel["date"] if "date" in oos_panel.columns else None,
-                            symbols=oos_panel["_symbol"],
+                            dates=oos_dates,
+                            symbols=oos_only_df["_symbol"].reset_index(drop=True),
                         )
                         oos_series_by_name[rec.name] = te_vals
 
@@ -346,7 +479,9 @@ class FactorGovernanceEngine:
 
                 action: Literal["kept", "retired", "would_retire"] = "kept"
                 if health != "healthy":
-                    if auto_retire:
+                    if insufficient_panel and pit_ok:
+                        action = "kept"
+                    elif auto_retire:
                         if store.get(rec.name) is not None:
                             store.retire(rec.name)
                         action = "retired"
@@ -393,12 +528,16 @@ class FactorGovernanceEngine:
         if strategies is not None:
             return list(strategies)
         resolved: dict[str, Strategy] = {}
+        strat_store: StrategyStore | None = None
         try:
             strat_store = StrategyStore(self.db_path)
             for s in strat_store.list_all():
                 resolved[s.meta.id] = s
         except Exception:
             pass
+        finally:
+            if strat_store is not None:
+                strat_store.close()
         try:
             from alphaevo.cli.demo import _find_builtin_strategy_dir
 

@@ -14,13 +14,17 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, cast
 
+import numpy as np
 import pandas as pd
 
 from alphaevo.alpha_factory.factor_store import FactorRecord, FactorStore
-from alphaevo.alpha_factory.sandbox import FactorSandbox, build_restricted_namespace
+from alphaevo.alpha_factory.sandbox import FactorSandbox
 from alphaevo.alpha_factory.synthesizer import FactorHypothesis, FactorSynthesizer
 from alphaevo.alpha_factory.validator import FactorValidator, ValidationThresholds
 from alphaevo.backtest.indicators import IndicatorFn, IndicatorRegistry
@@ -34,12 +38,99 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_INDICATOR_CACHE_MAX_ENTRIES = 8
+
+
+def _object_type_digest(values: list[Any]) -> bytes:
+    """Hash per-element Python type identity for object-dtype columns/indexes."""
+    hasher = hashlib.blake2b(digest_size=16)
+    for val in values:
+        cls = type(val)
+        hasher.update(f"{cls.__module__}.{cls.__qualname__}\x00".encode())
+    return hasher.digest()
+
+
+def _df_cache_key(df: pd.DataFrame) -> tuple[Any, ...] | None:
+    """Build a dtype-, category-, object-type-, column-, index-, and order-sensitive cache key."""
+    try:
+        col_dtypes = tuple(str(dt) for dt in df.dtypes)
+        idx_dtype = str(df.index.dtype)
+        col_cats = tuple(
+            (
+                col,
+                str(df[col].cat.categories.dtype),
+                tuple(df[col].cat.categories.tolist()),
+                bool(df[col].cat.ordered),
+            )
+            for col in df.columns
+            if isinstance(df[col].dtype, pd.CategoricalDtype)
+        )
+        idx_cats = (
+            (
+                str(cast("Any", df.index).categories.dtype),
+                tuple(cast("Any", df.index).categories.tolist()),
+                bool(cast("Any", df.index).ordered),
+            )
+            if isinstance(df.index.dtype, pd.CategoricalDtype)
+            else ()
+        )
+        obj_col_sigs = tuple(
+            (col, _object_type_digest(df[col].tolist()))
+            for col in df.columns
+            if df[col].dtype == object
+        )
+        if isinstance(df.index, pd.MultiIndex):
+            obj_idx_sig: tuple[Any, ...] = tuple(
+                (
+                    str(df.index.get_level_values(i).dtype),
+                    (
+                        _object_type_digest(df.index.get_level_values(i).tolist())
+                        if df.index.get_level_values(i).dtype == object
+                        else b""
+                    ),
+                )
+                for i in range(df.index.nlevels)
+            )
+        elif df.index.dtype == object:
+            obj_idx_sig = (_object_type_digest(df.index.tolist()),)
+        else:
+            obj_idx_sig = ()
+        if df.empty:
+            return (
+                tuple(df.columns),
+                col_dtypes,
+                idx_dtype,
+                col_cats,
+                idx_cats,
+                obj_col_sigs,
+                obj_idx_sig,
+                (0, 0),
+                b"",
+            )
+        hashed = pd.util.hash_pandas_object(df, index=True)
+        digest = hashlib.blake2b(
+            hashed.to_numpy(dtype=np.uint64).tobytes(), digest_size=16
+        ).digest()
+        return (
+            tuple(df.columns),
+            col_dtypes,
+            idx_dtype,
+            col_cats,
+            idx_cats,
+            obj_col_sigs,
+            obj_idx_sig,
+            df.shape,
+            digest,
+        )
+    except Exception:
+        return None
+
 
 def _build_indicator_fn(
     factor_code: str,
     sandbox: FactorSandbox,
 ) -> Callable[[pd.DataFrame, int, IndicatorContext | None], float | bool]:
-    """Create an indicator function from validated factor code."""
+    """Create an isolated worker-backed indicator function from validated factor code."""
 
     def _zero_indicator(
         df: pd.DataFrame,
@@ -49,20 +140,12 @@ def _build_indicator_fn(
         del df, idx, ctx
         return 0.0
 
-    is_safe, _ = sandbox.validate_code(factor_code)
+    is_safe, _ = sandbox.preflight_code(factor_code)
     if not is_safe:
         return _zero_indicator
 
-    namespace = build_restricted_namespace()
-    try:
-        exec(factor_code, namespace)  # noqa: S102
-    except Exception:
-        return _zero_indicator
-
-    compute_fn = namespace.get("compute")
-    if compute_fn is None:
-        return _zero_indicator
-    compute = cast("Callable[[pd.DataFrame, int], Any]", compute_fn)
+    series_cache: OrderedDict[tuple[Any, ...], list[float]] = OrderedDict()
+    cache_lock = threading.Lock()
 
     def indicator_fn(
         df: pd.DataFrame,
@@ -70,15 +153,41 @@ def _build_indicator_fn(
         ctx: IndicatorContext | None = None,
     ) -> float | bool:
         del ctx
-        try:
-            pit_df = df.iloc[: idx + 1]
-            val = float(compute(pit_df, idx))
-            import numpy as np
-
-            return val if np.isfinite(val) else 0.0
-        except Exception:
+        if idx < 0 or idx >= len(df):
             return 0.0
 
+        cache_key = _df_cache_key(df)
+        if cache_key is not None:
+            with cache_lock:
+                cached_values = series_cache.get(cache_key)
+                if cached_values is not None:
+                    series_cache.move_to_end(cache_key)
+                    if 0 <= idx < len(cached_values):
+                        val = float(cached_values[idx])
+                        return val if np.isfinite(val) else 0.0
+
+        result = sandbox.execute(
+            factor_code,
+            df,
+            verify_pit=False,
+            enforce_pit_slice=True,
+        )
+        if not result.success or result.values is None or len(result.values) != len(df):
+            return 0.0
+
+        computed = [float(v) if np.isfinite(float(v)) else 0.0 for v in result.values]
+        if cache_key is not None:
+            with cache_lock:
+                series_cache[cache_key] = computed
+                series_cache.move_to_end(cache_key)
+                while len(series_cache) > _INDICATOR_CACHE_MAX_ENTRIES:
+                    series_cache.popitem(last=False)
+
+        return computed[idx]
+
+    cast("Any", indicator_fn)._alphaevo_factor_code_hash = hashlib.sha256(
+        factor_code.encode("utf-8")
+    ).hexdigest()
     return indicator_fn
 
 
@@ -88,17 +197,28 @@ def _execute_factor_series(
     sandbox: FactorSandbox,
     *,
     verify_pit: bool = True,
+    enforce_pit_slice: bool = False,
 ) -> tuple[pd.Series | None, str | None]:
     """Execute factor code while respecting symbol boundaries."""
     if "_symbol" not in ohlcv_data.columns:
-        sandbox_result = sandbox.execute(code, ohlcv_data, verify_pit=verify_pit)
+        sandbox_result = sandbox.execute(
+            code,
+            ohlcv_data,
+            verify_pit=verify_pit,
+            enforce_pit_slice=enforce_pit_slice,
+        )
         if not sandbox_result.success or sandbox_result.values is None:
             return None, sandbox_result.error or "Sandbox execution failed"
         return pd.Series(sandbox_result.values, index=ohlcv_data.index, dtype=float), None
 
     factor_values = pd.Series(index=ohlcv_data.index, dtype=float)
     for symbol, group in ohlcv_data.groupby("_symbol", sort=False):
-        sandbox_result = sandbox.execute(code, group, verify_pit=verify_pit)
+        sandbox_result = sandbox.execute(
+            code,
+            group,
+            verify_pit=verify_pit,
+            enforce_pit_slice=enforce_pit_slice,
+        )
         if not sandbox_result.success or sandbox_result.values is None:
             err = sandbox_result.error or "Sandbox execution failed"
             return None, f"{symbol}: {err}"
@@ -333,4 +453,12 @@ class AlphaFactory:
         return self._store
 
     def close(self) -> None:
+        """Close backing store and sandbox worker process."""
         self._store.close()
+        self._sandbox.close()
+
+    def __enter__(self) -> AlphaFactory:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()

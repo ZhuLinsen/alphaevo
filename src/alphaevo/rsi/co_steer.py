@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import math
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,12 +20,77 @@ if TYPE_CHECKING:
     import pandas as pd  # type: ignore[import-untyped]
 
 from alphaevo.alpha_factory.factor_store import FactorRecord, FactorStore
-from alphaevo.alpha_factory.factory import _build_indicator_fn
+from alphaevo.alpha_factory.factory import _build_indicator_fn, register_factor_record
 from alphaevo.alpha_factory.sandbox import FactorSandbox
 from alphaevo.backtest.indicators import IndicatorFn, IndicatorRegistry
 from alphaevo.models.enums import ChangeType, EvidenceLevel, ExitReason, RSILevel
 from alphaevo.models.execution import EvaluationReport, StrategyChange
 from alphaevo.models.strategy import Strategy
+
+_DYNAMIC_LEASE_LOCK = threading.RLock()
+_DYNAMIC_LEASES: dict[str, int] = {}
+_TRANSIENT_FACTORS: set[str] = set()
+
+
+def _uses_indicator(strategy: Strategy, indicator_name: str) -> bool:
+    conds = (
+        strategy.entry.triggers
+        + strategy.entry.conditions
+        + strategy.entry.guards
+        + strategy.entry.filters
+        + strategy.exit.triggers
+    )
+    stop_conds = getattr(strategy.exit.stop_loss, "conditions", None) or []
+    return any(getattr(cond, "indicator", None) == indicator_name for cond in [*conds, *stop_conds])
+
+
+def acquire_dynamic_lease(
+    factor_name: str | None,
+    *,
+    in_pre_registered: bool,
+    factor_record: Any | None,
+    factor_store: FactorStore,
+) -> str | None:
+    """Acquire a refcounted lease for a transient L2 dynamic factor across concurrent runs."""
+    if not factor_name:
+        return None
+    with _DYNAMIC_LEASE_LOCK:
+        is_transient = factor_name in _TRANSIENT_FACTORS
+        if not in_pre_registered and not is_transient and factor_store.get(factor_name) is None:
+            _TRANSIENT_FACTORS.add(factor_name)
+            is_transient = True
+        if not is_transient:
+            return None
+        if not IndicatorRegistry.is_registered(factor_name) and factor_record is not None:
+            register_factor_record(factor_record)
+        _DYNAMIC_LEASES[factor_name] = _DYNAMIC_LEASES.get(factor_name, 0) + 1
+        return factor_name
+
+
+def release_dynamic_lease(
+    factor_name: str | None,
+    *,
+    persisted: bool,
+    protected_strategies: tuple[Strategy, ...],
+) -> None:
+    """Release one dynamic factor lease and unregister only when zero transient leases remain."""
+    if not factor_name:
+        return
+    with _DYNAMIC_LEASE_LOCK:
+        if persisted:
+            _TRANSIENT_FACTORS.discard(factor_name)
+        rem = _DYNAMIC_LEASES.get(factor_name, 1) - 1
+        if rem > 0:
+            _DYNAMIC_LEASES[factor_name] = rem
+            return
+        _DYNAMIC_LEASES.pop(factor_name, None)
+        if persisted or factor_name not in _TRANSIENT_FACTORS:
+            return
+        _TRANSIENT_FACTORS.discard(factor_name)
+        if any(_uses_indicator(s, factor_name) for s in protected_strategies):
+            return
+        IndicatorRegistry.unregister_dynamic(factor_name)
+
 
 FailureClusterId = Literal[
     "zero_signal_lockout",
@@ -54,6 +120,8 @@ class CoSteerDecision(BaseModel):
     synthesized_via: Literal["llm", "offline_template"] | None = None
     pit_verified: bool = False
     persisted_to_store: bool = False
+    lease_acquired: bool = False
+    synthesized_factor_record: FactorRecord | None = None
     proposed_changes: list[StrategyChange] = Field(default_factory=list)
 
 
@@ -64,6 +132,7 @@ class OfflineFactorTemplate(BaseModel):
     description: str
     op: Literal["<", "<=", ">", ">="]
     threshold: float
+    expected_direction: Literal["positive", "negative"] = "positive"
     code: str
 
 
@@ -73,6 +142,7 @@ _OFFLINE_FACTOR_TEMPLATES: tuple[OfflineFactorTemplate, ...] = (
         description="10-day relative range compression ratio (smaller = calmer base before rebound)",
         op="<=",
         threshold=1.15,
+        expected_direction="negative",
         code="""
 import numpy as np
 
@@ -150,6 +220,7 @@ def compute(df, idx):
         description="10-day downside vs total return volatility ratio filtering asymmetric panic bars",
         op="<=",
         threshold=0.78,
+        expected_direction="negative",
         code="""
 import numpy as np
 
@@ -190,6 +261,7 @@ def compute(df, idx):
         description="5-day vs 14-day true-range expansion ratio filtering parabolic exhaustion spikes",
         op="<=",
         threshold=1.35,
+        expected_direction="negative",
         code="""
 import numpy as np
 
@@ -386,6 +458,7 @@ class BlindSpotMiner:
         synthesizer: Any | None = None,
     ) -> None:
         self._sandbox = sandbox or FactorSandbox(timeout_seconds=10)
+        self._owns_sandbox = sandbox is None
         self._factor_store = factor_store
         # Transient LLM synthesizer settings only; never persisted or logged.
         self._llm_model = (llm_model or "").strip() or None
@@ -393,6 +466,17 @@ class BlindSpotMiner:
         self._synthesizer = synthesizer
         self._pit_cache: dict[str, bool] = {}
         self._failed_llm_factors: set[str] = set()
+
+    def close(self) -> None:
+        """Close owned sandbox worker resources if created by this miner."""
+        if self._owns_sandbox:
+            self._sandbox.close()
+
+    def __enter__(self) -> BlindSpotMiner:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
 
     def _calibrate_causal_threshold(
         self,
@@ -438,7 +522,10 @@ class BlindSpotMiner:
         cluster: BlindSpotCluster,
         used_indicators: set[str],
         sample_df: pd.DataFrame,
-    ) -> tuple[str, str, str, Literal[">=", "<="], float, str] | None:
+    ) -> (
+        tuple[str, str, str, Literal[">=", "<="], float, Literal["positive", "negative"], str]
+        | None
+    ):
         """Attempt PIT-verified LLM factor synthesis, returning None on any failure."""
         synth = self._synthesizer
         if synth is None:
@@ -492,6 +579,8 @@ class BlindSpotMiner:
                 or not fname.isidentifier()
                 or fname in used_indicators
                 or fname in self._failed_llm_factors
+                or IndicatorRegistry.is_registered(fname)
+                or (self._factor_store is not None and self._factor_store.get(fname) is not None)
                 or not code
             ):
                 if fname:
@@ -516,7 +605,7 @@ class BlindSpotMiner:
                 continue
 
             op_val, thresh_val = calibrated
-            return fname, desc, code, op_val, thresh_val, "llm"
+            return fname, desc, code, op_val, thresh_val, direction, "llm"
 
         return None
 
@@ -581,6 +670,8 @@ class BlindSpotMiner:
         *,
         allowed_levels: list[RSILevel],
         stagnant_l1_rounds: int = 0,
+        persist: bool = True,
+        acquire_lease: bool = False,
     ) -> CoSteerDecision:
         """Decide L1 vs L2 step and synthesize/PIT-verify an L2 factor when escalating."""
         cluster = self.diagnose_blind_spot(
@@ -612,6 +703,8 @@ class BlindSpotMiner:
         )
 
         if should_try_l2 and sample_df is not None:
+            existing_dynamic_map = IndicatorRegistry._dynamic_registry
+            existing_dynamic = set(existing_dynamic_map.keys())
             chosen: (
                 tuple[
                     str,
@@ -619,10 +712,12 @@ class BlindSpotMiner:
                     str,
                     Literal["<", "<=", ">", ">="],
                     float,
+                    Literal["positive", "negative"],
                     Literal["llm", "offline_template"],
                 ]
                 | None
             ) = None
+            reused_stored_record: FactorRecord | None = None
             llm_candidate = self._try_llm_synthesize(cluster, used_indicators, sample_df)
             if llm_candidate is not None:
                 chosen = (
@@ -631,46 +726,108 @@ class BlindSpotMiner:
                     llm_candidate[2],
                     llm_candidate[3],
                     llm_candidate[4],
+                    llm_candidate[5],
                     "llm",
                 )
             else:
                 for template in _select_ordered_templates(cluster.cluster_id):
+                    code_hash = hashlib.sha256(template.code.encode("utf-8")).hexdigest()
                     if template.name in used_indicators:
                         continue
-                    code_hash = hashlib.sha256(template.code.encode("utf-8")).hexdigest()
+                    if template.name in existing_dynamic:
+                        existing_fn = existing_dynamic_map.get(template.name)
+                        if getattr(existing_fn, "_alphaevo_factor_code_hash", None) != code_hash:
+                            continue
+                    elif IndicatorRegistry.is_registered(template.name):
+                        continue
+                    stored: FactorRecord | None = None
+                    if self._factor_store is not None:
+                        stored = self._factor_store.get(template.name)
+                        if stored is not None and (
+                            stored.status != "active" or stored.code != template.code
+                        ):
+                            continue
                     if code_hash not in self._pit_cache:
                         self._pit_cache[code_hash] = self._sandbox.probe_pit(
                             template.code, sample_df
                         ).passed
                     if not self._pit_cache[code_hash]:
                         continue
+                    reused_stored_record = stored
                     chosen = (
                         template.name,
                         template.description,
                         template.code,
                         template.op,
                         template.threshold,
+                        template.expected_direction,
                         "offline_template",
                     )
                     break
 
             if chosen is not None:
-                f_name, f_desc, f_code, f_op, f_thresh, via = chosen
-                IndicatorRegistry.register_dynamic(
-                    f_name,
-                    cast("IndicatorFn", _build_indicator_fn(f_code, self._sandbox)),
-                )
-                persisted = False
-                if self._factor_store is not None:
-                    self._factor_store.save(
-                        FactorRecord(
-                            name=f_name,
-                            description=f_desc,
-                            rationale=f"Co-STEER L2 ({cluster.cluster_id}, via={via}): {cluster.evidence}",
-                            code=f_code,
-                            status="active",
+                f_name, f_desc, f_code, f_op, f_thresh, f_dir, via = chosen
+                f_code_hash = hashlib.sha256(f_code.encode("utf-8")).hexdigest()
+                lease_acquired = False
+                with _DYNAMIC_LEASE_LOCK:
+                    live_dynamic = IndicatorRegistry._dynamic_registry
+                    if f_name in live_dynamic:
+                        if (
+                            getattr(live_dynamic.get(f_name), "_alphaevo_factor_code_hash", None)
+                            != f_code_hash
+                        ):
+                            return CoSteerDecision(
+                                chosen_level=RSILevel.L1_STRATEGY,
+                                cluster=cluster,
+                                proposed_changes=[],
+                            )
+                    else:
+                        if (
+                            not persist
+                            and reused_stored_record is None
+                            and (
+                                self._factor_store is None or self._factor_store.get(f_name) is None
+                            )
+                        ):
+                            _TRANSIENT_FACTORS.add(f_name)
+                        IndicatorRegistry.register_dynamic(
+                            f_name,
+                            cast("IndicatorFn", _build_indicator_fn(f_code, self._sandbox)),
                         )
+                    if acquire_lease and not persist and f_name in _TRANSIENT_FACTORS:
+                        _DYNAMIC_LEASES[f_name] = _DYNAMIC_LEASES.get(f_name, 0) + 1
+                        lease_acquired = True
+                factor_record = (
+                    reused_stored_record
+                    if reused_stored_record is not None
+                    else FactorRecord(
+                        name=f_name,
+                        description=f_desc,
+                        rationale=f"Co-STEER L2 ({cluster.cluster_id}, via={via}): {cluster.evidence}",
+                        code=f_code,
+                        expected_direction=f_dir,
+                        status="active",
                     )
+                )
+                persisted = reused_stored_record is not None
+                if persist and self._factor_store is not None and reused_stored_record is None:
+                    stored_rec, inserted = self._factor_store.save_if_absent(factor_record)
+                    if not inserted and (
+                        stored_rec.status != "active" or stored_rec.code != factor_record.code
+                    ):
+                        with _DYNAMIC_LEASE_LOCK:
+                            if (
+                                f_name not in existing_dynamic
+                                and _DYNAMIC_LEASES.get(f_name, 0) == 0
+                            ):
+                                _TRANSIENT_FACTORS.discard(f_name)
+                                IndicatorRegistry.unregister_dynamic(f_name)
+                        return CoSteerDecision(
+                            chosen_level=RSILevel.L1_STRATEGY,
+                            cluster=cluster,
+                            proposed_changes=[],
+                        )
+                    factor_record = stored_rec
                     persisted = True
                 if strategy.entry.triggers:
                     target_field = "entry.guards"
@@ -697,6 +854,8 @@ class BlindSpotMiner:
                     synthesized_via=via,
                     pit_verified=True,
                     persisted_to_store=persisted,
+                    lease_acquired=lease_acquired,
+                    synthesized_factor_record=factor_record,
                     proposed_changes=[change],
                 )
 

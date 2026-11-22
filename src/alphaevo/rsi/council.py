@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from typing import Any, Literal
 
@@ -320,6 +321,19 @@ class HeterogeneousCouncil:
 
         objections: list[str] = [f"{c.target}: {reason}" for c, reason in verdict.rejected]
         approved = len(verdict.approved) == len(changes)
+        if (
+            committee.overall_status == "fail"
+            and evaluation.anti_overfit.is_overfit
+            and any(c.change_type == ChangeType.ADD_CONDITION for c in changes)
+            and not any(
+                c.change_type in {ChangeType.REMOVE_CONDITION, ChangeType.LOOSEN_FILTER}
+                for c in changes
+            )
+        ):
+            objections.append(
+                "committee: overall_status=fail blocks adding conditions to an overfit strategy"
+            )
+            approved = False
 
         diag_ctx = _format_diagnostic_context(
             strategy,
@@ -523,8 +537,13 @@ class HeterogeneousCouncil:
                         and not isinstance(cond_obj.value, bool)
                     ):
                         v_curr = float(cond_obj.value)
-                        if cond_obj.op in {"<", "<="} and v_curr > 0:
-                            v_nxt = round(v_curr * 1.45, 4)
+                        if cond_obj.op in {"<", "<="}:
+                            v_nxt = round(
+                                v_curr * 1.45
+                                if v_curr > 0
+                                else (v_curr * 0.55 if v_curr < 0 else 0.1),
+                                4,
+                            )
                         elif cond_obj.op in {">", ">="}:
                             v_nxt = round(v_curr * 0.65 if v_curr > 0 else v_curr - 0.1, 4)
                         else:
@@ -949,10 +968,12 @@ class HeterogeneousCouncil:
         *,
         diag_ctx: str = "",
     ) -> list[str]:
-        """Optionally invoke adversarial CLI prosecutor; falls back cleanly on unavailability."""
+        """Invoke configured adversarial CLI prosecutor and fail closed on unavailability or parse error."""
         tool = q_spec.cli_tool
         if tool not in {"agy", "codex"}:
-            return []
+            return [
+                f"CLI prosecutor misconfigured (unsupported cli_tool={tool!r}); fail-closed veto"
+            ]
         change_desc = "; ".join(f"{c.change_type.value}:{c.target}->{c.to_value}" for c in changes)
         ctx_line = f"{diag_ctx}\n" if diag_ctx else ""
         prompt = (
@@ -975,18 +996,24 @@ class HeterogeneousCouncil:
                 check=False,
             )
             if proc.returncode != 0 or not proc.stdout.strip():
-                return []
+                return [
+                    f"CLI prosecutor ({tool}) returned exit={proc.returncode} with no output; fail-closed veto"
+                ]
             raw = proc.stdout.strip()
             start, end = raw.find("{"), raw.rfind("}")
-            if start != -1 and end > start:
-                parsed: dict[str, Any] = json.loads(raw[start : end + 1])
-                if parsed.get("veto") is True:
-                    return [str(parsed.get("reason", "Vetoed by CLI Prosecutor"))]
+            if start == -1 or end <= start:
+                return [f"CLI prosecutor ({tool}) returned non-JSON output; fail-closed veto"]
+            parsed = json.loads(raw[start : end + 1])
+            if not isinstance(parsed, dict) or not isinstance(parsed.get("veto"), bool):
+                return [
+                    f"CLI prosecutor ({tool}) response missing boolean 'veto'; fail-closed veto"
+                ]
+            if parsed["veto"] is True:
+                return [str(parsed.get("reason", "Vetoed by CLI Prosecutor"))]
+            return []
         except Exception as exc:
-            logger.debug(
-                "CLI prosecutor %s unavailable (%s); using deterministic critic", tool, exc
-            )
-        return []
+            logger.debug("CLI prosecutor %s failed (%s); failing closed", tool, exc)
+            return [f"CLI prosecutor ({tool}) unavailable ({exc}); fail-closed veto"]
 
     def _try_litellm_prosecutor(
         self,
@@ -997,16 +1024,21 @@ class HeterogeneousCouncil:
         *,
         diag_ctx: str = "",
     ) -> list[str]:
-        """Optionally invoke LiteLLM prosecutor; falls back cleanly when unconfigured."""
+        """Invoke LiteLLM prosecutor when configured and fail closed on API/parse failure."""
+        api_key_resolved = bool(
+            (self._api_key or "").strip() or os.environ.get("ALPHAEVO_API_KEY", "").strip()
+        )
         try:
             from alphaevo.core.config import ConfigManager
             from alphaevo.core.llm import LLMClient
 
-            cfg = ConfigManager().load()
-            cfg.llm.model = q_spec.model
-            api_key = self._api_key or ConfigManager().get_llm_api_key()
+            cfg_mgr = ConfigManager()
+            api_key = (self._api_key or "").strip() or (cfg_mgr.get_llm_api_key() or "").strip()
             if not api_key:
                 return []
+            api_key_resolved = True
+            cfg = cfg_mgr.load()
+            cfg.llm.model = q_spec.model
             llm = LLMClient(cfg.llm, api_key=api_key)
             change_desc = "; ".join(
                 f"{c.change_type.value}:{c.target}->{c.to_value}" for c in changes
@@ -1024,11 +1056,19 @@ class HeterogeneousCouncil:
                 model=q_spec.model,
                 timeout=q_spec.timeout_seconds,
             )
-            if parsed.get("veto") is True:
+            if not isinstance(parsed, dict) or not isinstance(parsed.get("veto"), bool):
+                return [
+                    f"LiteLLM prosecutor ({q_spec.model}) returned malformed verdict; fail-closed veto"
+                ]
+            if parsed["veto"] is True:
                 return [str(parsed.get("reason", "Vetoed by LiteLLM Prosecutor"))]
+            return []
         except Exception as exc:
+            if api_key_resolved:
+                logger.debug("LiteLLM prosecutor failed (%s); failing closed", exc)
+                return [f"LiteLLM prosecutor ({q_spec.model}) failed ({exc}); fail-closed veto"]
             logger.debug("LiteLLM prosecutor fallback to deterministic critic: %s", exc)
-        return []
+            return []
 
 
 __all__ = [

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from alphaevo.evaluator.metrics import Evaluator
 from alphaevo.models.enums import RSILevel
-from alphaevo.models.execution import BacktestResult
+from alphaevo.models.execution import BacktestResult, TradeSignal
 from alphaevo.models.strategy import Strategy
 from alphaevo.rsi.program import RSICharter
 from alphaevo.truth.kernel import EvaluationKernel, PortfolioGateConfig
@@ -107,10 +107,11 @@ def _temporal_split_with_warmup(
     train_ratio: float = 0.65,
     warmup_bars: int = 60,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], dict[str, date]]:
-    """Split each symbol into train and warmup-padded forward slices + OOS cutoff dates."""
+    """Split each symbol into train and warmup-padded forward slices with a unified calendar cutoff."""
     train_data: dict[str, pd.DataFrame] = {}
     fwd_data: dict[str, pd.DataFrame] = {}
     fwd_cutoffs: dict[str, date] = {}
+    ordered_by_sym: dict[str, pd.DataFrame] = {}
     for sym, df in market_data.items():
         if df.empty or len(df) < 35:
             continue
@@ -119,14 +120,60 @@ def _temporal_split_with_warmup(
             if "date" in df
             else df.reset_index(drop=True)
         )
-        split_idx = max(20, int(len(ordered) * train_ratio))
-        if len(ordered) - split_idx < 20:
-            split_idx = max(20, len(ordered) - 20)
-        train_data[sym] = ordered.iloc[:split_idx].copy().reset_index(drop=True)
-        fwd_start = max(0, split_idx - warmup_bars)
-        fwd_data[sym] = ordered.iloc[fwd_start:].copy().reset_index(drop=True)
-        if "date" in ordered.columns:
-            fwd_cutoffs[sym] = pd.to_datetime(ordered["date"].iloc[split_idx]).date()
+        ordered_by_sym[sym] = ordered
+
+    dated_syms = {s for s, df in ordered_by_sym.items() if "date" in df.columns}
+    cutoff_date: date | None = None
+    min_side = 20
+    if dated_syms:
+        panel_dates = sorted(
+            {
+                d
+                for sym in dated_syms
+                for d in pd.to_datetime(ordered_by_sym[sym]["date"], errors="coerce")
+                .dt.date.dropna()
+                .tolist()
+            }
+        )
+        if len(panel_dates) >= 25:
+            min_side = 20 if len(panel_dates) >= 40 else 10
+            cut_pos = max(
+                min_side,
+                min(len(panel_dates) - min_side, int(len(panel_dates) * train_ratio)),
+            )
+            cutoff_date = panel_dates[cut_pos]
+
+    for sym, ordered in ordered_by_sym.items():
+        if cutoff_date is not None and sym in dated_syms:
+            sym_dates = pd.to_datetime(ordered["date"], errors="coerce").dt.date
+            split_idx = int((sym_dates < cutoff_date).sum())
+            if split_idx < min_side or len(ordered) - split_idx < min_side:
+                continue
+            train_data[sym] = ordered.iloc[:split_idx].copy().reset_index(drop=True)
+            fwd_start = max(0, split_idx - warmup_bars)
+            fwd_data[sym] = ordered.iloc[fwd_start:].copy().reset_index(drop=True)
+            fwd_cutoffs[sym] = cutoff_date
+        else:
+            split_idx = max(20, int(len(ordered) * train_ratio))
+            if len(ordered) - split_idx < 20:
+                split_idx = max(20, len(ordered) - 20)
+            work = ordered.copy()
+            has_valid_dates = False
+            parsed_split_date: date | None = None
+            if "date" in work.columns:
+                parsed_dates = pd.to_datetime(work["date"], errors="coerce").dt.date
+                if not parsed_dates.isna().any() and isinstance(parsed_dates.iloc[split_idx], date):
+                    has_valid_dates = True
+                    parsed_split_date = parsed_dates.iloc[split_idx]
+            if has_valid_dates and parsed_split_date is not None:
+                fwd_cutoffs[sym] = parsed_split_date
+            else:
+                synth_dates = [d.date() for d in pd.bdate_range("2020-01-02", periods=len(work))]
+                work["date"] = synth_dates
+                fwd_cutoffs[sym] = synth_dates[split_idx]
+            train_data[sym] = work.iloc[:split_idx].copy().reset_index(drop=True)
+            fwd_start = max(0, split_idx - warmup_bars)
+            fwd_data[sym] = work.iloc[fwd_start:].copy().reset_index(drop=True)
     return train_data, fwd_data, fwd_cutoffs
 
 
@@ -288,55 +335,120 @@ class MechanismEvaluator:
             complexity_limit=variant.complexity_limit,
             enable_pinned_scars=variant.enable_pinned_scars,
         )
-        res = rsi_engine.run(
-            seed_strategy,
-            train_data,
-            charter=charter,
-            seed=seed,
-        )
+        try:
+            res = rsi_engine.run(
+                seed_strategy,
+                train_data,
+                charter=charter,
+                seed=seed,
+            )
+        finally:
+            rsi_engine.close()
 
         champ = res.champion_strategy
         kernel = EvaluationKernel(min_data_days=15)
         portfolio_cfg = (
             PortfolioGateConfig(enabled=True) if variant.require_portfolio_gate else None
         )
-        min_fwd_date = min(fwd_cutoffs.values()) if fwd_cutoffs else None
-        outcome = kernel.evaluate(
-            champ,
-            fwd_data,
-            mode="fast",
-            record_trial=False,
-            run_null_control=False,
-            portfolio_gate=portfolio_cfg,
-            min_entry_date=min_fwd_date,
-        )
-        raw_bt = outcome.backtest_result
-        oos_signals = [
-            sig
-            for sig in raw_bt.signals
-            if sig.symbol not in fwd_cutoffs or sig.signal_date >= fwd_cutoffs[sig.symbol]
-        ]
-        if len(oos_signals) != len(raw_bt.signals):
+        groups_by_cutoff: dict[date, dict[str, pd.DataFrame]] = {}
+        for sym, df in fwd_data.items():
+            cut = fwd_cutoffs.get(sym)
+            if cut is not None:
+                groups_by_cutoff.setdefault(cut, {})[sym] = df
+
+        if not groups_by_cutoff:
+            today = date.today()
             fwd_bt = BacktestResult(
-                strategy_id=raw_bt.strategy_id,
-                batch_id=raw_bt.batch_id,
-                signals=oos_signals,
-                total_signals=len(oos_signals),
-                executed_signals=len([s for s in oos_signals if s.exit_price is not None]),
-                skipped_signals=len([s for s in oos_signals if s.exit_price is None]),
-                date_range=raw_bt.date_range,
+                strategy_id=champ.meta.id,
+                batch_id="mech_fwd_empty",
+                signals=[],
+                total_signals=0,
+                executed_signals=0,
+                skipped_signals=0,
+                date_range=(today, today),
+            )
+            fwd_eval = Evaluator().evaluate_fast(fwd_bt, champ, market_data=fwd_data)
+            portfolio_ok = True
+        elif len(groups_by_cutoff) == 1:
+            sole_cutoff, sole_data = next(iter(groups_by_cutoff.items()))
+            outcome = kernel.evaluate(
+                champ,
+                sole_data,
+                mode="fast",
+                record_trial=False,
+                run_null_control=False,
+                portfolio_gate=portfolio_cfg,
+                min_entry_date=sole_cutoff,
+            )
+            raw_bt = outcome.backtest_result
+            oos_signals = [
+                sig
+                for sig in raw_bt.signals
+                if sig.symbol in fwd_cutoffs and sig.signal_date >= fwd_cutoffs[sig.symbol]
+            ]
+            if len(oos_signals) != len(raw_bt.signals) or len(sole_data) != len(fwd_data):
+                fwd_bt = BacktestResult(
+                    strategy_id=raw_bt.strategy_id,
+                    batch_id=raw_bt.batch_id,
+                    signals=oos_signals,
+                    total_signals=len(oos_signals),
+                    executed_signals=len([s for s in oos_signals if s.exit_price is not None]),
+                    skipped_signals=len([s for s in oos_signals if s.exit_price is None]),
+                    date_range=raw_bt.date_range,
+                )
+                fwd_eval = Evaluator().evaluate_fast(fwd_bt, champ, market_data=fwd_data)
+                portfolio_ok = (
+                    EvaluationKernel._evaluate_portfolio_gate(
+                        fwd_bt, fwd_data, portfolio_cfg
+                    ).passed
+                    if portfolio_cfg is not None
+                    else True
+                )
+            else:
+                fwd_bt = raw_bt
+                fwd_eval = outcome.evaluation
+                portfolio_ok = (
+                    outcome.portfolio_verdict.passed
+                    if outcome.portfolio_verdict is not None
+                    else True
+                )
+        else:
+            oos_signals_multi: list[TradeSignal] = []
+            group_ranges: list[tuple[date, date]] = []
+            for cutoff, group_data in sorted(groups_by_cutoff.items()):
+                group_outcome = kernel.evaluate(
+                    champ,
+                    group_data,
+                    mode="fast",
+                    record_trial=False,
+                    run_null_control=False,
+                    portfolio_gate=None,
+                    min_entry_date=cutoff,
+                )
+                group_bt = group_outcome.backtest_result
+                group_ranges.append(group_bt.date_range)
+                for sig in group_bt.signals:
+                    if sig.symbol in fwd_cutoffs and sig.signal_date >= fwd_cutoffs[sig.symbol]:
+                        oos_signals_multi.append(sig)
+            oos_signals_multi.sort(key=lambda s: (s.signal_date, s.symbol))
+            combined_range = (
+                min(r[0] for r in group_ranges),
+                max(r[1] for r in group_ranges),
+            )
+            fwd_bt = BacktestResult(
+                strategy_id=champ.meta.id,
+                batch_id="mech_fwd_multi_cutoff",
+                signals=oos_signals_multi,
+                total_signals=len(oos_signals_multi),
+                executed_signals=len([s for s in oos_signals_multi if s.exit_price is not None]),
+                skipped_signals=len([s for s in oos_signals_multi if s.exit_price is None]),
+                date_range=combined_range,
             )
             fwd_eval = Evaluator().evaluate_fast(fwd_bt, champ, market_data=fwd_data)
             portfolio_ok = (
                 EvaluationKernel._evaluate_portfolio_gate(fwd_bt, fwd_data, portfolio_cfg).passed
                 if portfolio_cfg is not None
                 else True
-            )
-        else:
-            fwd_bt = raw_bt
-            fwd_eval = outcome.evaluation
-            portfolio_ok = (
-                outcome.portfolio_verdict.passed if outcome.portfolio_verdict is not None else True
             )
 
         train_avg = res.champion_evaluation.overall.avg_return
@@ -349,14 +461,33 @@ class MechanismEvaluator:
 
         promoted_beyond_seed = res.promotions > 0
         fwd_null_ok = False
-        if fwd_sigs >= 5:
-            null_rep = NullSignalController().evaluate_candidate_against_nulls(
-                fwd_bt.signals,
-                fwd_data,
-                n_permutations=25,
-                seed=seed,
+        executed_fwd = [s for s in fwd_bt.signals if s.exit_price is not None]
+        if len(executed_fwd) >= 5:
+            avg_hold_fwd = max(
+                1,
+                round(sum(max(1, s.holding_days) for s in executed_fwd) / len(executed_fwd)),
             )
-            fwd_null_ok = null_rep.passed
+            fwd_oos_only_market: dict[str, pd.DataFrame] = {}
+            for sym, df in fwd_data.items():
+                cut = fwd_cutoffs.get(sym)
+                if cut is None or df.empty or "date" not in df.columns:
+                    continue
+                sym_dates = pd.to_datetime(df["date"], errors="coerce").dt.date
+                oos_slice = df.loc[sym_dates >= cut].copy().reset_index(drop=True)
+                if not oos_slice.empty:
+                    fwd_oos_only_market[sym] = oos_slice
+            has_market_null_pool = any(
+                "close" in df.columns and len(df) >= avg_hold_fwd + 3
+                for df in fwd_oos_only_market.values()
+            )
+            if has_market_null_pool:
+                null_rep = NullSignalController().evaluate_candidate_against_nulls(
+                    fwd_bt.signals,
+                    fwd_oos_only_market,
+                    n_permutations=25,
+                    seed=seed,
+                )
+                fwd_null_ok = null_rep.passed
         false_promo = promoted_beyond_seed and (fwd_avg <= 0.0 or not fwd_null_ok)
 
         decay_bonus = 0.02 * min(1.5, max(0.0, decay)) if decay is not None else 0.0
