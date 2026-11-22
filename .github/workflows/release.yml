@@ -42,12 +42,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes
       - name: Publish to PyPI (when PYPI_API_TOKEN is configured)
-        if: startsWith(github.ref, 'refs/tags/v') && secrets.PYPI_API_TOKEN != ''
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
+          if [ -z "${TWINE_PASSWORD}" ]; then
+            echo "PYPI_API_TOKEN not configured; skipping PyPI upload."
+            exit 0
+          fi
           python -m pip install twine
           python -m twine upload dist/*

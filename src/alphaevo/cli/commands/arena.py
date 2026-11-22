@@ -91,6 +91,19 @@ def arena_run(
     l2: bool = typer.Option(
         True, "--l2/--no-l2", help="Enable L2 Co-STEER PIT-verified factor discovery"
     ),
+    crossover: bool = typer.Option(
+        True, "--crossover/--no-crossover", help="Enable semantic genetic crossover between elites"
+    ),
+    proposer_model: str | None = typer.Option(
+        None,
+        "--proposer-model",
+        help="Optional LLM proposer model for Arena Council & L2 factor discovery",
+    ),
+    prosecutor_model: str | None = typer.Option(
+        None,
+        "--prosecutor-model",
+        help="Optional adversarial LLM prosecutor model (different family from proposer)",
+    ),
 ) -> None:
     """Run multi-strategy RSI evolution, shadow verification & generate an interactive HTML Arena."""
     from alphaevo.arena import ArenaRunner, render_arena_html
@@ -136,7 +149,34 @@ def arena_run(
 
         market_data, _ = load_showcase_snapshot()
 
-    runner = ArenaRunner(backtest_config=config.backtest, db_path=config.db_path)
+    from alphaevo.cli.commands.rsi import _build_council
+    from alphaevo.core.config import ConfigManager
+
+    cfg_mgr = ConfigManager()
+    env_api_key = cfg_mgr.get_llm_api_key()
+    eff_proposer = proposer_model or config.rsi.proposer_model
+    eff_prosecutor = prosecutor_model or config.rsi.prosecutor_model
+    if not eff_proposer and env_api_key and config.llm.model:
+        eff_proposer = config.llm.model
+    eff_method = "llm" if (eff_proposer or eff_prosecutor) else "heuristic"
+    council = _build_council(
+        method=eff_method,
+        proposer_model=eff_proposer,
+        prosecutor_model=eff_prosecutor,
+    )
+    l2_llm = (
+        eff_proposer
+        if eff_proposer and not eff_proposer.lower().startswith("heuristic") and env_api_key
+        else None
+    )
+
+    runner = ArenaRunner(
+        backtest_config=config.backtest,
+        db_path=config.db_path,
+        council=council,
+        l2_llm_model=l2_llm,
+        l2_api_key=env_api_key,
+    )
     snapshot = runner.run(
         strat_list,
         market_data,
@@ -145,6 +185,7 @@ def arena_run(
         market_label=market_label,
         data_source=data_source,
         enable_l2_factors=l2,
+        enable_crossover=crossover,
     )
 
     out_path = Path(output_dir)

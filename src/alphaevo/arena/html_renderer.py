@@ -309,6 +309,7 @@ def render_evolution_tree_svg(
     }
 
     edges_svg: list[str] = []
+    has_crossover = False
     for idx, node in enumerate(nodes):
         if idx == 0:
             continue
@@ -323,6 +324,15 @@ def render_evolution_tree_svg(
             f'<path d="M {p_xy[0]} {p_xy[1]} C {mid_x} {p_xy[1]}, {mid_x} {c_xy[1]}, {c_xy[0]} {c_xy[1]}" '
             f'fill="none" stroke="{stroke}" stroke-width="2" opacity="0.75"{dash}/>'
         )
+        sec_id = _field(node, "secondary_parent_id", None)
+        if sec_id and str(sec_id) in pos_by_id:
+            has_crossover = True
+            s_xy = pos_by_id[str(sec_id)]
+            ctrl_y = round(min(s_xy[1], c_xy[1]) - 36.0, 2)
+            edges_svg.append(
+                f'<path d="M {s_xy[0]} {s_xy[1]} C {s_xy[0]} {ctrl_y}, {c_xy[0]} {ctrl_y}, {c_xy[0]} {c_xy[1]}" '
+                'fill="none" stroke="#a855f7" stroke-width="1.8" stroke-dasharray="5,3" opacity="0.85"/>'
+            )
 
     nodes_svg: list[str] = []
     for idx, node in enumerate(nodes):
@@ -336,20 +346,29 @@ def render_evolution_tree_svg(
         score = float(_field(node, "score", 0.0) or 0.0)
         dsr = float(_field(node, "dsr_prob", _field(node, "dsr_probability", 0.0)) or 0.0)
         stroke, fill = palette.get(status, ("#64748b", "#182235"))
+        xover_tag = " · 🧬X" if _field(node, "secondary_parent_id", None) else ""
         nodes_svg.append(
             f'<rect x="{x0}" y="{y0}" width="{round(box_w, 2)}" height="{box_h}" '
             f'rx="9" fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>'
             f'<text x="{round(x0 + 8, 2)}" y="{round(y0 + 17, 2)}" fill="{stroke}" '
-            f'font-size="10" font-weight="700">R{rnd} · {html.escape(status.upper())}</text>'
+            f'font-size="10" font-weight="700">R{rnd} · {html.escape(status.upper())}{xover_tag}</text>'
             f'<text x="{round(x0 + 8, 2)}" y="{round(y0 + 35, 2)}" fill="#e2e8f0" '
             f'font-size="10.5" font-weight="600">{html.escape(short_sid)}</text>'
             f'<text x="{round(x0 + 8, 2)}" y="{round(y0 + 53, 2)}" fill="#94a3b8" '
             f'font-size="9.5">Fit {score * 100:.1f}% · DSR {dsr * 100:.0f}%</text>'
         )
 
+    legend_svg = (
+        f'<text x="{width - 14}" y="16" text-anchor="end" fill="#c084fc" '
+        'font-size="9.5" font-weight="600">--- 🧬 Semantic Crossover Edge</text>'
+        if has_crossover
+        else ""
+    )
+
     return (
         f'<svg viewBox="0 0 {width} {height}" class="chart-svg" role="img" aria-label="Evolution Lineage Tree">'
         f'<rect width="{width}" height="{height}" rx="12" fill="#0f172a"/>'
+        + legend_svg
         + "".join(edges_svg)
         + "".join(nodes_svg)
         + "</svg>"
@@ -646,6 +665,7 @@ def render_arena_html(snapshot: ArenaSnapshot) -> str:
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <span class="badge {chain_cls}">{chain_lbl}</span>
+      <span class="badge">L2 Factors: {snapshot.total_l2_factors_synthesized} · Crossovers: {snapshot.total_crossovers_kept}</span>
       <span class="badge">Backtests Veto · Shadow Ledgers Promote</span>
     </div>
   </div>
@@ -798,9 +818,10 @@ function selectEntry(idx) {{
   nodesEl.innerHTML = (e.evolution_nodes || []).map((n) => {{
     const cls = n.status === "keep" ? "pass" : ((n.status === "vetoed" || n.status === "revert") ? "fail" : "watch");
     const vr = (n.veto_reasons || []).length ? ` · Failed: ${{n.veto_reasons.map(esc).join(", ")}}` : "";
+    const xBadge = n.secondary_parent_id ? ` · <span class="badge">🧬 × ${{esc(n.secondary_parent_id)}}</span>` : "";
     return `<div class="node">
       <div class="node-top">
-        <span>Round ${{n.round_num}} · ${{esc(n.strategy_id)}}</span>
+        <span>Round ${{n.round_num}} · ${{esc(n.strategy_id)}}${{xBadge}}</span>
         <span class="badge ${{cls}}">${{esc(n.status).toUpperCase()}}</span>
       </div>
       <div class="node-meta">Score ${{Number(n.score * 100).toFixed(1)}}% · Signals ${{n.signals}} · Win ${{Number(n.win_rate * 100).toFixed(1)}}% · DSR ${{Number(n.dsr_prob * 100).toFixed(1)}}% · Null ${{n.null_passed ? "PASS" : "FAIL"}}${{vr}}</div>

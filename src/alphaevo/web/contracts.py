@@ -258,6 +258,12 @@ def default_web_manifest() -> WebManifest:
                 purpose="X-ray entry condition/guard pass rates without consuming L0 trials.",
             ),
             WebRouteSpec(
+                name="save_strategy",
+                path="/api/strategies/save",
+                method="POST",
+                purpose="Persist a reviewed or champion YAML DSL strategy into StrategyStore.",
+            ),
+            WebRouteSpec(
                 name="evolve_rsi",
                 path="/api/rsi/run",
                 method="POST",
@@ -274,6 +280,12 @@ def default_web_manifest() -> WebManifest:
                 path="/api/rsi/mechanism-ab",
                 method="POST",
                 purpose="Compare L3 Meta-RSI verification harnesses across chronological cutoffs.",
+            ),
+            WebRouteSpec(
+                name="rsi_benchmark",
+                path="/api/rsi/benchmark",
+                method="POST",
+                purpose="Run controlled Baseline vs L1-only vs L1+L2+Crossover ablation benchmark.",
             ),
             WebRouteSpec(
                 name="evolve_strategy",

@@ -474,6 +474,106 @@ def rsi_mechanism_ab(
         console.print(f"[dim]Report written to {out_path}[/dim]")
 
 
+@rsi_app.command("benchmark")
+def rsi_benchmark(
+    strategies: str | None = typer.Option(
+        None,
+        "--strategies",
+        "-s",
+        help="Comma-separated strategy IDs/YAML paths (defaults to 4 core OHLCV templates)",
+    ),
+    rounds: int = typer.Option(2, "--rounds", "-r", help="Evolution rounds per ablation arm"),
+    holdout_pct: float = typer.Option(
+        0.20, "--holdout-pct", help="Chronological locked OOS holdout fraction"
+    ),
+    live: bool = typer.Option(False, "--live", help="Fetch live market data"),
+    null_audit: bool = typer.Option(
+        True,
+        "--null-audit/--no-null-audit",
+        help="Verify 0 false promotions under shuffled returns",
+    ),
+    output_dir: str = typer.Option(
+        "reports/benchmark",
+        "--output",
+        "-o",
+        help="Output directory for benchmark_report.md & .json",
+    ),
+) -> None:
+    """Run controlled Baseline vs L1-only vs L1+L2+Crossover ablation benchmark."""
+    from alphaevo.cli.demo import _find_builtin_strategy_dir
+    from alphaevo.rsi.benchmark import render_benchmark_markdown, run_evolution_benchmark
+    from alphaevo.strategy.dsl.parser import StrategyParser
+
+    config = _get_config()
+    strat_list: list[Strategy] = []
+    if strategies:
+        for ref in [part.strip() for part in strategies.split(",") if part.strip()]:
+            strat_list.append(_resolve_strategy(ref, config))
+    else:
+        bdir = _find_builtin_strategy_dir()
+        parser = StrategyParser()
+        for stem in (
+            "rsi_reversion",
+            "ma_crossover",
+            "mean_reversion_oversold",
+            "volatility_compression_breakout",
+        ):
+            if bdir is not None and (bdir / f"{stem}.yaml").is_file():
+                strat_list.append(parser.parse_file(bdir / f"{stem}.yaml"))
+
+    if not strat_list:
+        console.print("[red]Error: no strategies resolved for benchmark[/red]")
+        raise typer.Exit(1)
+
+    market_data = _load_market_data(live=live)
+    report = run_evolution_benchmark(
+        strat_list,
+        market_data,
+        rounds=rounds,
+        locked_holdout_pct=holdout_pct,
+        run_null_audit=null_audit,
+        data_source=f"live:{config.data.adapter}" if live else "bundled_snapshot",
+        backtest_config=config.backtest,
+    )
+
+    table = Table(title="AlphaEvo Self-Evolution Ablation Benchmark")
+    table.add_column("Strategy", style="cyan")
+    table.add_column("Baseline Fit (Sig)", justify="right")
+    table.add_column("L1-Only Fit (Holdout)", justify="right")
+    table.add_column("L1+L2+XOver Fit (Holdout)", justify="right", style="bold")
+    table.add_column("Niches", justify="right")
+    for row in report.rows:
+        l1_ho = (
+            f"{row.l1_only.holdout_avg_return:+.2%}"
+            if row.l1_only.holdout_avg_return is not None
+            else "n/a"
+        )
+        f_ho = (
+            f"{row.l1_l2_crossover.holdout_avg_return:+.2%}"
+            if row.l1_l2_crossover.holdout_avg_return is not None
+            else "n/a"
+        )
+        table.add_row(
+            row.strategy_id,
+            f"{row.baseline.fitness_score:.3f} ({row.baseline.signals})",
+            f"{row.l1_only.fitness_score:.3f} ({l1_ho})",
+            f"{row.l1_l2_crossover.fitness_score:.3f} ({f_ho})",
+            str(row.l1_l2_crossover.map_elites_cells),
+        )
+    console.print(table)
+
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    md_file = out_path / "benchmark_report.md"
+    json_file = out_path / "benchmark_report.json"
+    md_file.write_text(render_benchmark_markdown(report), encoding="utf-8")
+    json_file.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+    console.print(
+        f"[green]✓ Benchmark saved:[/green] {md_file}, {json_file} | "
+        f"Mean Fitness: {report.mean_baseline_fitness:.3f} -> {report.mean_l1_fitness:.3f} -> {report.mean_full_fitness:.3f}"
+    )
+
+
 # ── alphaevo shadow ... ─────────────────────────────────────────────────
 
 

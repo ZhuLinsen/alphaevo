@@ -23,6 +23,7 @@ class EvolutionNodeView(BaseModel):
     round_num: int
     strategy_id: str
     parent_id: str | None = None
+    secondary_parent_id: str | None = None
     status: str = "baseline"
     level: str = "L1"
     score: float = 0.0
@@ -83,6 +84,7 @@ class ArenaStrategyEntry(BaseModel):
     veto_breakdown: dict[str, int] = Field(default_factory=dict)
     map_elites_cells: list[dict[str, Any]] = Field(default_factory=list)
     synthesized_factors: list[str] = Field(default_factory=list)
+    crossovers_kept: int = 0
     trade_replays: list[TradeReplayView] = Field(default_factory=list)
     committee_verdicts: list[dict[str, Any]] = Field(default_factory=list)
     champion_yaml: str = ""
@@ -104,6 +106,7 @@ class ArenaSnapshot(BaseModel):
     total_deliberations: int = 0
     total_prosecutor_vetoes: int = 0
     total_l2_factors_synthesized: int = 0
+    total_crossovers_kept: int = 0
     veto_breakdown: dict[str, int] = Field(default_factory=dict)
     chain_verified: bool = True
     entries: list[ArenaStrategyEntry] = Field(default_factory=list)
